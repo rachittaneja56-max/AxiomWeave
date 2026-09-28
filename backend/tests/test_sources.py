@@ -45,6 +45,14 @@ def test_extracts_markdown_and_supports_utf8_bom() -> None:
     assert response.json()["media_type"] == "text/markdown"
 
 
+def test_txt_extraction_uses_the_same_canonical_newlines_as_pasted_text() -> None:
+    response = upload("source.txt", b"\xef\xbb\xbfFirst\r\nsecond\rthird", "text/plain")
+
+    assert response.status_code == 200
+    assert response.json()["source_text"] == "First\nsecond\nthird"
+    assert response.json()["character_count"] == len(response.json()["source_text"])
+
+
 @pytest.mark.parametrize(
     ("content", "code"),
     [(b"", "empty_source"), (b" \n\t", "empty_source"), (b"\xff", "invalid_encoding")],

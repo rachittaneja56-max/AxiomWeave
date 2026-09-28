@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 const OUTPUT_TYPES = [
-  { value: "executive_summary", label: "Executive summary" },
-  { value: "linkedin_post", label: "LinkedIn post" },
-  { value: "x_post", label: "X post" },
-  { value: "advisory", label: "Advisory" },
-  { value: "presentation", label: "Presentation" },
-  { value: "infographic", label: "Infographic" },
-  { value: "video_package", label: "Video package" },
+  { value: "executive_summary", label: "Executive Summary" },
+  { value: "linkedin_post", label: "Professional / LinkedIn Post" },
+  { value: "advisory", label: "Formal Advisory" },
+  { value: "presentation", label: "Presentation + Speaker Notes" },
 ] as const;
 
 type OutputType = (typeof OUTPUT_TYPES)[number]["value"];
@@ -22,11 +19,20 @@ type TransformationRequest = {
   detail_level: DetailLevel;
   objective: string;
   style: string;
+  supporting_context: string;
 };
 
-type PreparedRequest = {
-  status: "ready";
-  request: TransformationRequest;
+type SavedTransformation = {
+  status: "saved";
+  transformation_run_id: number;
+  source_id: number;
+  source_version: {
+    id: number;
+    version_number: 1;
+    content_hash: string;
+    segment_count: number;
+  };
+  output_types: OutputType[];
 };
 
 type HealthState = "loading" | "online" | "offline";
@@ -52,6 +58,7 @@ const INITIAL_REQUEST: TransformationRequest = {
   detail_level: "standard",
   objective: "Inform the audience",
   style: "Plain language",
+  supporting_context: "",
 };
 
 const FIELD_LABELS: Record<string, string> = {
@@ -63,37 +70,35 @@ const FIELD_LABELS: Record<string, string> = {
   detail_level: "Detail level",
   objective: "Communication objective",
   style: "Content style",
+  supporting_context: "Supporting context",
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isPreparedRequest(value: unknown): value is PreparedRequest {
+function isSavedTransformation(value: unknown): value is SavedTransformation {
   if (
     !isRecord(value) ||
-    value.status !== "ready" ||
-    !isRecord(value.request)
-  ) {
+    value.status !== "saved" ||
+    !isRecord(value.source_version)
+  )
     return false;
-  }
-
-  const request = value.request;
+  const version = value.source_version;
   return (
-    typeof request.source_text === "string" &&
-    Array.isArray(request.output_types) &&
-    request.output_types.length > 0 &&
-    request.output_types.every((outputType: unknown) =>
+    Number.isInteger(value.transformation_run_id) &&
+    Number.isInteger(value.source_id) &&
+    Number.isInteger(version.id) &&
+    version.version_number === 1 &&
+    typeof version.content_hash === "string" &&
+    /^[a-f0-9]{64}$/.test(version.content_hash) &&
+    Number.isInteger(version.segment_count) &&
+    (version.segment_count as number) >= 0 &&
+    Array.isArray(value.output_types) &&
+    value.output_types.length > 0 &&
+    value.output_types.every((outputType: unknown) =>
       OUTPUT_TYPES.some((option) => option.value === outputType),
-    ) &&
-    typeof request.audience === "string" &&
-    typeof request.tone === "string" &&
-    typeof request.language === "string" &&
-    (request.detail_level === "brief" ||
-      request.detail_level === "standard" ||
-      request.detail_level === "detailed") &&
-    typeof request.objective === "string" &&
-    typeof request.style === "string"
+    )
   );
 }
 
@@ -154,7 +159,7 @@ function validationMessage(body: unknown): string {
   return `Please review: ${[...new Set(labels)].join(", ")}.`;
 }
 
-function Workspace({ onLogout }: { onLogout: () => void }) {
+function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
   const [health, setHealth] = useState<HealthState>("loading");
   const [request, setRequest] =
     useState<TransformationRequest>(INITIAL_REQUEST);
@@ -163,7 +168,8 @@ function Workspace({ onLogout }: { onLogout: () => void }) {
   const [isExtracting, setIsExtracting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [prepared, setPrepared] = useState<PreparedRequest | null>(null);
+  const [saved, setSaved] = useState<SavedTransformation | null>(null);
+  const [logoutError, setLogoutError] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -194,7 +200,7 @@ function Workspace({ onLogout }: { onLogout: () => void }) {
   ) {
     setRequest((current) => ({ ...current, [field]: value }));
     setError(null);
-    setPrepared(null);
+    setSaved(null);
   }
 
   function toggleOutput(outputType: OutputType, checked: boolean) {
@@ -209,13 +215,13 @@ function Workspace({ onLogout }: { onLogout: () => void }) {
     setRequest((current) => ({ ...current, source_text: "" }));
     setSourceFile(null);
     setError(null);
-    setPrepared(null);
+    setSaved(null);
   }
 
   async function extractSourceFile(file: File | undefined) {
     if (!file) return;
     setError(null);
-    setPrepared(null);
+    setSaved(null);
     setSourceFile(null);
     setRequest((current) => ({ ...current, source_text: "" }));
     setIsExtracting(true);
@@ -264,10 +270,10 @@ function Workspace({ onLogout }: { onLogout: () => void }) {
 
   async function submitRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setPrepared(null);
+    setSaved(null);
 
     if (!request.source_text.trim()) {
-      setError("Enter source text before preparing the request.");
+      setError("Enter source text before saving the transformation.");
       return;
     }
 
@@ -280,7 +286,7 @@ function Workspace({ onLogout }: { onLogout: () => void }) {
     setIsSubmitting(true);
 
     try {
-      const response = await fetch("/api/transformations/prepare", {
+      const response = await fetch("/api/transformations", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -291,7 +297,9 @@ function Workspace({ onLogout }: { onLogout: () => void }) {
       try {
         body = await response.json();
       } catch {
-        setError("The backend returned an unreadable response. Please retry.");
+        setError(
+          "The backend returned an unreadable save response. Please retry.",
+        );
         return;
       }
 
@@ -301,27 +309,30 @@ function Workspace({ onLogout }: { onLogout: () => void }) {
       }
 
       if (!response.ok) {
+        setError("The transformation could not be saved. Please retry.");
+        return;
+      }
+
+      if (!isSavedTransformation(body)) {
         setError(
-          `The request could not be prepared (HTTP ${response.status}). Please retry.`,
+          "The backend returned an unexpected save response. Please retry.",
         );
         return;
       }
 
-      if (!isPreparedRequest(body)) {
-        setError(
-          "The backend returned an unexpected response. The request was not marked ready.",
-        );
-        return;
-      }
-
-      setPrepared(body);
+      setSaved(body);
     } catch {
       setError(
-        "Could not reach the backend. Check the connection and try again.",
+        "Could not reach the backend to save. Check the connection and try again.",
       );
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  async function handleLogout() {
+    setLogoutError(false);
+    if (!(await onLogout())) setLogoutError(true);
   }
 
   const healthText = {
@@ -346,11 +357,20 @@ function Workspace({ onLogout }: { onLogout: () => void }) {
             <span className="health-dot" aria-hidden="true" />
             {healthText}
           </div>
-          <button type="button" className="button-secondary" onClick={onLogout}>
+          <button
+            type="button"
+            className="button-secondary"
+            onClick={() => void handleLogout()}
+          >
             Sign out
           </button>
         </div>
       </header>
+      {logoutError && (
+        <p className="form-message form-message--error" role="alert">
+          Sign out could not be completed. Please try again.
+        </p>
+      )}
 
       <form className="request-form" onSubmit={submitRequest} noValidate>
         <section
@@ -430,14 +450,44 @@ function Workspace({ onLogout }: { onLogout: () => void }) {
             </div>
           )}
           <p className="field-hint">
-            Text only. Source content is used for this request and is not saved.
+            Text only. Source content is stored as a versioned source when you
+            save.
+          </p>
+        </section>
+
+        <section className="form-section" aria-labelledby="context-heading">
+          <div className="section-heading">
+            <span className="step-number" aria-hidden="true">
+              2
+            </span>
+            <div>
+              <h2 id="context-heading">Supporting context</h2>
+              <p>Optional guidance for the requested transformation.</p>
+            </div>
+          </div>
+          <label htmlFor="supporting-context">
+            Supporting context (optional)
+          </label>
+          <textarea
+            id="supporting-context"
+            rows={4}
+            maxLength={5000}
+            value={request.supporting_context}
+            onChange={(event) =>
+              updateRequest("supporting_context", event.target.value)
+            }
+            placeholder="Add audience-specific or operational guidance"
+          />
+          <p className="field-hint">
+            Context can guide the transformation but is not treated as source
+            evidence.
           </p>
         </section>
 
         <section className="form-section" aria-labelledby="outputs-heading">
           <div className="section-heading">
             <span className="step-number" aria-hidden="true">
-              2
+              3
             </span>
             <div>
               <h2 id="outputs-heading">Requested materials</h2>
@@ -469,7 +519,7 @@ function Workspace({ onLogout }: { onLogout: () => void }) {
         >
           <div className="section-heading">
             <span className="step-number" aria-hidden="true">
-              3
+              4
             </span>
             <div>
               <h2 id="settings-heading">Communication settings</h2>
@@ -545,11 +595,11 @@ function Workspace({ onLogout }: { onLogout: () => void }) {
 
         <div className="submit-row">
           <p className="generation-note">
-            This prepares and validates your request. It does not generate
+            Save your source and transformation brief. Saving does not generate
             content.
           </p>
           <button type="submit" disabled={isSubmitting || isExtracting}>
-            {isSubmitting ? "Preparing…" : "Prepare request"}
+            {isSubmitting ? "Saving…" : "Save transformation"}
           </button>
         </div>
 
@@ -558,15 +608,14 @@ function Workspace({ onLogout }: { onLogout: () => void }) {
             {error}
           </p>
         )}
-        {prepared && (
+        {saved && (
           <div className="form-message form-message--success" role="status">
-            <strong>Request ready</strong>
+            <strong>Transformation saved</strong>
             <span>
-              Validated for {prepared.request.output_types.length} requested{" "}
-              {prepared.request.output_types.length === 1
-                ? "material"
-                : "materials"}
-              . Content has not been generated.
+              Source V{saved.source_version.version_number} stored for{" "}
+              {saved.output_types.length} requested{" "}
+              {saved.output_types.length === 1 ? "output" : "outputs"}. Content
+              has not been generated yet.
             </span>
           </div>
         )}
@@ -693,8 +742,8 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         </p>
         <ul className="signin-benefits">
           <li>Multi-output transformation</li>
-          <li>Source-linked evidence</li>
-          <li>Version-aware review</li>
+          <li>Audience and communication controls</li>
+          <li>Authenticated workspace</li>
         </ul>
       </section>
       <section className="signin-card" aria-labelledby="signin-heading">
@@ -750,16 +799,17 @@ export default function App() {
     };
   }, []);
 
-  async function signOut() {
+  async function signOut(): Promise<boolean> {
     try {
-      await fetch("/api/auth/logout", {
+      const response = await fetch("/api/auth/logout", {
         method: "POST",
         credentials: "include",
       });
-    } catch {
-      // Clear the local workspace view even when the network is unavailable.
-    } finally {
+      if (!response.ok) return false;
       setAuthState("signed_out");
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -773,11 +823,5 @@ export default function App() {
   if (authState === "signed_out") {
     return <SignIn onSignedIn={() => setAuthState("signed_in")} />;
   }
-  return (
-    <Workspace
-      onLogout={() => {
-        void signOut();
-      }}
-    />
-  );
+  return <Workspace onLogout={signOut} />;
 }

@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.auth import require_current_user
-from app.domain.transformation import SOURCE_TEXT_MAX_LENGTH
 from app.models import User
+from app.source_versions import normalize_source_text
 
 router = APIRouter()
 
@@ -71,14 +71,16 @@ async def extract_text_file(
             422, "invalid_encoding", "The file must contain valid UTF-8 text."
         ) from None
 
-    if not source_text.strip():
-        raise source_error(422, "empty_source", "The uploaded file contains no text.")
-    if len(source_text) > SOURCE_TEXT_MAX_LENGTH:
+    try:
+        source_text = normalize_source_text(source_text)
+    except ValueError as error:
+        if "non-whitespace" in str(error):
+            raise source_error(422, "empty_source", "The uploaded file contains no text.") from None
         raise source_error(
             422,
             "source_too_long",
-            f"Extracted text must be {SOURCE_TEXT_MAX_LENGTH:,} characters or fewer.",
-        )
+            "Extracted text exceeds the 20,000-character source limit.",
+        ) from None
 
     return ExtractedText(
         filename=filename,

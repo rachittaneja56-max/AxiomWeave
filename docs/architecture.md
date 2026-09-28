@@ -1,36 +1,32 @@
 # SIH26154 architecture
 
-## Implemented request path
+## Authenticated transformation save
 
 ```text
 Browser -> Google Identity Services -> POST /api/auth/google
-       -> AxiomWeave local session cookie -> React/Vite -> FastAPI
-                                                   |-> GET /api/health (public)
-                                                   |-> GET /api/auth/session
-                                                   |-> POST /api/auth/logout
-                                                   |-> POST /api/sources/text-file (authenticated)
-                                                   `-> POST /api/transformations/prepare (authenticated)
+       -> AxiomWeave local session cookie -> authenticated React workspace
+       -> POST /api/transformations
+       -> canonical source normalization
+       -> Source -> SourceVersion -> SourceSegments
+       -> TransformationRun (supporting context and controls)
 ```
 
-Google Identity Services returns an ID token to the browser callback. The browser sends the credential to the backend, which verifies the signature and audience against `SIH_GOOGLE_CLIENT_ID`, then identifies the local account by the stable Google `sub`. The backend issues a separate random application-session token, persists only its SHA-256 digest, and returns it in an HttpOnly, SameSite=Lax cookie. The cookie is Secure outside development and expires after eight hours. Logout revokes the session and clears its cookie. No Google access token, refresh token, client secret, or Drive scope is used.
+Google Identity Services returns an ID token to the browser callback. The backend verifies the token signature and audience against `SIH_GOOGLE_CLIENT_ID`, then identifies the local account by the stable Google `sub`. It issues a separate random application-session token in an HttpOnly, SameSite=Lax cookie and stores only its SHA-256 digest. Logout revokes the local session. Health remains public; source extraction, request preparation, and transformation saving require a valid local session.
 
-Health remains public. Text-file extraction and transformation request preparation require an application session. Pasted or extracted source is validated and returned as a request ready for a later stage; it is not persisted or generated through these routes. Source text and supporting context remain untrusted input.
+The save route derives ownership from the authenticated user, normalizes the source, creates a `Source`, its first immutable `SourceVersion`, deterministic segments, and one `TransformationRun` in one database transaction. Supporting context remains on the run and is not included in the source text, hash, or segments. The persisted outputs are the four Tier-A choices. The response reports saved record identifiers and version metadata without echoing source, context, or identity details.
 
-## Persistence foundation
+Canonical text normalization removes a leading Unicode BOM and changes CRLF/CR to LF. Other characters are preserved. Empty or whitespace-only text and content over 20,000 characters are rejected without truncation. UTF-8 TXT/MD extraction uses the same normalization after decoding. Source segmentation groups adjacent non-heading lines into paragraphs, splits at blank lines, and stores Markdown headings as their own segments with deterministic locators.
 
-The backend defines SQLAlchemy 2 models and an Alembic migration for `User`, `AuthSession`, `Source`, `SourceVersion`, `SourceSegment`, `TransformationRun`, `ArtifactRun`, and `ArtifactVersion`. The default database is SQLite, configured through `SIH_DATABASE_URL`. SQLite connections enable foreign-key enforcement. Source and artifact version number uniqueness constraints allow distinct historical versions while preventing duplicate version numbers for the same parent.
+## Persistence and generation boundary
 
-Saved-source and artifact records are not connected to user-facing API routes. Explicit owner-scoped selectors constrain queries for Source, SourceVersion, TransformationRun, ArtifactRun, and ArtifactVersion by their owning user. These establish the query boundary for future endpoints but do not imply that those APIs exist. Saved-source workflows, user-facing generation, review/history, source evidence, discrepancy warnings, source revision, and export are not implemented.
+The SQLAlchemy schema and current Alembic migration include `User`, `AuthSession`, `Source`, `SourceVersion`, `SourceSegment`, `TransformationRun`, `ArtifactRun`, and `ArtifactVersion`. The save workflow writes source and transformation records only. It does not create artifact runs or generated content. No new migration was required for this slice.
 
-## Generation boundary
-
-The backend defines an internal generation request/result contract and provider protocol, plus internal Executive Summary generation logic that builds artifact instructions and returns a draft through that boundary. No live model provider, generation API, user-facing generated artifact, or artifact persistence workflow is implemented.
+The backend defines an internal generation request/result contract, provider protocol, and Executive Summary logic. No live provider or user-facing generation API is connected to the transformation-save action. The following remain unimplemented: dashboard, source reuse, artifact review/history, evidence links, discrepancy warnings, source revision UI/diff/impact, targeted updates, and export. Source segments provide stable source structure but are not evidence links.
 
 ## Stable boundaries
 
-- Source content and supporting context are untrusted data and do not carry application authority.
-- Any model interaction remains controlled by the application.
-- The frontend communicates with backend capabilities through the HTTP API.
+- Source content and supporting context are untrusted data and carry no application authority.
+- Owner IDs come from the authenticated local user, never request JSON.
+- SourceVersion hashes identify exact stored source text; they do not prove authenticity, correctness, or semantic equivalence.
+- Any future model interaction remains controlled by the application.
 - The system remains a small modular monolith unless implemented needs demonstrate otherwise.
-- Schema ownership fields prepare for later access checks; they do not enforce owner isolation by themselves.
-- Source and artifact version rows are modeled as immutable history by application contract; structural persistence does not certify content truth.

@@ -23,6 +23,20 @@ const preparedRequest = {
   detail_level: "standard",
   objective: "Announce the opening",
   style: "Plain language",
+  supporting_context: "",
+};
+
+const savedResponse = {
+  status: "saved",
+  transformation_run_id: 10,
+  source_id: 20,
+  source_version: {
+    id: 30,
+    version_number: 1,
+    content_hash: "a".repeat(64),
+    segment_count: 2,
+  },
+  output_types: ["executive_summary", "linkedin_post", "presentation"],
 };
 
 function jsonResponse(body: unknown, status = 200) {
@@ -71,7 +85,11 @@ function fillRequiredControls() {
 }
 
 function selectMultipleOutputs() {
-  for (const output of ["Executive summary", "LinkedIn post", "Presentation"]) {
+  for (const output of [
+    "Executive Summary",
+    "Professional / LinkedIn Post",
+    "Presentation + Speaker Notes",
+  ]) {
     fireEvent.click(screen.getByRole("checkbox", { name: output }));
   }
 }
@@ -104,6 +122,18 @@ describe("transformation request form", () => {
       screen.getByRole("heading", { name: "Content transformation" }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Text source")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Supporting context (optional)"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Context can guide the transformation but is not treated as source evidence.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(4);
+    expect(
+      screen.queryByLabelText(/X post|Infographic|Video package/i),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "Paste text" })).toBeChecked();
     expect(
       screen.getByRole("radio", { name: "Upload text file" }),
@@ -118,15 +148,17 @@ describe("transformation request form", () => {
     expect(screen.getByLabelText("Content style")).toBeInTheDocument();
 
     fireEvent.click(
-      screen.getByRole("checkbox", { name: "Executive summary" }),
+      screen.getByRole("checkbox", { name: "Executive Summary" }),
     );
-    fireEvent.click(screen.getByRole("checkbox", { name: "LinkedIn post" }));
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Professional / LinkedIn Post" }),
+    );
 
     expect(
-      screen.getByRole("checkbox", { name: "Executive summary" }),
+      screen.getByRole("checkbox", { name: "Executive Summary" }),
     ).toBeChecked();
     expect(
-      screen.getByRole("checkbox", { name: "LinkedIn post" }),
+      screen.getByRole("checkbox", { name: "Professional / LinkedIn Post" }),
     ).toBeChecked();
   });
 
@@ -143,12 +175,7 @@ describe("transformation request form", () => {
           source_text: extractedSource,
         }),
       )
-      .mockResolvedValueOnce(
-        jsonResponse({
-          status: "ready",
-          request: { ...preparedRequest, source_text: extractedSource },
-        }),
-      );
+      .mockResolvedValueOnce(jsonResponse(savedResponse));
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
@@ -180,11 +207,16 @@ describe("transformation request form", () => {
     );
 
     selectMultipleOutputs();
-    fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
-    expect(await screen.findByText("Request ready")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save transformation" }),
+    );
+    expect(await screen.findByText("Transformation saved")).toBeInTheDocument();
     expect(
       JSON.parse(fetchMock.mock.calls[2][1].body as string).source_text,
     ).toBe(extractedSource);
+    expect(
+      JSON.parse(fetchMock.mock.calls[2][1].body as string),
+    ).toHaveProperty("supporting_context", "");
   });
 
   it("shows extraction errors and rejects malformed successful responses", async () => {
@@ -258,9 +290,7 @@ describe("transformation request form", () => {
           source_text: extractedSource,
         }),
       )
-      .mockResolvedValueOnce(
-        jsonResponse({ status: "ready", request: preparedRequest }),
-      );
+      .mockResolvedValueOnce(jsonResponse(savedResponse));
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
@@ -282,7 +312,9 @@ describe("transformation request form", () => {
     expect(screen.getByLabelText("Text source")).toHaveValue("");
 
     selectMultipleOutputs();
-    fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save transformation" }),
+    );
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Enter source text",
     );
@@ -293,29 +325,35 @@ describe("transformation request form", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(healthResponse)
-      .mockResolvedValueOnce(
-        jsonResponse({ status: "ready", request: preparedRequest }),
-      );
+      .mockResolvedValueOnce(jsonResponse(savedResponse));
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
     fillRequiredControls();
+    fireEvent.change(screen.getByLabelText("Supporting context (optional)"), {
+      target: { value: "For local administrators." },
+    });
     selectMultipleOutputs();
-    fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save transformation" }),
+    );
 
     expect(await screen.findByRole("status")).toHaveTextContent(
-      "Request ready",
+      "Transformation saved",
     );
     expect(screen.getByRole("status")).toHaveTextContent(
       "Content has not been generated",
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "/api/transformations/prepare",
+      "/api/transformations",
       expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(preparedRequest),
+        body: JSON.stringify({
+          ...preparedRequest,
+          supporting_context: "For local administrators.",
+        }),
       }),
     );
   });
@@ -325,7 +363,9 @@ describe("transformation request form", () => {
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
-    fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save transformation" }),
+    );
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Enter source text",
     );
@@ -334,7 +374,9 @@ describe("transformation request form", () => {
     fireEvent.change(screen.getByLabelText("Text source"), {
       target: { value: "A fictional team announcement." },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save transformation" }),
+    );
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Choose at least one output type",
     );
@@ -362,7 +404,9 @@ describe("transformation request form", () => {
     await renderAuthenticatedWorkspace();
     fillRequiredControls();
     selectMultipleOutputs();
-    fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save transformation" }),
+    );
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Please review: Audience",
@@ -380,7 +424,9 @@ describe("transformation request form", () => {
     await renderAuthenticatedWorkspace();
     fillRequiredControls();
     selectMultipleOutputs();
-    fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save transformation" }),
+    );
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Could not reach the backend",
@@ -394,18 +440,49 @@ describe("transformation request form", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(healthResponse)
-      .mockResolvedValueOnce(jsonResponse({ status: "ready", request: {} }));
+      .mockResolvedValueOnce(jsonResponse({ status: "saved" }));
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
     fillRequiredControls();
     selectMultipleOutputs();
-    fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save transformation" }),
+    );
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "unexpected response",
+      "unexpected save response",
     );
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("keeps the authenticated workspace visible when logout fails", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse)
+      .mockRejectedValueOnce(new Error("private detail"));
+    installWorkspaceFetch(fetchMock);
+    await renderAuthenticatedWorkspace();
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Sign out could not be completed",
+    );
+    expect(screen.getByLabelText("Text source")).toBeInTheDocument();
+    expect(screen.queryByText("private detail")).not.toBeInTheDocument();
+  });
+
+  it("keeps the workspace visible when logout returns a failure status", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse)
+      .mockResolvedValueOnce(jsonResponse({}, 503));
+    installWorkspaceFetch(fetchMock);
+    await renderAuthenticatedWorkspace();
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Sign out could not be completed",
+    );
+    expect(screen.getByLabelText("Text source")).toBeInTheDocument();
   });
 });
 
@@ -452,6 +529,14 @@ describe("AxiomWeave sign-in", () => {
       screen.getByText("One source. Many artifacts. Every claim traceable."),
     ).toBeInTheDocument();
     expect(screen.getByText("Multi-output transformation")).toBeInTheDocument();
+    expect(
+      screen.getByText("Audience and communication controls"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Authenticated workspace")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Source-linked evidence"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Version-aware review")).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/email|password/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/forgot password/i)).not.toBeInTheDocument();
   });
