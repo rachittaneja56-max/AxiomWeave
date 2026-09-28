@@ -11,6 +11,8 @@ Browser → React/Vite frontend → HTTP API → FastAPI
 
 The browser submits pasted text or uses the stateless text-file extraction endpoint to populate the same canonical source text. The backend validates and returns the canonical request as ready for a later stage. No artifact content is generated.
 
+The backend defines an internal generation request/result contract and provider protocol for later artifact-specific code. No live model provider or artifact generator is connected.
+
 ## Planned product flow
 
 ```text
