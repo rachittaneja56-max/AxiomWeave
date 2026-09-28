@@ -1,30 +1,35 @@
-# AxiomWeave — SIH26154 content transformation
+# AxiomWeave — SIH26154
 
 **Source-Grounded Content Transformation Workspace**
 
 One source. Many artifacts. Every claim traceable.
 
-SIH26154 is the Smart India Hackathon 2026 problem statement. AxiomWeave is the product name.
+## Problem and solution
 
-## Current implementation
+Teams often rewrite the same authoritative material for several audiences and formats. Manual reuse can introduce drift, hide unsupported claims, and make later source corrections hard to apply. AxiomWeave is a local-first workspace for saving a source and communication brief once, generating four related deliverables, and reviewing each version with its source provenance visible.
 
-The React/Vite frontend lets authenticated operators paste text or upload UTF-8 `.txt` / `.md` files, add separate supporting context, select the four Tier-A output types, and set audience, tone, language, detail, objective, and style. Saving creates an owner-scoped `Source`, immutable `SourceVersion` with a SHA-256 content hash, deterministic `SourceSegment` rows, and a `TransformationRun` snapshot. Source transport normalization removes a leading BOM and normalizes line endings while preserving other characters; source content is bounded at 20,000 characters and supporting context at 5,000 characters.
+## Tier-A workflow
 
-The SQLite schema and existing Alembic migration include users, sessions, sources, source versions and segments, transformation runs, artifact runs, and artifact versions. The save route now persists the source and transformation brief; artifact records remain unused by the user workflow.
-
-Google Identity Services provides browser sign-in, and the backend verifies the Google ID token against `SIH_GOOGLE_CLIENT_ID`. AxiomWeave maps the verified Google `sub` to a local user and issues a separate eight-hour application session in an HttpOnly, SameSite=Lax cookie. Only the session token digest is stored. Logout revokes the local session. Text-file extraction and transformation routes require a valid local session; health remains public. The save action derives owners only from the authenticated user and commits the source and transformation snapshot in one transaction. Owner-scoped query functions cover the persisted source, source-version, transformation-run, artifact-run, and artifact-version hierarchy.
-
-Artifact generation is still not user-facing. The transformation-save action does not create `ArtifactRun` rows and does not generate content. A generation provider protocol and internal Executive Summary logic exist, but no live provider is connected. The dashboard, artifact review/history, evidence links, discrepancy warnings, source revision analysis, targeted updates, and export are not implemented. Segments are source structure only and do not constitute evidence links. Structural validation and internal generation do not establish factual correctness.
+- Google sign-in and an owner-scoped transformation dashboard.
+- Paste or upload UTF-8 `.txt` / `.md` source material; keep supporting context separate.
+- Set audience, tone, language, detail, objective, and style.
+- Generate an Executive Summary, Professional / LinkedIn Post, Formal Advisory, and Presentation with speaker notes. A failed output can be retried independently.
+- Review and edit immutable artifact versions; accept or reject drafts.
+- Inspect exact source quotations and unsupported claims. Compare sibling outputs for possible discrepancies, then dismiss a finding without changing artifact text.
+- Save source V2, inspect a deterministic paragraph diff and potentially affected evidence, run a targeted update, or regenerate fully from V2.
+- Copy artifact text or download Markdown. Presentations export as readable slide sections with key messages, bullets, visual recommendations, and speaker notes.
 
 ## Architecture
 
-The implemented save path is `Authenticated user → source normalization → Source / SourceVersion / SourceSegments → TransformationRun`. The existing generation boundary remains separate and is not connected to this save action. Health remains public; see [docs/architecture.md](docs/architecture.md) for the implemented path and boundaries.
+The application is a React/Vite frontend and a FastAPI/SQLAlchemy modular monolith backed by SQLite for local use. Google Identity Services provides the ID token; the backend verifies it and issues an HttpOnly local session cookie. Source versions are immutable and hashed. Generation uses the OpenAI Responses API through a provider boundary, with structured output for presentations, evidence proposals, discrepancy analysis, and targeted updates. `docs/architecture.md` gives the data and request flow.
+
+The pinned generation model is `gpt-6-luna`, with low reasoning effort and Responses API storage disabled. Only `OPENAI_API_KEY` configures model access. The provider cannot be selected by request data.
 
 ## Quick start
 
 Prerequisites: Python 3.13, [uv](https://docs.astral.sh/uv/), Node.js 22 or newer, and npm.
 
-From the repository root, initialize the local database schema and start the backend:
+Create a local `.env` from `.env.example`, configure Google sign-in and the OpenAI key as described below, then run the backend:
 
 ```powershell
 cd backend
@@ -33,7 +38,7 @@ uv run alembic -c alembic.ini upgrade head
 uv run python -m app
 ```
 
-In a second terminal, start the frontend:
+In another terminal:
 
 ```powershell
 cd frontend
@@ -41,27 +46,17 @@ npm ci
 npm run dev
 ```
 
-Open the URL printed by Vite (usually http://localhost:5173). The development server proxies `/api` requests to the backend.
+Open the Vite URL (usually `http://localhost:5173`). Its `/api` proxy targets the backend port.
 
-## Configuration
+## Sign-in and model setup
 
-The backend accepts plain text up to 20,000 characters per request. Other controls are bounded and validated by the backend. Backend settings use safe defaults; to override them locally, copy [.env.example](.env.example) to `.env` in the repository root or set the variables in your shell.
+Create a Google OAuth Web application client ID and allow the local Vite origin as an authorized JavaScript origin. Put the ID in `SIH_GOOGLE_CLIENT_ID` in the root `.env`; Vite reads that value as its public GIS client ID. The callback flow does not require a Google client secret, redirect URI, or Drive scope.
 
-If you change `SIH_PORT`, set it in both the backend and frontend terminal environments so the development proxy uses the same port. `SIH_DATABASE_URL` defaults to `sqlite:///./axiomweave.db`, relative to the backend working directory. SQLite database, WAL, and SHM files are ignored by Git.
+Put the OpenAI API key in `OPENAI_API_KEY` in the root `.env`. Keep `.env` private and never commit credentials. `SIH_DATABASE_URL` defaults to `sqlite:///./axiomweave.db`, relative to the backend working directory. `SIH_HOST` and `SIH_PORT` control the local server; use the same backend port for Vite's proxy.
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `SIH_ENVIRONMENT` | `development` | Runtime environment label |
-| `SIH_HOST` | `127.0.0.1` | Backend bind address |
-| `SIH_PORT` | `8000` | Backend port |
-| `SIH_DATABASE_URL` | `sqlite:///./axiomweave.db` | Local relational database URL |
-| `SIH_GOOGLE_CLIENT_ID` | unset | Google OAuth Web application client ID; passed to Vite as the public GIS client ID |
+## Checks
 
-For local or demo sign-in, create a Google OAuth Web application client and add the actual frontend origin to its authorized JavaScript origins (for example, the Vite development origin). Add the final demo origin when it is known. GIS callback mode does not require a redirect URI, Google client secret, or Drive scope. Keep `.env` local and do not commit credentials.
-
-## Development checks
-
-Backend, from `backend/`:
+From `backend/`:
 
 ```powershell
 uv sync --locked
@@ -71,7 +66,7 @@ uv run pyright
 uv run pytest -q
 ```
 
-Frontend, from `frontend/`:
+From `frontend/`:
 
 ```powershell
 npm ci
@@ -82,6 +77,10 @@ npm test
 npm run build
 ```
 
-## SIH submission materials
+## Scope and limitations
 
-This repository contains the source code, setup instructions, and architecture document. The demo video (maximum 2 minutes) and technical presentation (maximum 5 slides) are separate submission materials.
+This Tier-A MVP handles pasted/uploaded text rather than connected Drive files. Evidence analysis proposes claims with a model, but the application verifies each proposed quotation as an exact substring of its saved source version; this is traceability support, not a guarantee that every claim is complete or true. Discrepancy findings are review prompts. Source diffs are deterministic paragraph comparisons. The local SQLite setup is for development and demonstration, not a production deployment recipe.
+
+## SIH deliverables
+
+This repository provides the source code, setup and configuration guidance, tests, and architecture overview. The SIH demo video (maximum 2 minutes) and technical presentation (maximum 5 slides) are separate submission materials.

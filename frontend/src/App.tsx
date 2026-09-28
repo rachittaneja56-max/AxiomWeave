@@ -342,6 +342,56 @@ function PresentationArtifact({ content }: { content: string }) {
   );
 }
 
+function artifactExportText(outputType: OutputType, content: string): string {
+  if (outputType !== "presentation") return content;
+  try {
+    const value: unknown = JSON.parse(content);
+    if (
+      !isRecord(value) ||
+      typeof value.title !== "string" ||
+      !Array.isArray(value.slides) ||
+      !value.slides.every(
+        (slide: unknown) =>
+          isRecord(slide) &&
+          typeof slide.title === "string" &&
+          typeof slide.key_message === "string" &&
+          Array.isArray(slide.bullets) &&
+          slide.bullets.every(
+            (bullet: unknown) => typeof bullet === "string",
+          ) &&
+          typeof slide.visual_recommendation === "string" &&
+          typeof slide.speaker_notes === "string",
+      )
+    ) {
+      return content;
+    }
+    return [
+      `# ${value.title}`,
+      ...value.slides.flatMap(
+        (slide: Record<string, unknown>, index: number) => [
+          `# Slide ${index + 1} — ${slide.title}`,
+          "",
+          "**Key message**",
+          "",
+          String(slide.key_message),
+          "",
+          ...(slide.bullets as string[]).map((bullet) => `- ${bullet}`),
+          "",
+          "**Visual recommendation**",
+          "",
+          String(slide.visual_recommendation),
+          "",
+          "**Speaker notes**",
+          "",
+          String(slide.speaker_notes),
+        ],
+      ),
+    ].join("\n");
+  } catch {
+    return content;
+  }
+}
+
 function isSavedTransformation(value: unknown): value is SavedTransformation {
   if (
     !isRecord(value) ||
@@ -474,6 +524,7 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
     useState(false);
   const [sourceRevisionText, setSourceRevisionText] = useState("");
   const [logoutError, setLogoutError] = useState(false);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -973,6 +1024,38 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
     } finally {
       setIsReviewActionRunning(false);
     }
+  }
+
+  async function copyArtifact(outputType: OutputType, content: string) {
+    try {
+      await navigator.clipboard.writeText(
+        artifactExportText(outputType, content),
+      );
+      setExportStatus("Artifact copied to clipboard.");
+    } catch {
+      setExportStatus("Clipboard access is unavailable in this browser.");
+    }
+  }
+
+  function downloadArtifact(outputType: OutputType, content: string) {
+    const label =
+      OUTPUT_TYPES.find((item) => item.value === outputType)?.label ??
+      outputType;
+    const filename = `${label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "")}.md`;
+    const url = URL.createObjectURL(
+      new Blob([artifactExportText(outputType, content)], {
+        type: "text/markdown;charset=utf-8",
+      }),
+    );
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setExportStatus(`${label} Markdown downloaded.`);
   }
 
   async function loadEvidence(artifactVersionId: number) {
@@ -1538,6 +1621,32 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
                                 {selectedVersion.content}
                               </pre>
                             )}
+                            <div className="artifact-export-actions">
+                              <button
+                                type="button"
+                                className="button-secondary"
+                                onClick={() =>
+                                  void copyArtifact(
+                                    artifactRun.output_type,
+                                    selectedVersion.content,
+                                  )
+                                }
+                              >
+                                Copy artifact
+                              </button>
+                              <button
+                                type="button"
+                                className="button-secondary"
+                                onClick={() =>
+                                  downloadArtifact(
+                                    artifactRun.output_type,
+                                    selectedVersion.content,
+                                  )
+                                }
+                              >
+                                Download Markdown
+                              </button>
+                            </div>
                             <section
                               className="evidence-panel"
                               aria-label={`${label} evidence`}
@@ -1742,6 +1851,7 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
               })}
             </div>
           )}
+          {exportStatus && <p role="status">{exportStatus}</p>}
           {reviewDetail.artifact_runs.length > 1 && (
             <section
               className="discrepancy-panel"

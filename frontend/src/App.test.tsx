@@ -176,10 +176,28 @@ describe("transformation request form", () => {
       version_number: 1,
       source_version_id: 30,
       source_version_number: 1,
-      content: "A fictional community garden announcement.",
+      content: JSON.stringify({
+        title: "Garden Update",
+        slides: [
+          {
+            title: "Opening",
+            key_message: "The garden opens Saturday.",
+            bullets: ["Meet at the north gate."],
+            visual_recommendation: "A simple garden map.",
+            speaker_notes: "Welcome the neighbors.",
+          },
+          {
+            title: "Visit",
+            key_message: "Visitors enter at the north gate.",
+            bullets: ["Use the north gate."],
+            visual_recommendation: "Mark the north gate on a map.",
+            speaker_notes: "Point out the entrance.",
+          },
+        ],
+      }),
       provider: "openai",
       model: "gpt-6-luna",
-      prompt_version: "executive_summary_v1",
+      prompt_version: "presentation_v1",
       prompt_hash: "b".repeat(64),
       review_status: reviewStatus,
       created_at: "2026-09-29T00:00:00Z",
@@ -193,14 +211,14 @@ describe("transformation request form", () => {
         created_at: "2026-09-29T00:00:00Z",
       },
       controls: { audience: "Local residents" },
-      output_types: ["executive_summary"],
+      output_types: ["presentation"],
       status: "Review Required",
       created_at: "2026-09-29T00:00:00Z",
       updated_at: "2026-09-29T00:00:00Z",
       artifact_runs: [
         {
           artifact_run_id: 41,
-          output_type: "executive_summary",
+          output_type: "presentation",
           status: "succeeded",
           versions: [artifactVersion()],
         },
@@ -224,10 +242,10 @@ describe("transformation request form", () => {
                 content_hash: "a".repeat(64),
                 created_at: "2026-09-29T00:00:00Z",
               },
-              output_types: ["executive_summary"],
+              output_types: ["presentation"],
               artifact_states: [
                 {
-                  output_type: "executive_summary",
+                  output_type: "presentation",
                   status: "succeeded",
                   latest_version_number: 1,
                   review_status: reviewStatus,
@@ -278,7 +296,7 @@ describe("transformation request form", () => {
                   {
                     artifact_run_id: 41,
                     artifact_version_id: 101,
-                    output_type: "executive_summary",
+                    output_type: "presentation",
                     artifact_version_number: 1,
                     evidence_claims: ["The center opened on Saturday."],
                   },
@@ -373,9 +391,33 @@ describe("transformation request form", () => {
     expect(
       await screen.findByRole("heading", { name: "Review Workspace" }),
     ).toBeInTheDocument();
+    expect(screen.getByText("The garden opens Saturday.")).toBeInTheDocument();
+    const downloadedBlobs: Blob[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    vi.stubGlobal("URL", {
+      createObjectURL: (blob: Blob) => {
+        downloadedBlobs.push(blob);
+        return "blob:artifact-export";
+      },
+      revokeObjectURL: vi.fn(),
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Download Markdown" }));
     expect(
-      screen.getByText("A fictional community garden announcement."),
+      await screen.findByText(
+        "Presentation + Speaker Notes Markdown downloaded.",
+      ),
     ).toBeInTheDocument();
+    const markdown = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(downloadedBlobs[0]);
+    });
+    expect(markdown).toContain("# Slide 1 — Opening");
+    expect(markdown).toContain("**Key message**");
+    expect(markdown).toContain("**Visual recommendation**");
+    expect(markdown).toContain("**Speaker notes**");
+    expect(markdown).toContain("Welcome the neighbors.");
 
     fireEvent.click(screen.getByRole("button", { name: "Accept" }));
     expect(

@@ -1,32 +1,47 @@
-# SIH26154 architecture
+# AxiomWeave architecture
 
-## Authenticated transformation save
+## Identity and request boundary
 
 ```text
-Browser -> Google Identity Services -> POST /api/auth/google
-       -> AxiomWeave local session cookie -> authenticated React workspace
-       -> POST /api/transformations
-       -> canonical source normalization
-       -> Source -> SourceVersion -> SourceSegments
-       -> TransformationRun (supporting context and controls)
+Google Identity Services -> POST /api/auth/google -> verified Google subject
+  -> local user + HttpOnly session cookie -> owner-scoped React workspace
 ```
 
-Google Identity Services returns an ID token to the browser callback. The backend verifies the token signature and audience against `SIH_GOOGLE_CLIENT_ID`, then identifies the local account by the stable Google `sub`. It issues a separate random application-session token in an HttpOnly, SameSite=Lax cookie and stores only its SHA-256 digest. Logout revokes the local session. Health remains public; source extraction, request preparation, and transformation saving require a valid local session.
+The backend verifies the Google ID token audience against `SIH_GOOGLE_CLIENT_ID`, maps the stable subject to a local user, and issues a separate eight-hour application session. Only a digest of the session token is stored. Logout revokes that session. User IDs come from the authenticated session, never request JSON. Source text and supporting context are treated as untrusted data.
 
-The save route derives ownership from the authenticated user, normalizes the source, creates a `Source`, its first immutable `SourceVersion`, deterministic segments, and one `TransformationRun` in one database transaction. Supporting context remains on the run and is not included in the source text, hash, or segments. The persisted outputs are the four Tier-A choices. The response reports saved record identifiers and version metadata without echoing source, context, or identity details.
+## Source, brief, and generated artifacts
 
-Canonical text normalization removes a leading Unicode BOM and changes CRLF/CR to LF. Other characters are preserved. Empty or whitespace-only text and content over 20,000 characters are rejected without truncation. UTF-8 TXT/MD extraction uses the same normalization after decoding. Source segmentation groups adjacent non-heading lines into paragraphs, splits at blank lines, and stores Markdown headings as their own segments with deterministic locators.
+```text
+Paste / UTF-8 TXT or MD
+  -> normalized Source -> immutable SourceVersion + SHA-256 + SourceSegments
+  -> TransformationRun (separate context and communication controls)
+  -> ArtifactRun per selected format -> immutable ArtifactVersion history
+```
 
-## Persistence and generation boundary
+The four Tier-A output types are executive summary, LinkedIn post, formal advisory, and presentation with speaker notes. Each output has an independent run state, allowing partial failure and retry. Version history records its source version, provider/model, prompt version/hash, and review status. Human edits create another version. Presentation content is validated structured data and is rendered with React text nodes.
 
-The SQLAlchemy schema and current Alembic migration include `User`, `AuthSession`, `Source`, `SourceVersion`, `SourceSegment`, `TransformationRun`, `ArtifactRun`, and `ArtifactVersion`. The save workflow writes source and transformation records only. It does not create artifact runs or generated content. No new migration was required for this slice.
+## OpenAI generation boundary
 
-The backend defines an internal generation request/result contract, provider protocol, and Executive Summary logic. No live provider or user-facing generation API is connected to the transformation-save action. The following remain unimplemented: dashboard, source reuse, artifact review/history, evidence links, discrepancy warnings, source revision UI/diff/impact, targeted updates, and export. Source segments provide stable source structure but are not evidence links.
+```text
+FastAPI generation / analysis routes -> provider protocol -> OpenAI Responses API
+```
 
-## Stable boundaries
+The server owns the model choice and API key. The pinned model is `gpt-6-luna`; requests use low reasoning effort and `store=False`. Structured responses are used for presentation specifications, evidence proposals, discrepancy findings, and targeted updates. Provider errors are converted to safe API errors; raw provider output and credentials are not returned as diagnostics.
 
-- Source content and supporting context are untrusted data and carry no application authority.
-- Owner IDs come from the authenticated local user, never request JSON.
-- SourceVersion hashes identify exact stored source text; they do not prove authenticity, correctness, or semantic equivalence.
-- Any future model interaction remains controlled by the application.
-- The system remains a small modular monolith unless implemented needs demonstrate otherwise.
+## Review, evidence, and discrepancies
+
+Review APIs return owner-scoped artifact versions and provenance. Evidence analysis proposes claim/quote pairs; deterministic application code checks each quote against the exact source version and records a source segment locator only for a verified match. Unlocated proposals remain explicitly unsupported. Discrepancy analysis compares sibling outputs from one transformation and stores possible conflicts as review findings. Dismissal updates the finding's review status without rewriting artifacts.
+
+## Source revision, update, and export
+
+```text
+V1 -> save immutable V2 -> deterministic segment diff + evidence impact
+   -> targeted update (prior artifact + V1 + changed material + authoritative V2)
+   -> new ArtifactVersion linked to V2, or full regeneration from V2
+```
+
+The transformation's current source pointer moves to V2; V1 and existing artifact versions remain intact. Targeted updates preserve the prior artifact as input but identify V2 as authoritative. Copy and Markdown download format presentations as readable slide sections and preserve regular artifacts as text.
+
+## Persistence and deployment boundary
+
+FastAPI, SQLAlchemy, and Alembic form a small modular monolith; SQLite is the local/demo database. The React/Vite frontend calls the authenticated API through the development proxy. The repository does not claim production hardening, connected cloud-drive ingestion, or automatic fact validation. Exact quotation matching establishes that a quote occurs in a stored source, not that a claim is complete or true.
