@@ -1,29 +1,28 @@
-# SIH26154 — Content Transformation MVP
+# SIH26154 — Content Transformation
 
 ## Problem
 
 SIH26154, proposed by NTRO for Smart India Hackathon 2026, explores transforming source content into communication artifacts for different audiences and purposes.
 
-## Current MVP scope
+## Current capability
 
-- **Implemented:** backend health endpoint and a development page that reports backend health.
-- **Partial:** repository, configuration, and quality-check foundation.
-- **Planned / out of MVP:** source handling, transformation settings, generated drafts, and human review. No generation is implemented in CODEX 00.
+The repository provides a FastAPI application with `GET /api/health` and a React/Vite page that checks backend connectivity. It also includes reproducible dependency lockfiles and development quality checks.
+
+Source ingestion, content transformation and generation, artifact validation, and review/history workflows are not implemented.
 
 ## Architecture
 
-Current flow: `Browser → Vite development server → FastAPI health endpoint`.
+Current flow: `Browser → React/Vite frontend → HTTP API → FastAPI health endpoint`.
 
-The intended text transformation flow and design boundaries are in [docs/architecture.md](docs/architecture.md). Planned stages are not implemented.
+See [docs/architecture.md](docs/architecture.md) for the implemented path and planned product flow.
 
 ## Quick start
 
 Prerequisites: Python 3.13, [uv](https://docs.astral.sh/uv/), Node.js 22 or newer, and npm.
 
-From the repository root, create local settings and start the backend:
+From the repository root, start the backend:
 
 ```powershell
-Copy-Item .env.example .env
 cd backend
 uv sync --locked
 uv run python -m app
@@ -37,18 +36,17 @@ npm ci
 npm run dev
 ```
 
-Open the URL printed by Vite (usually http://localhost:5173). The Vite development server proxies `/api` to the backend.
+Open the URL printed by Vite (usually http://localhost:5173). The development server proxies `/api` requests to the backend.
 
 ## Configuration
 
-Backend settings are read from the process environment or the root `.env` file. See [.env.example](.env.example):
+The backend uses safe defaults. To override them locally, copy [.env.example](.env.example) to `.env` in the repository root or set the variables in your shell.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SIH_ENVIRONMENT` | `development` | Runtime environment label |
 | `SIH_HOST` | `127.0.0.1` | Backend bind address |
 | `SIH_PORT` | `8000` | Backend port |
-| `SIH_LOG_LEVEL` | `INFO` | Structured log threshold |
 
 ## Development checks
 
@@ -59,7 +57,7 @@ uv sync --locked
 uv run ruff check .
 uv run ruff format --check .
 uv run pyright
-uv run pytest
+uv run pytest -q
 ```
 
 Frontend, from `frontend/`:
@@ -73,14 +71,6 @@ npm test
 npm run build
 ```
 
-## Current limitations
+## SIH submission materials
 
-CODEX 00 does not implement source persistence, transformation requests, model providers, artifact generation, validation of generated artifacts, or review/history workflows. The health check demonstrates connectivity only.
-
-## SIH deliverables
-
-- [x] Source code foundation
-- [x] README with setup instructions
-- [x] Architecture document (kept concise for the two-page limit)
-- [ ] Demo video (maximum 2 minutes)
-- [ ] Technical presentation (maximum 5 slides)
+This repository contains the source code, setup instructions, and architecture document. The demo video (maximum 2 minutes) and technical presentation (maximum 5 slides) are separate submission materials.
