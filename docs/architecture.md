@@ -4,9 +4,11 @@
 
 ```text
 Browser → React/Vite frontend → HTTP API → FastAPI
+                                      ├→ GET /api/health
+                                      └→ POST /api/transformations/prepare
 ```
 
-The frontend calls `GET /api/health` through the backend API. This is the only current application path; content transformation is not implemented.
+The browser submits direct text and operator-selected settings. The backend validates and returns the canonical request as ready for a later stage. No artifact content is generated.
 
 ## Planned product flow
 
@@ -15,7 +17,7 @@ Source → Operator transformation request → Model/generation boundary
        → Requested artifact drafts → Validation and review
 ```
 
-This flow describes the target MVP direction, not existing behavior.
+This flow is the target product direction beyond request preparation; generation, artifact validation, and review are not implemented.
 
 ## Stable boundaries
 

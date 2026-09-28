@@ -6,13 +6,13 @@ SIH26154, proposed by NTRO for Smart India Hackathon 2026, explores transforming
 
 ## Current capability
 
-The repository provides a FastAPI application with `GET /api/health` and a React/Vite page that checks backend connectivity. It also includes reproducible dependency lockfiles and development quality checks.
+Operators can enter text, select multiple output types, and set the audience, tone, language, detail level, communication objective, and content style. The backend validates and prepares this request through `POST /api/transformations/prepare`; `GET /api/health` remains available for connectivity checks.
 
-Source ingestion, content transformation and generation, artifact validation, and review/history workflows are not implemented.
+Model-based generation and artifact creation, artifact validation, file/image/video ingestion, and review/history workflows are not implemented.
 
 ## Architecture
 
-Current flow: `Browser → React/Vite frontend → HTTP API → FastAPI health endpoint`.
+Current flow: `Browser → React/Vite frontend → HTTP API → FastAPI health and request preparation`.
 
 See [docs/architecture.md](docs/architecture.md) for the implemented path and planned product flow.
 
@@ -40,7 +40,9 @@ Open the URL printed by Vite (usually http://localhost:5173). The development se
 
 ## Configuration
 
-The backend uses safe defaults. To override them locally, copy [.env.example](.env.example) to `.env` in the repository root or set the variables in your shell.
+The backend accepts plain text up to 20,000 characters per request. Other controls are bounded and validated by the backend. Backend settings use safe defaults; to override them locally, copy [.env.example](.env.example) to `.env` in the repository root or set the variables in your shell.
+
+If you change `SIH_PORT`, set it in both the backend and frontend terminal environments so the development proxy uses the same port.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
