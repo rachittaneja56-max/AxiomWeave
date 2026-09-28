@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "FastAPI foundation for the SIH26154 text MVP"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+    "alembic>=1.14,<2",
     "fastapi>=0.115,<1",
     "python-multipart>=0.0.20,<1",
     "pydantic-settings>=2.7,<3",
+    "sqlalchemy>=2,<3",
     "uvicorn>=0.34,<1",
 ]
 
