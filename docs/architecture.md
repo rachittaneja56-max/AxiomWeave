@@ -5,10 +5,11 @@
 ```text
 Browser → React/Vite frontend → HTTP API → FastAPI
                                       ├→ GET /api/health
+                                      ├→ POST /api/sources/text-file
                                       └→ POST /api/transformations/prepare
 ```
 
-The browser submits direct text and operator-selected settings. The backend validates and returns the canonical request as ready for a later stage. No artifact content is generated.
+The browser submits pasted text or uses the stateless text-file extraction endpoint to populate the same canonical source text. The backend validates and returns the canonical request as ready for a later stage. No artifact content is generated.
 
 ## Planned product flow
 

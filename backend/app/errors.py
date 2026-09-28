@@ -1,3 +1,5 @@
+from typing import cast
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -7,8 +9,17 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_error(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
-        code = "not_found" if exc.status_code == 404 else "http_error"
-        message = exc.detail
+        if isinstance(exc.detail, dict):
+            detail = cast(dict[str, object], exc.detail)
+        else:
+            detail = {}
+        if isinstance(detail.get("message"), str):
+            code_value = detail.get("code", "http_error")
+            code = code_value if isinstance(code_value, str) else "http_error"
+            message = detail["message"]
+        else:
+            code = "not_found" if exc.status_code == 404 else "http_error"
+            message = exc.detail
         return JSONResponse(
             status_code=exc.status_code,
             content={"error": {"code": code, "message": message}},

@@ -30,6 +30,18 @@ type PreparedRequest = {
 };
 
 type HealthState = "loading" | "online" | "offline";
+type SourceMode = "paste" | "upload";
+
+type SourceFileMetadata = {
+  filename: string;
+  character_count: number;
+};
+
+const SOURCE_TEXT_MAX_LENGTH = 20_000;
+
+function sourceCharacterCount(sourceText: string): number {
+  return Array.from(sourceText).length;
+}
 
 const INITIAL_REQUEST: TransformationRequest = {
   source_text: "",
@@ -85,6 +97,38 @@ function isPreparedRequest(value: unknown): value is PreparedRequest {
   );
 }
 
+function isExtractedText(value: unknown): value is {
+  filename: string;
+  media_type: "text/plain" | "text/markdown";
+  character_count: number;
+  source_text: string;
+} {
+  return (
+    isRecord(value) &&
+    typeof value.filename === "string" &&
+    (value.media_type === "text/plain" ||
+      value.media_type === "text/markdown") &&
+    typeof value.source_text === "string" &&
+    value.source_text.trim().length > 0 &&
+    sourceCharacterCount(value.source_text) <= SOURCE_TEXT_MAX_LENGTH &&
+    Number.isInteger(value.character_count) &&
+    value.character_count === sourceCharacterCount(value.source_text)
+  );
+}
+
+function extractionError(body: unknown, status: number): string {
+  const message =
+    isRecord(body) && isRecord(body.error) ? body.error.message : null;
+  if (typeof message === "string") return message;
+  if (status === 413)
+    return "The file is too large. Choose a file up to 80 KiB.";
+  if (status === 415)
+    return "Unsupported file. Choose a .txt or .md text file.";
+  if (status === 422)
+    return "The file must contain non-empty UTF-8 text within the source limit.";
+  return "The file could not be extracted. Please try again.";
+}
+
 function validationMessage(body: unknown): string {
   if (!isRecord(body) || !isRecord(body.error)) {
     return "The request did not pass backend validation. Review the fields and try again.";
@@ -114,6 +158,9 @@ export default function App() {
   const [health, setHealth] = useState<HealthState>("loading");
   const [request, setRequest] =
     useState<TransformationRequest>(INITIAL_REQUEST);
+  const [sourceMode, setSourceMode] = useState<SourceMode>("paste");
+  const [sourceFile, setSourceFile] = useState<SourceFileMetadata | null>(null);
+  const [isExtracting, setIsExtracting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [prepared, setPrepared] = useState<PreparedRequest | null>(null);
@@ -155,6 +202,63 @@ export default function App() {
       ? [...request.output_types, outputType]
       : request.output_types.filter((item) => item !== outputType);
     updateRequest("output_types", outputTypes);
+  }
+
+  function switchSourceMode(mode: SourceMode) {
+    setSourceMode(mode);
+    setRequest((current) => ({ ...current, source_text: "" }));
+    setSourceFile(null);
+    setError(null);
+    setPrepared(null);
+  }
+
+  async function extractSourceFile(file: File | undefined) {
+    if (!file) return;
+    setError(null);
+    setPrepared(null);
+    setSourceFile(null);
+    setRequest((current) => ({ ...current, source_text: "" }));
+    setIsExtracting(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch("/api/sources/text-file", {
+        method: "POST",
+        body: formData,
+      });
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        setError("The backend returned an unreadable extraction response.");
+        return;
+      }
+
+      if (!response.ok) {
+        setError(extractionError(body, response.status));
+        return;
+      }
+
+      if (!isExtractedText(body)) {
+        setError(
+          "The backend returned an unexpected file extraction response.",
+        );
+        return;
+      }
+
+      setRequest((current) => ({ ...current, source_text: body.source_text }));
+      setSourceFile({
+        filename: body.filename,
+        character_count: body.character_count,
+      });
+    } catch {
+      setError(
+        "Could not reach the backend to extract this file. Check the connection and try again.",
+      );
+    } finally {
+      setIsExtracting(false);
+    }
   }
 
   async function submitRequest(event: FormEvent<HTMLFormElement>) {
@@ -251,19 +355,72 @@ export default function App() {
             </span>
             <div>
               <h2 id="source-heading">Source content</h2>
-              <p>Paste the text you want to adapt.</p>
+              <p>Paste text or upload a lightweight text document.</p>
             </div>
           </div>
-          <label htmlFor="source-text">Text source</label>
-          <textarea
-            id="source-text"
-            rows={8}
-            value={request.source_text}
-            onChange={(event) =>
-              updateRequest("source_text", event.target.value)
-            }
-            placeholder="Paste or write your source text here"
-          />
+          <fieldset className="source-modes">
+            <legend className="visually-hidden">Source mode</legend>
+            <label>
+              <input
+                type="radio"
+                name="source_mode"
+                value="paste"
+                checked={sourceMode === "paste"}
+                disabled={isExtracting}
+                onChange={() => switchSourceMode("paste")}
+              />
+              Paste text
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="source_mode"
+                value="upload"
+                checked={sourceMode === "upload"}
+                disabled={isExtracting}
+                onChange={() => switchSourceMode("upload")}
+              />
+              Upload text file
+            </label>
+          </fieldset>
+          {sourceMode === "paste" ? (
+            <>
+              <label htmlFor="source-text">Text source</label>
+              <textarea
+                id="source-text"
+                rows={8}
+                value={request.source_text}
+                onChange={(event) => {
+                  setSourceFile(null);
+                  updateRequest("source_text", event.target.value);
+                }}
+                placeholder="Paste or write your source text here"
+              />
+            </>
+          ) : (
+            <div className="upload-source">
+              <label htmlFor="source-file">Text file (.txt or .md)</label>
+              <input
+                id="source-file"
+                type="file"
+                accept=".txt,.md,text/plain,text/markdown"
+                onChange={(event) =>
+                  void extractSourceFile(event.target.files?.[0])
+                }
+                disabled={isExtracting}
+              />
+              <p className="field-hint">
+                UTF-8 text only. Maximum file size: 80 KiB.
+              </p>
+              {isExtracting && <p role="status">Extracting text file…</p>}
+              {sourceFile && (
+                <p className="field-hint" role="status">
+                  {sourceFile.filename} ·{" "}
+                  {sourceFile.character_count.toLocaleString()} characters
+                </p>
+              )}
+            </div>
+          )}
           <p className="field-hint">
             Text only. Source content is used for this request and is not saved.
           </p>
@@ -383,7 +540,7 @@ export default function App() {
             This prepares and validates your request. It does not generate
             content.
           </p>
-          <button type="submit" disabled={isSubmitting}>
+          <button type="submit" disabled={isSubmitting || isExtracting}>
             {isSubmitting ? "Preparing…" : "Prepare request"}
           </button>
         </div>

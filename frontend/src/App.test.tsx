@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
@@ -66,6 +72,10 @@ describe("transformation request form", () => {
       screen.getByRole("heading", { name: "Content transformation" }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Text source")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Paste text" })).toBeChecked();
+    expect(
+      screen.getByRole("radio", { name: "Upload text file" }),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText("Audience")).toBeInTheDocument();
     expect(screen.getByLabelText("Tone")).toBeInTheDocument();
     expect(screen.getByLabelText("Language")).toHaveValue("English");
@@ -86,6 +96,165 @@ describe("transformation request form", () => {
     expect(
       screen.getByRole("checkbox", { name: "LinkedIn post" }),
     ).toBeChecked();
+  });
+
+  it("extracts a selected file and submits its canonical source text", async () => {
+    const extractedSource = "A fictional report about a community garden.";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse)
+      .mockResolvedValueOnce(
+        jsonResponse({
+          filename: "garden.md",
+          media_type: "text/markdown",
+          character_count: extractedSource.length,
+          source_text: extractedSource,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: "ready",
+          request: { ...preparedRequest, source_text: extractedSource },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("radio", { name: "Upload text file" }));
+    const file = new File([extractedSource], "garden.md", {
+      type: "text/markdown",
+    });
+    fireEvent.change(screen.getByLabelText("Text file (.txt or .md)"), {
+      target: { files: [file] },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen
+          .queryAllByRole("status")
+          .some((status) => status.textContent?.includes("garden.md")),
+      ).toBe(true),
+    );
+    expect(
+      screen
+        .getAllByRole("status")
+        .find((status) => status.textContent?.includes("garden.md"))
+        ?.textContent,
+    ).toContain("44 characters");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/sources/text-file",
+      expect.objectContaining({ method: "POST", body: expect.any(FormData) }),
+    );
+
+    selectMultipleOutputs();
+    fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
+    expect(await screen.findByText("Request ready")).toBeInTheDocument();
+    expect(
+      JSON.parse(fetchMock.mock.calls[2][1].body as string).source_text,
+    ).toBe(extractedSource);
+  });
+
+  it("shows extraction errors and rejects malformed successful responses", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse)
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: {
+              code: "invalid_encoding",
+              message: "The file must contain valid UTF-8 text.",
+            },
+          },
+          422,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ filename: "bad.txt", source_text: "missing metadata" }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("radio", { name: "Upload text file" }));
+    const file = new File(["plain text"], "source.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByLabelText("Text file (.txt or .md)"), {
+      target: { files: [file] },
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("valid UTF-8");
+
+    fireEvent.change(screen.getByLabelText("Text file (.txt or .md)"), {
+      target: { files: [file] },
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "unexpected file extraction response",
+    );
+  });
+
+  it("shows a safe message when file extraction cannot reach the backend", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse)
+      .mockRejectedValueOnce(new Error("private network detail"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("radio", { name: "Upload text file" }));
+    const file = new File(["plain text"], "source.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByLabelText("Text file (.txt or .md)"), {
+      target: { files: [file] },
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not reach the backend",
+    );
+    expect(
+      screen.queryByText("private network detail"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("clears uploaded content when switching source modes", async () => {
+    const extractedSource = "Uploaded source content";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse)
+      .mockResolvedValueOnce(
+        jsonResponse({
+          filename: "source.txt",
+          media_type: "text/plain",
+          character_count: extractedSource.length,
+          source_text: extractedSource,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ status: "ready", request: preparedRequest }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("radio", { name: "Upload text file" }));
+    const file = new File([extractedSource], "source.txt", {
+      type: "text/plain",
+    });
+    fireEvent.change(screen.getByLabelText("Text file (.txt or .md)"), {
+      target: { files: [file] },
+    });
+    await waitFor(() =>
+      expect(
+        screen
+          .queryAllByRole("status")
+          .some((status) => status.textContent?.includes("source.txt")),
+      ).toBe(true),
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "Paste text" }));
+    expect(screen.getByLabelText("Text source")).toHaveValue("");
+
+    selectMultipleOutputs();
+    fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Enter source text",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("submits the canonical multi-output request and shows the ready state", async () => {

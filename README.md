@@ -6,9 +6,9 @@ SIH26154, proposed by NTRO for Smart India Hackathon 2026, explores transforming
 
 ## Current capability
 
-Operators can enter text, select multiple output types, and set the audience, tone, language, detail level, communication objective, and content style. The backend validates and prepares this request through `POST /api/transformations/prepare`; `GET /api/health` remains available for connectivity checks.
+Operators can paste text or upload a UTF-8 `.txt` / `.md` file as source material, then select multiple output types and set the audience, tone, language, detail level, communication objective, and content style. The backend extracts uploaded text through `POST /api/sources/text-file` and validates the canonical request through `POST /api/transformations/prepare`; `GET /api/health` remains available for connectivity checks. Source files are not saved by the application.
 
-Model-based generation and artifact creation, artifact validation, file/image/video ingestion, and review/history workflows are not implemented.
+Generation and artifact creation, PDF/DOCX/image/video ingestion, artifact validation, and review/history workflows are not implemented.
 
 ## Architecture
 
