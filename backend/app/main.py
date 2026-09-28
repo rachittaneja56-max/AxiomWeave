@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from app.api.auth import router as auth_router
 from app.api.generation import router as generation_router
 from app.api.health import router as health_router
+from app.api.reviews import router as reviews_router
 from app.api.sources import router as sources_router
 from app.api.transformations import router as transformations_router
 from app.errors import register_error_handlers
@@ -14,3 +15,4 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(sources_router, prefix="/api")
 app.include_router(transformations_router, prefix="/api")
 app.include_router(generation_router, prefix="/api")
+app.include_router(reviews_router, prefix="/api")

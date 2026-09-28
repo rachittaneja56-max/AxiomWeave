@@ -56,6 +56,9 @@ function installWorkspaceFetch(fetchMock: ReturnType<typeof vi.fn>) {
     if (input === "/api/auth/session") {
       return Promise.resolve(jsonResponse({ authenticated: true }));
     }
+    if (input === "/api/transformations" && init?.method !== "POST") {
+      return Promise.resolve(jsonResponse([]));
+    }
     return delegateFetch(input, init);
   });
   vi.stubGlobal("fetch", routedFetch);
@@ -63,6 +66,8 @@ function installWorkspaceFetch(fetchMock: ReturnType<typeof vi.fn>) {
 
 async function renderAuthenticatedWorkspace() {
   render(<App />);
+  await screen.findByRole("heading", { name: "Transformations Dashboard" });
+  fireEvent.click(screen.getByRole("button", { name: "New transformation" }));
   await screen.findByRole("heading", { name: "Content transformation" });
 }
 
@@ -160,6 +165,114 @@ describe("transformation request form", () => {
     expect(
       screen.getByRole("checkbox", { name: "Professional / LinkedIn Post" }),
     ).toBeChecked();
+  });
+
+  it("opens a saved artifact history and records an acceptance decision", async () => {
+    let reviewStatus: "draft" | "accepted" = "draft";
+    const artifactVersion = () => ({
+      id: 101,
+      artifact_run_id: 41,
+      version_number: 1,
+      source_version_id: 30,
+      source_version_number: 1,
+      content: "A fictional community garden announcement.",
+      provider: "openai",
+      model: "gpt-6-luna",
+      prompt_version: "executive_summary_v1",
+      prompt_hash: "b".repeat(64),
+      review_status: reviewStatus,
+      created_at: "2026-09-29T00:00:00Z",
+    });
+    const detail = () => ({
+      transformation_run_id: 10,
+      source_version: {
+        id: 30,
+        version_number: 1,
+        content_hash: "a".repeat(64),
+        created_at: "2026-09-29T00:00:00Z",
+      },
+      controls: { audience: "Local residents" },
+      output_types: ["executive_summary"],
+      status: "Review Required",
+      created_at: "2026-09-29T00:00:00Z",
+      updated_at: "2026-09-29T00:00:00Z",
+      artifact_runs: [
+        {
+          artifact_run_id: 41,
+          output_type: "executive_summary",
+          status: "succeeded",
+          versions: [artifactVersion()],
+        },
+      ],
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (input === "/api/auth/session") {
+        return Promise.resolve(jsonResponse({ authenticated: true }));
+      }
+      if (input === "/api/health") {
+        return Promise.resolve(healthResponse);
+      }
+      if (input === "/api/transformations" && init?.method !== "POST") {
+        return Promise.resolve(
+          jsonResponse([
+            {
+              transformation_run_id: 10,
+              source_version: {
+                id: 30,
+                version_number: 1,
+                content_hash: "a".repeat(64),
+                created_at: "2026-09-29T00:00:00Z",
+              },
+              output_types: ["executive_summary"],
+              artifact_states: [
+                {
+                  output_type: "executive_summary",
+                  status: "succeeded",
+                  latest_version_number: 1,
+                  review_status: reviewStatus,
+                },
+              ],
+              status: "Review Required",
+              created_at: "2026-09-29T00:00:00Z",
+              updated_at: "2026-09-29T00:00:00Z",
+            },
+          ]),
+        );
+      }
+      if (input === "/api/transformations/10") {
+        return Promise.resolve(jsonResponse(detail()));
+      }
+      if (
+        input === "/api/artifact-versions/101/review" &&
+        init?.method === "PATCH"
+      ) {
+        reviewStatus = "accepted";
+        return Promise.resolve(jsonResponse(artifactVersion()));
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    expect(
+      await screen.findByRole("heading", { name: "Transformation 10" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open review" }));
+    expect(
+      await screen.findByRole("heading", { name: "Review Workspace" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("A fictional community garden announcement."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    expect(
+      await screen.findByRole("button", { name: "V1 · accepted" }),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/artifact-versions/101/review",
+      expect.objectContaining({ method: "PATCH", credentials: "include" }),
+    );
   });
 
   it("extracts a selected file and submits its canonical source text", async () => {
@@ -735,6 +848,10 @@ describe("AxiomWeave sign-in", () => {
       }),
     );
     expect(
+      await screen.findByRole("heading", { name: "Transformations Dashboard" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "New transformation" }));
+    expect(
       await screen.findByRole("heading", { name: "Content transformation" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("opaque-google-token")).not.toBeInTheDocument();
@@ -768,6 +885,10 @@ describe("AxiomWeave sign-in", () => {
 
     fetchMock.mockResolvedValueOnce(jsonResponse({ authenticated: true }));
     await callback({ credential: "valid-token" });
+    expect(
+      await screen.findByRole("heading", { name: "Transformations Dashboard" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "New transformation" }));
     expect(
       await screen.findByRole("heading", { name: "Content transformation" }),
     ).toBeInTheDocument();

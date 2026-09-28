@@ -141,6 +141,10 @@ class ArtifactVersion(Base):
             "artifact_run_id", "version_number", name="uq_artifact_versions_run_number"
         ),
         CheckConstraint("version_number > 0", name="ck_artifact_versions_positive_number"),
+        CheckConstraint(
+            "review_status IN ('draft', 'accepted', 'rejected')",
+            name="ck_artifact_versions_review_status",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -156,4 +160,5 @@ class ArtifactVersion(Base):
     model: Mapped[str | None] = mapped_column(String(120))
     prompt_version: Mapped[str | None] = mapped_column(String(120))
     prompt_hash: Mapped[str | None] = mapped_column(String(64))
+    review_status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

@@ -289,3 +289,40 @@ async def retry_failed_artifact(
     source_version = _owned_source_version(session, user, transformation)
     await _generate_one(session, transformation, source_version, artifact_run, provider)
     return _run_detail(session, user, artifact_run)
+
+
+@router.post("/artifact-runs/{artifact_run_id}/regenerate", response_model=ArtifactRunDetail)
+async def regenerate_artifact(
+    artifact_run_id: int,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+    provider: Annotated[GenerationProvider | None, Depends(get_generation_provider)],
+) -> ArtifactRunDetail:
+    row = session.execute(
+        select(ArtifactRun, TransformationRun)
+        .join(TransformationRun, TransformationRun.id == ArtifactRun.transformation_run_id)
+        .where(ArtifactRun.id == artifact_run_id, TransformationRun.owner_id == user.id)
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Artifact run not found")
+    artifact_run, transformation = row
+    if artifact_run.status != "succeeded":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "artifact_not_succeeded",
+                "message": "Only successful artifacts can be regenerated.",
+            },
+        )
+    if provider is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "generation_not_configured",
+                "message": "Generation is not configured on this server.",
+            },
+        )
+
+    source_version = _owned_source_version(session, user, transformation)
+    await _generate_one(session, transformation, source_version, artifact_run, provider)
+    return _run_detail(session, user, artifact_run)

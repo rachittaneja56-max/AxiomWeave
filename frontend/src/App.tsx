@@ -43,10 +43,10 @@ type GeneratedArtifactVersion = {
   source_version_id: number;
   source_version_number: number;
   content: string;
-  provider: string;
-  model: string;
-  prompt_version: string;
-  prompt_hash: string;
+  provider: string | null;
+  model: string | null;
+  prompt_version: string | null;
+  prompt_hash: string | null;
 };
 
 type GeneratedArtifact = {
@@ -55,6 +55,54 @@ type GeneratedArtifact = {
   status: ArtifactRunStatus;
   artifact_version: GeneratedArtifactVersion | null;
 };
+
+type WorkflowStatus =
+  "Draft" | "Generating" | "Review Required" | "Partial Failure" | "Complete";
+
+type DashboardItem = {
+  transformation_run_id: number;
+  source_version: {
+    id: number;
+    version_number: number;
+    content_hash: string;
+    created_at: string;
+  };
+  output_types: string[];
+  artifact_states: {
+    output_type: OutputType;
+    status: ArtifactRunStatus | null;
+    latest_version_number: number | null;
+    review_status: "draft" | "accepted" | "rejected" | null;
+  }[];
+  status: WorkflowStatus;
+  created_at: string;
+  updated_at: string;
+};
+
+type ReviewArtifactVersion = GeneratedArtifactVersion & {
+  review_status: "draft" | "accepted" | "rejected";
+  created_at: string;
+};
+
+type ReviewArtifactRun = {
+  artifact_run_id: number;
+  output_type: OutputType;
+  status: ArtifactRunStatus;
+  versions: ReviewArtifactVersion[];
+};
+
+type TransformationDetail = {
+  transformation_run_id: number;
+  source_version: DashboardItem["source_version"];
+  controls: Record<string, string>;
+  output_types: string[];
+  status: WorkflowStatus;
+  created_at: string;
+  updated_at: string;
+  artifact_runs: ReviewArtifactRun[];
+};
+
+type WorkspaceScreen = "dashboard" | "new" | "review";
 
 type HealthState = "loading" | "online" | "offline";
 type SourceMode = "paste" | "upload";
@@ -113,11 +161,76 @@ function isGeneratedArtifact(value: unknown): value is GeneratedArtifact {
   if (!isRecord(value.artifact_version)) return false;
   return (
     typeof value.artifact_version.content === "string" &&
-    typeof value.artifact_version.provider === "string" &&
-    typeof value.artifact_version.model === "string" &&
+    (typeof value.artifact_version.provider === "string" ||
+      value.artifact_version.provider === null) &&
+    (typeof value.artifact_version.model === "string" ||
+      value.artifact_version.model === null) &&
     typeof value.artifact_version.source_version_number === "number" &&
     typeof value.artifact_version.version_number === "number"
   );
+}
+
+function isWorkflowStatus(value: unknown): value is WorkflowStatus {
+  return [
+    "Draft",
+    "Generating",
+    "Review Required",
+    "Partial Failure",
+    "Complete",
+  ].includes(String(value));
+}
+
+function isDashboardItem(value: unknown): value is DashboardItem {
+  return (
+    isRecord(value) &&
+    Number.isInteger(value.transformation_run_id) &&
+    isRecord(value.source_version) &&
+    typeof value.source_version.id === "number" &&
+    typeof value.source_version.version_number === "number" &&
+    typeof value.source_version.content_hash === "string" &&
+    Array.isArray(value.output_types) &&
+    Array.isArray(value.artifact_states) &&
+    isWorkflowStatus(value.status) &&
+    typeof value.created_at === "string" &&
+    typeof value.updated_at === "string"
+  );
+}
+
+function isTransformationDetail(value: unknown): value is TransformationDetail {
+  if (
+    !isRecord(value) ||
+    !Number.isInteger(value.transformation_run_id) ||
+    !isRecord(value.source_version) ||
+    !isRecord(value.controls) ||
+    !isWorkflowStatus(value.status) ||
+    !Array.isArray(value.artifact_runs)
+  ) {
+    return false;
+  }
+  return value.artifact_runs.every((item: unknown) => {
+    if (
+      !isRecord(item) ||
+      !Number.isInteger(item.artifact_run_id) ||
+      !OUTPUT_TYPES.some((output) => output.value === item.output_type) ||
+      !["pending", "running", "succeeded", "failed"].includes(
+        String(item.status),
+      ) ||
+      !Array.isArray(item.versions)
+    ) {
+      return false;
+    }
+    return item.versions.every(
+      (version: unknown) =>
+        isRecord(version) &&
+        Number.isInteger(version.id) &&
+        Number.isInteger(version.version_number) &&
+        typeof version.content === "string" &&
+        typeof version.source_version_number === "number" &&
+        ["draft", "accepted", "rejected"].includes(
+          String(version.review_status),
+        ),
+    );
+  });
 }
 
 function PresentationArtifact({ content }: { content: string }) {
@@ -257,6 +370,7 @@ function validationMessage(body: unknown): string {
 }
 
 function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
+  const [screen, setScreen] = useState<WorkspaceScreen>("dashboard");
   const [health, setHealth] = useState<HealthState>("loading");
   const [request, setRequest] =
     useState<TransformationRequest>(INITIAL_REQUEST);
@@ -271,6 +385,22 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
   >([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [dashboardItems, setDashboardItems] = useState<DashboardItem[]>([]);
+  const [isDashboardLoading, setIsDashboardLoading] = useState(false);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [reviewDetail, setReviewDetail] = useState<TransformationDetail | null>(
+    null,
+  );
+  const [isReviewLoading, setIsReviewLoading] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [selectedVersions, setSelectedVersions] = useState<
+    Record<number, number>
+  >({});
+  const [editingArtifactRunId, setEditingArtifactRunId] = useState<
+    number | null
+  >(null);
+  const [editContent, setEditContent] = useState("");
+  const [isReviewActionRunning, setIsReviewActionRunning] = useState(false);
   const [logoutError, setLogoutError] = useState(false);
 
   useEffect(() => {
@@ -295,6 +425,67 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
     void checkHealth();
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    if (screen !== "dashboard") return;
+    const controller = new AbortController();
+    setIsDashboardLoading(true);
+    setDashboardError(null);
+    async function loadDashboard() {
+      try {
+        const response = await fetch("/api/transformations", {
+          credentials: "include",
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("dashboard unavailable");
+        const body: unknown = await response.json();
+        if (!Array.isArray(body) || !body.every(isDashboardItem)) {
+          throw new Error("unexpected dashboard response");
+        }
+        setDashboardItems(body);
+      } catch {
+        if (!controller.signal.aborted) {
+          setDashboardError(
+            "Could not load your transformations. Please retry.",
+          );
+        }
+      } finally {
+        if (!controller.signal.aborted) setIsDashboardLoading(false);
+      }
+    }
+    void loadDashboard();
+    return () => controller.abort();
+  }, [screen]);
+
+  async function openReviewWorkspace(transformationRunId: number) {
+    setIsReviewLoading(true);
+    setReviewError(null);
+    try {
+      const response = await fetch(
+        `/api/transformations/${transformationRunId}`,
+        { credentials: "include" },
+      );
+      if (!response.ok) throw new Error("review unavailable");
+      const body: unknown = await response.json();
+      if (!isTransformationDetail(body)) {
+        throw new Error("unexpected review response");
+      }
+      setReviewDetail(body);
+      setSelectedVersions({});
+      setEditingArtifactRunId(null);
+      setScreen("review");
+    } catch {
+      setReviewError("Could not open this review workspace. Please retry.");
+    } finally {
+      setIsReviewLoading(false);
+    }
+  }
+
+  async function refreshReview() {
+    if (reviewDetail) {
+      await openReviewWorkspace(reviewDetail.transformation_run_id);
+    }
+  }
 
   function updateRequest<K extends keyof TransformationRequest>(
     field: K,
@@ -518,6 +709,110 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
     }
   }
 
+  async function saveArtifactVersion(artifactRunId: number) {
+    setReviewError(null);
+    setIsReviewActionRunning(true);
+    try {
+      const response = await fetch(
+        `/api/artifact-runs/${artifactRunId}/versions`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: editContent }),
+        },
+      );
+      if (!response.ok) {
+        setReviewError(
+          "The artifact version could not be saved. Check its content and retry.",
+        );
+        return;
+      }
+      setEditingArtifactRunId(null);
+      setEditContent("");
+      await refreshReview();
+    } catch {
+      setReviewError(
+        "Could not reach the backend to save this artifact version.",
+      );
+    } finally {
+      setIsReviewActionRunning(false);
+    }
+  }
+
+  async function regenerateReviewArtifact(artifactRunId: number) {
+    setReviewError(null);
+    setIsReviewActionRunning(true);
+    try {
+      const response = await fetch(
+        `/api/artifact-runs/${artifactRunId}/regenerate`,
+        { method: "POST", credentials: "include" },
+      );
+      if (!response.ok) {
+        setReviewError("The artifact could not be regenerated. Please retry.");
+        return;
+      }
+      await refreshReview();
+    } catch {
+      setReviewError(
+        "Could not reach the backend to regenerate this artifact.",
+      );
+    } finally {
+      setIsReviewActionRunning(false);
+    }
+  }
+
+  async function retryReviewArtifact(artifactRunId: number) {
+    setReviewError(null);
+    setIsReviewActionRunning(true);
+    try {
+      const response = await fetch(
+        `/api/artifact-runs/${artifactRunId}/retry`,
+        {
+          method: "POST",
+          credentials: "include",
+        },
+      );
+      if (!response.ok) {
+        setReviewError("The failed output could not be retried. Please retry.");
+        return;
+      }
+      await refreshReview();
+    } catch {
+      setReviewError("Could not reach the backend to retry this output.");
+    } finally {
+      setIsReviewActionRunning(false);
+    }
+  }
+
+  async function updateReviewStatus(
+    artifactVersionId: number,
+    reviewStatus: "accepted" | "rejected",
+  ) {
+    setReviewError(null);
+    setIsReviewActionRunning(true);
+    try {
+      const response = await fetch(
+        `/api/artifact-versions/${artifactVersionId}/review`,
+        {
+          method: "PATCH",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ review_status: reviewStatus }),
+        },
+      );
+      if (!response.ok) {
+        setReviewError("The review status could not be updated. Please retry.");
+        return;
+      }
+      await refreshReview();
+    } catch {
+      setReviewError("Could not reach the backend to update review status.");
+    } finally {
+      setIsReviewActionRunning(false);
+    }
+  }
+
   async function handleLogout() {
     setLogoutError(false);
     if (!(await onLogout())) setLogoutError(true);
@@ -535,12 +830,43 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
         <div>
           <p className="eyebrow">AXIOMWEAVE</p>
           <p className="eyebrow">Smart India Hackathon 2026 · NTRO</p>
-          <h1>Content transformation</h1>
+          <h1>
+            {screen === "dashboard"
+              ? "Transformations Dashboard"
+              : screen === "review"
+                ? "Review Workspace"
+                : "Content transformation"}
+          </h1>
           <p className="intro">
-            Prepare one source and choose the communication materials you need.
+            {screen === "dashboard"
+              ? "View saved transformations and open their review history."
+              : screen === "review"
+                ? "Inspect artifact versions, provenance, and review decisions."
+                : "Prepare one source and choose the communication materials you need."}
           </p>
         </div>
         <div className="workspace-header-actions">
+          {screen !== "dashboard" && (
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={() => setScreen("dashboard")}
+            >
+              Transformations
+            </button>
+          )}
+          {screen !== "new" && (
+            <button
+              type="button"
+              onClick={() => {
+                setSaved(null);
+                setGeneratedArtifacts([]);
+                setScreen("new");
+              }}
+            >
+              New transformation
+            </button>
+          )}
           <div className={`health health--${health}`} aria-live="polite">
             <span className="health-dot" aria-hidden="true" />
             {healthText}
@@ -560,326 +886,642 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
         </p>
       )}
 
-      <form className="request-form" onSubmit={submitRequest} noValidate>
-        <section
-          className="form-section source-section"
-          aria-labelledby="source-heading"
-        >
-          <div className="section-heading">
-            <span className="step-number" aria-hidden="true">
-              1
-            </span>
-            <div>
-              <h2 id="source-heading">Source content</h2>
-              <p>Paste text or upload a lightweight text document.</p>
-            </div>
-          </div>
-          <fieldset className="source-modes">
-            <legend className="visually-hidden">Source mode</legend>
-            <label>
-              <input
-                type="radio"
-                name="source_mode"
-                value="paste"
-                checked={sourceMode === "paste"}
-                disabled={isExtracting}
-                onChange={() => switchSourceMode("paste")}
-              />
-              Paste text
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="source_mode"
-                value="upload"
-                checked={sourceMode === "upload"}
-                disabled={isExtracting}
-                onChange={() => switchSourceMode("upload")}
-              />
-              Upload text file
-            </label>
-          </fieldset>
-          {sourceMode === "paste" ? (
-            <>
-              <label htmlFor="source-text">Text source</label>
-              <textarea
-                id="source-text"
-                rows={8}
-                value={request.source_text}
-                onChange={(event) => {
-                  setSourceFile(null);
-                  updateRequest("source_text", event.target.value);
-                }}
-                placeholder="Paste or write your source text here"
-              />
-            </>
+      {screen === "dashboard" && (
+        <section className="dashboard-panel" aria-label="Saved transformations">
+          {dashboardError && (
+            <p className="form-message form-message--error" role="alert">
+              {dashboardError}
+            </p>
+          )}
+          {isDashboardLoading ? (
+            <p role="status">Loading transformations…</p>
+          ) : dashboardItems.length === 0 ? (
+            <p>
+              No transformations yet. Create one to start generating artifacts.
+            </p>
           ) : (
-            <div className="upload-source">
-              <label htmlFor="source-file">Text file (.txt or .md)</label>
-              <input
-                id="source-file"
-                type="file"
-                accept=".txt,.md,text/plain,text/markdown"
-                onChange={(event) =>
-                  void extractSourceFile(event.target.files?.[0])
-                }
-                disabled={isExtracting}
-              />
-              <p className="field-hint">
-                UTF-8 text only. Maximum file size: 80 KiB.
-              </p>
-              {isExtracting && <p role="status">Extracting text file…</p>}
-              {sourceFile && (
-                <p className="field-hint" role="status">
-                  {sourceFile.filename} ·{" "}
-                  {sourceFile.character_count.toLocaleString()} characters
-                </p>
-              )}
+            <div className="dashboard-list">
+              {dashboardItems.map((item) => (
+                <article
+                  className="dashboard-card"
+                  key={item.transformation_run_id}
+                >
+                  <div>
+                    <h2>Transformation {item.transformation_run_id}</h2>
+                    <p>
+                      Source V{item.source_version.version_number} ·{" "}
+                      {item.output_types.length} selected outputs
+                    </p>
+                    <ul className="dashboard-output-states">
+                      {item.artifact_states.map((artifact) => (
+                        <li key={artifact.output_type}>
+                          {OUTPUT_TYPES.find(
+                            (output) => output.value === artifact.output_type,
+                          )?.label ?? artifact.output_type}
+                          {artifact.status
+                            ? ` · ${artifact.status}`
+                            : " · Not generated"}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="dashboard-card-actions">
+                    <span
+                      className={`workflow-status workflow-status--${item.status.toLowerCase().replaceAll(" ", "-")}`}
+                    >
+                      {item.status}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void openReviewWorkspace(item.transformation_run_id)
+                      }
+                      disabled={isReviewLoading}
+                    >
+                      Open review
+                    </button>
+                  </div>
+                </article>
+              ))}
             </div>
           )}
-          <p className="field-hint">
-            Text only. Source content is stored as a versioned source when you
-            save.
-          </p>
+          {isReviewLoading && <p role="status">Opening review workspace…</p>}
+          {reviewError && (
+            <p className="form-message form-message--error" role="alert">
+              {reviewError}
+            </p>
+          )}
         </section>
+      )}
 
-        <section className="form-section" aria-labelledby="context-heading">
-          <div className="section-heading">
-            <span className="step-number" aria-hidden="true">
-              2
-            </span>
-            <div>
-              <h2 id="context-heading">Supporting context</h2>
-              <p>Optional guidance for the requested transformation.</p>
-            </div>
-          </div>
-          <label htmlFor="supporting-context">
-            Supporting context (optional)
-          </label>
-          <textarea
-            id="supporting-context"
-            rows={4}
-            maxLength={5000}
-            value={request.supporting_context}
-            onChange={(event) =>
-              updateRequest("supporting_context", event.target.value)
-            }
-            placeholder="Add audience-specific or operational guidance"
-          />
-          <p className="field-hint">
-            Context can guide the transformation but is not treated as source
-            evidence.
-          </p>
-        </section>
-
-        <section className="form-section" aria-labelledby="outputs-heading">
-          <div className="section-heading">
-            <span className="step-number" aria-hidden="true">
-              3
-            </span>
-            <div>
-              <h2 id="outputs-heading">Requested materials</h2>
-              <p>Select one or more. All use the same source and settings.</p>
-            </div>
-          </div>
-          <fieldset className="output-options">
-            <legend className="visually-hidden">Output types</legend>
-            {OUTPUT_TYPES.map((output) => (
-              <label className="output-option" key={output.value}>
-                <input
-                  type="checkbox"
-                  name="output_types"
-                  value={output.value}
-                  checked={request.output_types.includes(output.value)}
-                  onChange={(event) =>
-                    toggleOutput(output.value, event.target.checked)
-                  }
-                />
-                <span>{output.label}</span>
-              </label>
-            ))}
-          </fieldset>
-        </section>
-
+      {screen === "review" && reviewDetail && (
         <section
-          className="form-section settings-section"
-          aria-labelledby="settings-heading"
+          className="review-workspace"
+          aria-label="Artifact review workspace"
         >
-          <div className="section-heading">
-            <span className="step-number" aria-hidden="true">
-              4
-            </span>
+          <div className="review-source-summary">
             <div>
-              <h2 id="settings-heading">Communication settings</h2>
-              <p>Describe who this is for and how it should communicate.</p>
-            </div>
-          </div>
-          <div className="settings-grid">
-            <div className="field">
-              <label htmlFor="audience">Audience</label>
-              <input
-                id="audience"
-                value={request.audience}
-                onChange={(event) =>
-                  updateRequest("audience", event.target.value)
-                }
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="tone">Tone</label>
-              <input
-                id="tone"
-                value={request.tone}
-                onChange={(event) => updateRequest("tone", event.target.value)}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="language">Language</label>
-              <input
-                id="language"
-                value={request.language}
-                onChange={(event) =>
-                  updateRequest("language", event.target.value)
-                }
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="detail-level">Detail level</label>
-              <select
-                id="detail-level"
-                value={request.detail_level}
-                onChange={(event) =>
-                  updateRequest(
-                    "detail_level",
-                    event.target.value as DetailLevel,
-                  )
-                }
-              >
-                <option value="brief">Brief</option>
-                <option value="standard">Standard</option>
-                <option value="detailed">Detailed</option>
-              </select>
-            </div>
-            <div className="field">
-              <label htmlFor="objective">Communication objective</label>
-              <input
-                id="objective"
-                value={request.objective}
-                onChange={(event) =>
-                  updateRequest("objective", event.target.value)
-                }
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="style">Content style</label>
-              <input
-                id="style"
-                value={request.style}
-                onChange={(event) => updateRequest("style", event.target.value)}
-              />
-            </div>
-          </div>
-        </section>
-
-        <div className="submit-row">
-          <p className="generation-note">
-            Save your source and transformation brief. Saving does not generate
-            content.
-          </p>
-          <button type="submit" disabled={isSubmitting || isExtracting}>
-            {isSubmitting ? "Saving…" : "Save transformation"}
-          </button>
-        </div>
-
-        {error && (
-          <p className="form-message form-message--error" role="alert">
-            {error}
-          </p>
-        )}
-        {saved && (
-          <div className="saved-transformation" aria-live="polite">
-            <div className="form-message form-message--success" role="status">
-              <strong>Transformation saved</strong>
-              <span>
-                Source V{saved.source_version.version_number} stored for{" "}
-                {saved.output_types.length} requested{" "}
-                {saved.output_types.length === 1 ? "output" : "outputs"}.
-              </span>
-            </div>
-            {saved.output_types.length > 0 && (
-              <button
-                type="button"
-                onClick={generateSelectedArtifacts}
-                disabled={isGenerating || generatedArtifacts.length > 0}
-              >
-                {isGenerating
-                  ? "Generating selected outputs…"
-                  : "Generate selected outputs"}
-              </button>
-            )}
-            {generationError && (
-              <p className="form-message form-message--error" role="alert">
-                {generationError}
+              <p className="eyebrow">
+                Transformation {reviewDetail.transformation_run_id}
               </p>
-            )}
-            {generatedArtifacts.length > 0 && (
-              <section aria-labelledby="generated-artifacts-heading">
-                <h2 id="generated-artifacts-heading">Generated outputs</h2>
-                {generatedArtifacts.map((artifact) => {
-                  const label =
-                    OUTPUT_TYPES.find(
-                      (output) => output.value === artifact.output_type,
-                    )?.label ?? artifact.output_type;
-                  return (
-                    <article
-                      className="generated-artifact"
-                      key={artifact.artifact_run_id}
-                    >
-                      <h3>{label}</h3>
-                      <p role="status">
-                        {artifact.status === "succeeded"
-                          ? "Succeeded"
-                          : artifact.status === "failed"
-                            ? "Failed"
-                            : artifact.status === "running"
-                              ? "Generating"
-                              : "Pending"}
-                      </p>
-                      {artifact.artifact_version && (
-                        <>
-                          <p>
-                            Source V
-                            {artifact.artifact_version.source_version_number} ·{" "}
-                            {artifact.artifact_version.provider} /{" "}
-                            {artifact.artifact_version.model}
-                          </p>
-                          {artifact.output_type === "presentation" ? (
-                            <PresentationArtifact
-                              content={artifact.artifact_version.content}
-                            />
-                          ) : (
-                            <pre>{artifact.artifact_version.content}</pre>
-                          )}
-                        </>
-                      )}
-                      {artifact.status === "failed" && (
+              <h2>Source V{reviewDetail.source_version.version_number}</h2>
+              <p>SHA-256 {reviewDetail.source_version.content_hash}</p>
+            </div>
+            <span className="workflow-status">{reviewDetail.status}</span>
+          </div>
+          <section
+            className="review-controls"
+            aria-labelledby="review-controls-heading"
+          >
+            <h3 id="review-controls-heading">Transformation controls</h3>
+            <dl>
+              {Object.entries(reviewDetail.controls).map(([key, value]) => (
+                <div key={key}>
+                  <dt>{key.replaceAll("_", " ")}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+          {reviewError && (
+            <p className="form-message form-message--error" role="alert">
+              {reviewError}
+            </p>
+          )}
+          {reviewDetail.artifact_runs.length === 0 ? (
+            <p>No artifacts have been generated for this transformation yet.</p>
+          ) : (
+            <div className="review-artifacts">
+              {reviewDetail.artifact_runs.map((artifactRun) => {
+                const label =
+                  OUTPUT_TYPES.find(
+                    (output) => output.value === artifactRun.output_type,
+                  )?.label ?? artifactRun.output_type;
+                const latest = artifactRun.versions.at(-1);
+                const selectedVersion =
+                  artifactRun.versions.find(
+                    (version) =>
+                      version.id ===
+                      selectedVersions[artifactRun.artifact_run_id],
+                  ) ?? latest;
+                const isLatest = selectedVersion?.id === latest?.id;
+                return (
+                  <article
+                    className="review-artifact"
+                    key={artifactRun.artifact_run_id}
+                  >
+                    <header>
+                      <div>
+                        <h3>{label}</h3>
+                        <p role="status">{artifactRun.status}</p>
+                      </div>
+                      {artifactRun.status === "failed" && (
                         <button
                           type="button"
                           onClick={() =>
-                            void retryArtifact(artifact.artifact_run_id)
+                            void retryReviewArtifact(
+                              artifactRun.artifact_run_id,
+                            )
                           }
+                          disabled={isReviewActionRunning}
                         >
                           Retry {label}
                         </button>
                       )}
-                    </article>
-                  );
-                })}
-              </section>
+                    </header>
+                    {artifactRun.versions.length > 0 ? (
+                      <>
+                        <nav
+                          className="version-history"
+                          aria-label={`${label} version history`}
+                        >
+                          <strong>Versions</strong>
+                          {artifactRun.versions.map((version) => (
+                            <button
+                              type="button"
+                              className={
+                                version.id === selectedVersion?.id
+                                  ? "is-selected"
+                                  : ""
+                              }
+                              key={version.id}
+                              onClick={() =>
+                                setSelectedVersions((current) => ({
+                                  ...current,
+                                  [artifactRun.artifact_run_id]: version.id,
+                                }))
+                              }
+                            >
+                              V{version.version_number} ·{" "}
+                              {version.review_status}
+                            </button>
+                          ))}
+                        </nav>
+                        {selectedVersion && (
+                          <>
+                            <section
+                              className="artifact-provenance"
+                              aria-label="Artifact provenance"
+                            >
+                              <strong>
+                                Source V{selectedVersion.source_version_number}
+                              </strong>
+                              <span>
+                                {selectedVersion.provider &&
+                                selectedVersion.model
+                                  ? `${selectedVersion.provider} / ${selectedVersion.model}`
+                                  : "Manually edited"}
+                              </span>
+                              {selectedVersion.prompt_version && (
+                                <span>
+                                  Prompt V{selectedVersion.prompt_version} ·{" "}
+                                  {selectedVersion.prompt_hash}
+                                </span>
+                              )}
+                            </section>
+                            {editingArtifactRunId ===
+                              artifactRun.artifact_run_id && isLatest ? (
+                              <div className="artifact-editor">
+                                <label
+                                  htmlFor={`artifact-editor-${artifactRun.artifact_run_id}`}
+                                >
+                                  Edit {label}
+                                </label>
+                                <textarea
+                                  id={`artifact-editor-${artifactRun.artifact_run_id}`}
+                                  rows={12}
+                                  value={editContent}
+                                  onChange={(event) =>
+                                    setEditContent(event.target.value)
+                                  }
+                                />
+                                <button
+                                  type="button"
+                                  disabled={isReviewActionRunning}
+                                  onClick={() =>
+                                    void saveArtifactVersion(
+                                      artifactRun.artifact_run_id,
+                                    )
+                                  }
+                                >
+                                  Save new version
+                                </button>
+                                <button
+                                  type="button"
+                                  className="button-secondary"
+                                  onClick={() => setEditingArtifactRunId(null)}
+                                >
+                                  Cancel edit
+                                </button>
+                              </div>
+                            ) : artifactRun.output_type === "presentation" ? (
+                              <PresentationArtifact
+                                content={selectedVersion.content}
+                              />
+                            ) : (
+                              <pre className="review-artifact-content">
+                                {selectedVersion.content}
+                              </pre>
+                            )}
+                            {isLatest &&
+                              editingArtifactRunId !==
+                                artifactRun.artifact_run_id && (
+                                <div className="review-actions">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingArtifactRunId(
+                                        artifactRun.artifact_run_id,
+                                      );
+                                      setEditContent(selectedVersion.content);
+                                    }}
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="button-secondary"
+                                    disabled={isReviewActionRunning}
+                                    onClick={() =>
+                                      void regenerateReviewArtifact(
+                                        artifactRun.artifact_run_id,
+                                      )
+                                    }
+                                  >
+                                    Regenerate
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="button-secondary"
+                                    disabled={isReviewActionRunning}
+                                    onClick={() =>
+                                      void updateReviewStatus(
+                                        selectedVersion.id,
+                                        "accepted",
+                                      )
+                                    }
+                                  >
+                                    Accept
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="button-secondary"
+                                    disabled={isReviewActionRunning}
+                                    onClick={() =>
+                                      void updateReviewStatus(
+                                        selectedVersion.id,
+                                        "rejected",
+                                      )
+                                    }
+                                  >
+                                    Reject
+                                  </button>
+                                </div>
+                              )}
+                          </>
+                        )}
+                      </>
+                    ) : (
+                      <p>No artifact version is available yet.</p>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          )}
+          <p className="review-state-note">
+            Accepting or rejecting records a workflow decision. It does not
+            certify factual accuracy.
+          </p>
+        </section>
+      )}
+
+      {screen === "new" && (
+        <form className="request-form" onSubmit={submitRequest} noValidate>
+          <section
+            className="form-section source-section"
+            aria-labelledby="source-heading"
+          >
+            <div className="section-heading">
+              <span className="step-number" aria-hidden="true">
+                1
+              </span>
+              <div>
+                <h2 id="source-heading">Source content</h2>
+                <p>Paste text or upload a lightweight text document.</p>
+              </div>
+            </div>
+            <fieldset className="source-modes">
+              <legend className="visually-hidden">Source mode</legend>
+              <label>
+                <input
+                  type="radio"
+                  name="source_mode"
+                  value="paste"
+                  checked={sourceMode === "paste"}
+                  disabled={isExtracting}
+                  onChange={() => switchSourceMode("paste")}
+                />
+                Paste text
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="source_mode"
+                  value="upload"
+                  checked={sourceMode === "upload"}
+                  disabled={isExtracting}
+                  onChange={() => switchSourceMode("upload")}
+                />
+                Upload text file
+              </label>
+            </fieldset>
+            {sourceMode === "paste" ? (
+              <>
+                <label htmlFor="source-text">Text source</label>
+                <textarea
+                  id="source-text"
+                  rows={8}
+                  value={request.source_text}
+                  onChange={(event) => {
+                    setSourceFile(null);
+                    updateRequest("source_text", event.target.value);
+                  }}
+                  placeholder="Paste or write your source text here"
+                />
+              </>
+            ) : (
+              <div className="upload-source">
+                <label htmlFor="source-file">Text file (.txt or .md)</label>
+                <input
+                  id="source-file"
+                  type="file"
+                  accept=".txt,.md,text/plain,text/markdown"
+                  onChange={(event) =>
+                    void extractSourceFile(event.target.files?.[0])
+                  }
+                  disabled={isExtracting}
+                />
+                <p className="field-hint">
+                  UTF-8 text only. Maximum file size: 80 KiB.
+                </p>
+                {isExtracting && <p role="status">Extracting text file…</p>}
+                {sourceFile && (
+                  <p className="field-hint" role="status">
+                    {sourceFile.filename} ·{" "}
+                    {sourceFile.character_count.toLocaleString()} characters
+                  </p>
+                )}
+              </div>
             )}
+            <p className="field-hint">
+              Text only. Source content is stored as a versioned source when you
+              save.
+            </p>
+          </section>
+
+          <section className="form-section" aria-labelledby="context-heading">
+            <div className="section-heading">
+              <span className="step-number" aria-hidden="true">
+                2
+              </span>
+              <div>
+                <h2 id="context-heading">Supporting context</h2>
+                <p>Optional guidance for the requested transformation.</p>
+              </div>
+            </div>
+            <label htmlFor="supporting-context">
+              Supporting context (optional)
+            </label>
+            <textarea
+              id="supporting-context"
+              rows={4}
+              maxLength={5000}
+              value={request.supporting_context}
+              onChange={(event) =>
+                updateRequest("supporting_context", event.target.value)
+              }
+              placeholder="Add audience-specific or operational guidance"
+            />
+            <p className="field-hint">
+              Context can guide the transformation but is not treated as source
+              evidence.
+            </p>
+          </section>
+
+          <section className="form-section" aria-labelledby="outputs-heading">
+            <div className="section-heading">
+              <span className="step-number" aria-hidden="true">
+                3
+              </span>
+              <div>
+                <h2 id="outputs-heading">Requested materials</h2>
+                <p>Select one or more. All use the same source and settings.</p>
+              </div>
+            </div>
+            <fieldset className="output-options">
+              <legend className="visually-hidden">Output types</legend>
+              {OUTPUT_TYPES.map((output) => (
+                <label className="output-option" key={output.value}>
+                  <input
+                    type="checkbox"
+                    name="output_types"
+                    value={output.value}
+                    checked={request.output_types.includes(output.value)}
+                    onChange={(event) =>
+                      toggleOutput(output.value, event.target.checked)
+                    }
+                  />
+                  <span>{output.label}</span>
+                </label>
+              ))}
+            </fieldset>
+          </section>
+
+          <section
+            className="form-section settings-section"
+            aria-labelledby="settings-heading"
+          >
+            <div className="section-heading">
+              <span className="step-number" aria-hidden="true">
+                4
+              </span>
+              <div>
+                <h2 id="settings-heading">Communication settings</h2>
+                <p>Describe who this is for and how it should communicate.</p>
+              </div>
+            </div>
+            <div className="settings-grid">
+              <div className="field">
+                <label htmlFor="audience">Audience</label>
+                <input
+                  id="audience"
+                  value={request.audience}
+                  onChange={(event) =>
+                    updateRequest("audience", event.target.value)
+                  }
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="tone">Tone</label>
+                <input
+                  id="tone"
+                  value={request.tone}
+                  onChange={(event) =>
+                    updateRequest("tone", event.target.value)
+                  }
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="language">Language</label>
+                <input
+                  id="language"
+                  value={request.language}
+                  onChange={(event) =>
+                    updateRequest("language", event.target.value)
+                  }
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="detail-level">Detail level</label>
+                <select
+                  id="detail-level"
+                  value={request.detail_level}
+                  onChange={(event) =>
+                    updateRequest(
+                      "detail_level",
+                      event.target.value as DetailLevel,
+                    )
+                  }
+                >
+                  <option value="brief">Brief</option>
+                  <option value="standard">Standard</option>
+                  <option value="detailed">Detailed</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="objective">Communication objective</label>
+                <input
+                  id="objective"
+                  value={request.objective}
+                  onChange={(event) =>
+                    updateRequest("objective", event.target.value)
+                  }
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="style">Content style</label>
+                <input
+                  id="style"
+                  value={request.style}
+                  onChange={(event) =>
+                    updateRequest("style", event.target.value)
+                  }
+                />
+              </div>
+            </div>
+          </section>
+
+          <div className="submit-row">
+            <p className="generation-note">
+              Save your source and transformation brief. Saving does not
+              generate content.
+            </p>
+            <button type="submit" disabled={isSubmitting || isExtracting}>
+              {isSubmitting ? "Saving…" : "Save transformation"}
+            </button>
           </div>
-        )}
-      </form>
+
+          {error && (
+            <p className="form-message form-message--error" role="alert">
+              {error}
+            </p>
+          )}
+          {saved && (
+            <div className="saved-transformation" aria-live="polite">
+              <div className="form-message form-message--success" role="status">
+                <strong>Transformation saved</strong>
+                <span>
+                  Source V{saved.source_version.version_number} stored for{" "}
+                  {saved.output_types.length} requested{" "}
+                  {saved.output_types.length === 1 ? "output" : "outputs"}.
+                </span>
+              </div>
+              {saved.output_types.length > 0 && (
+                <button
+                  type="button"
+                  onClick={generateSelectedArtifacts}
+                  disabled={isGenerating || generatedArtifacts.length > 0}
+                >
+                  {isGenerating
+                    ? "Generating selected outputs…"
+                    : "Generate selected outputs"}
+                </button>
+              )}
+              {generationError && (
+                <p className="form-message form-message--error" role="alert">
+                  {generationError}
+                </p>
+              )}
+              {generatedArtifacts.length > 0 && (
+                <section aria-labelledby="generated-artifacts-heading">
+                  <h2 id="generated-artifacts-heading">Generated outputs</h2>
+                  {generatedArtifacts.map((artifact) => {
+                    const label =
+                      OUTPUT_TYPES.find(
+                        (output) => output.value === artifact.output_type,
+                      )?.label ?? artifact.output_type;
+                    return (
+                      <article
+                        className="generated-artifact"
+                        key={artifact.artifact_run_id}
+                      >
+                        <h3>{label}</h3>
+                        <p role="status">
+                          {artifact.status === "succeeded"
+                            ? "Succeeded"
+                            : artifact.status === "failed"
+                              ? "Failed"
+                              : artifact.status === "running"
+                                ? "Generating"
+                                : "Pending"}
+                        </p>
+                        {artifact.artifact_version && (
+                          <>
+                            <p>
+                              Source V
+                              {artifact.artifact_version.source_version_number}{" "}
+                              · {artifact.artifact_version.provider} /{" "}
+                              {artifact.artifact_version.model}
+                            </p>
+                            {artifact.output_type === "presentation" ? (
+                              <PresentationArtifact
+                                content={artifact.artifact_version.content}
+                              />
+                            ) : (
+                              <pre>{artifact.artifact_version.content}</pre>
+                            )}
+                          </>
+                        )}
+                        {artifact.status === "failed" && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void retryArtifact(artifact.artifact_run_id)
+                            }
+                          >
+                            Retry {label}
+                          </button>
+                        )}
+                      </article>
+                    );
+                  })}
+                </section>
+              )}
+            </div>
+          )}
+        </form>
+      )}
     </main>
   );
 }
