@@ -13,6 +13,8 @@ def test_settings_use_safe_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         "SIH_PORT",
         "SIH_DATABASE_URL",
         "SIH_GOOGLE_CLIENT_ID",
+        "SIH_OPENAI_MODEL",
+        "OPENAI_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -24,6 +26,8 @@ def test_settings_use_safe_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.port == 8000
     assert settings.database_url == "sqlite:///./axiomweave.db"
     assert settings.google_client_id is None
+    assert settings.openai_api_key is None
+    assert settings.openai_model == "gpt-6-luna"
 
 
 def test_settings_read_database_url_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -42,6 +46,20 @@ def test_settings_read_google_client_id_from_environment(monkeypatch: pytest.Mon
     settings = settings_class(_env_file=None)
 
     assert settings.google_client_id == "public-web-client-id"
+
+
+def test_settings_read_openai_configuration_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("SIH_OPENAI_MODEL", "gpt-6-luna")
+
+    settings_class = cast(Any, Settings)
+    settings = settings_class(_env_file=None)
+
+    assert settings.openai_api_key == "test-secret"
+    assert settings.openai_model == "gpt-6-luna"
+    assert "test-secret" not in repr(settings)
 
 
 def test_settings_reject_invalid_port() -> None:

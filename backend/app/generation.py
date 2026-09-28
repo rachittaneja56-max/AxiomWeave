@@ -7,6 +7,7 @@ class GenerationRequest:
     application_instructions: str
     transformation_instructions: str
     source_text: str
+    supporting_context: str = ""
 
 
 @dataclass(frozen=True, slots=True)

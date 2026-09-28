@@ -116,6 +116,9 @@ class TransformationRun(Base):
 class ArtifactRun(Base):
     __tablename__ = "artifact_runs"
     __table_args__ = (
+        UniqueConstraint(
+            "transformation_run_id", "output_type", name="uq_artifact_runs_transformation_output"
+        ),
         CheckConstraint(
             "status IN ('pending', 'running', 'succeeded', 'failed')",
             name="ck_artifact_runs_status",

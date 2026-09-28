@@ -35,6 +35,22 @@ type SavedTransformation = {
   output_types: OutputType[];
 };
 
+type GeneratedArtifact = {
+  artifact_run_id: number;
+  output_type: "executive_summary";
+  artifact_version: {
+    id: number;
+    version_number: number;
+    source_version_id: number;
+    source_version_number: number;
+    content: string;
+    provider: string;
+    model: string;
+    prompt_version: string;
+    prompt_hash: string;
+  };
+};
+
 type HealthState = "loading" | "online" | "offline";
 type SourceMode = "paste" | "upload";
 
@@ -169,6 +185,10 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<SavedTransformation | null>(null);
+  const [generatedArtifact, setGeneratedArtifact] =
+    useState<GeneratedArtifact | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
   const [logoutError, setLogoutError] = useState(false);
 
   useEffect(() => {
@@ -201,6 +221,8 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
     setRequest((current) => ({ ...current, [field]: value }));
     setError(null);
     setSaved(null);
+    setGeneratedArtifact(null);
+    setGenerationError(null);
   }
 
   function toggleOutput(outputType: OutputType, checked: boolean) {
@@ -216,12 +238,16 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
     setSourceFile(null);
     setError(null);
     setSaved(null);
+    setGeneratedArtifact(null);
+    setGenerationError(null);
   }
 
   async function extractSourceFile(file: File | undefined) {
     if (!file) return;
     setError(null);
     setSaved(null);
+    setGeneratedArtifact(null);
+    setGenerationError(null);
     setSourceFile(null);
     setRequest((current) => ({ ...current, source_text: "" }));
     setIsExtracting(true);
@@ -327,6 +353,58 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
       );
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function generateExecutiveSummary() {
+    if (!saved) return;
+    setGenerationError(null);
+    setIsGenerating(true);
+    try {
+      const response = await fetch(
+        `/api/transformations/${saved.transformation_run_id}/generate`,
+        { method: "POST", credentials: "include" },
+      );
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        setGenerationError(
+          "The backend returned an unreadable generation response.",
+        );
+        return;
+      }
+      if (!response.ok) {
+        const code =
+          isRecord(body) && isRecord(body.error) ? body.error.code : null;
+        setGenerationError(
+          code === "generation_not_configured"
+            ? "Generation is not configured on this server."
+            : "The Executive Summary could not be generated. Please retry.",
+        );
+        return;
+      }
+      if (
+        !isRecord(body) ||
+        body.status !== "succeeded" ||
+        !isRecord(body.artifact_version) ||
+        typeof body.artifact_version.content !== "string" ||
+        typeof body.artifact_version.provider !== "string" ||
+        typeof body.artifact_version.model !== "string" ||
+        typeof body.artifact_version.source_version_number !== "number"
+      ) {
+        setGenerationError(
+          "The backend returned an unexpected generation response.",
+        );
+        return;
+      }
+      setGeneratedArtifact(body as GeneratedArtifact);
+    } catch {
+      setGenerationError(
+        "Could not reach the backend to generate the Executive Summary.",
+      );
+    } finally {
+      setIsGenerating(false);
     }
   }
 
@@ -609,14 +687,43 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
           </p>
         )}
         {saved && (
-          <div className="form-message form-message--success" role="status">
-            <strong>Transformation saved</strong>
-            <span>
-              Source V{saved.source_version.version_number} stored for{" "}
-              {saved.output_types.length} requested{" "}
-              {saved.output_types.length === 1 ? "output" : "outputs"}. Content
-              has not been generated yet.
-            </span>
+          <div className="saved-transformation" aria-live="polite">
+            <div className="form-message form-message--success" role="status">
+              <strong>Transformation saved</strong>
+              <span>
+                Source V{saved.source_version.version_number} stored for{" "}
+                {saved.output_types.length} requested{" "}
+                {saved.output_types.length === 1 ? "output" : "outputs"}.
+              </span>
+            </div>
+            {saved.output_types.includes("executive_summary") && (
+              <button
+                type="button"
+                onClick={generateExecutiveSummary}
+                disabled={isGenerating || generatedArtifact !== null}
+              >
+                {isGenerating ? "Generating…" : "Generate Executive Summary"}
+              </button>
+            )}
+            {generationError && (
+              <p className="form-message form-message--error" role="alert">
+                {generationError}
+              </p>
+            )}
+            {generatedArtifact && (
+              <section aria-labelledby="generated-summary-heading">
+                <h2 id="generated-summary-heading">Executive Summary</h2>
+                <p>
+                  Source V
+                  {generatedArtifact.artifact_version.source_version_number} ·{" "}
+                  {generatedArtifact.artifact_version.provider} /{" "}
+                  {generatedArtifact.artifact_version.model}
+                </p>
+                <div className="generated-artifact">
+                  {generatedArtifact.artifact_version.content}
+                </div>
+              </section>
+            )}
           </div>
         )}
       </form>

@@ -4,6 +4,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 SOURCE_TEXT_MAX_LENGTH = 20_000
+SUPPORTING_CONTEXT_MAX_LENGTH = 5_000
 
 AudienceText = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)
@@ -58,7 +59,6 @@ class PreparedTransformationRequest(BaseModel):
     request: TransformationRequest
 
 
-SUPPORTING_CONTEXT_MAX_LENGTH = 5_000
 TIER_A_OUTPUT_TYPES = frozenset(
     {
         OutputType.EXECUTIVE_SUMMARY,

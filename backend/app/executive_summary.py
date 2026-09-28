@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from hashlib import sha256
 
 from app.domain.transformation import TransformationRequest
 from app.generation import GenerationProvider, GenerationRequest
@@ -10,6 +11,20 @@ APPLICATION_INSTRUCTIONS = (
     "it supplies, and do not invent or assume missing facts. Return only the requested "
     "artifact, without commentary about the task."
 )
+
+EXECUTIVE_SUMMARY_PROMPT_VERSION = "1"
+EXECUTIVE_SUMMARY_TEMPLATE = (
+    "Create an Executive Summary of the provided source. Preserve the source's meaning, "
+    "use only facts it supplies, and do not invent statistics, quotes, dates, or claims."
+)
+
+
+def executive_summary_prompt_hash() -> str:
+    stable_prompt = "\n".join(
+        (APPLICATION_INSTRUCTIONS, EXECUTIVE_SUMMARY_PROMPT_VERSION, EXECUTIVE_SUMMARY_TEMPLATE)
+    )
+    return sha256(stable_prompt.encode("utf-8")).hexdigest()
+
 
 _DETAIL_INSTRUCTIONS = {
     "brief": "Be concise and emphasize only the most important information.",
@@ -35,7 +50,7 @@ class ExecutiveSummaryDraft:
 def build_transformation_instructions(request: TransformationRequest) -> str:
     return "\n".join(
         (
-            "Create an Executive Summary of the provided source.",
+            EXECUTIVE_SUMMARY_TEMPLATE,
             f"Audience: {request.audience}",
             f"Tone: {request.tone}",
             f"Language: {request.language}",
@@ -50,12 +65,15 @@ class ExecutiveSummaryGenerator:
     def __init__(self, provider: GenerationProvider) -> None:
         self._provider = provider
 
-    async def generate(self, request: TransformationRequest) -> ExecutiveSummaryDraft:
+    async def generate(
+        self, request: TransformationRequest, supporting_context: str = ""
+    ) -> ExecutiveSummaryDraft:
         result = await self._provider.generate(
             GenerationRequest(
                 application_instructions=APPLICATION_INSTRUCTIONS,
                 transformation_instructions=build_transformation_instructions(request),
                 source_text=request.source_text,
+                supporting_context=supporting_context,
             )
         )
         content = result.text.strip()

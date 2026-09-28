@@ -325,7 +325,25 @@ describe("transformation request form", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(healthResponse)
-      .mockResolvedValueOnce(jsonResponse(savedResponse));
+      .mockResolvedValueOnce(jsonResponse(savedResponse))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: "succeeded",
+          artifact_run_id: 40,
+          output_type: "executive_summary",
+          artifact_version: {
+            id: 50,
+            version_number: 1,
+            source_version_id: 30,
+            source_version_number: 1,
+            content: "A short generated summary.",
+            provider: "openai",
+            model: "gpt-6-luna",
+            prompt_version: "1",
+            prompt_hash: "b".repeat(64),
+          },
+        }),
+      );
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
@@ -341,8 +359,17 @@ describe("transformation request form", () => {
     expect(await screen.findByRole("status")).toHaveTextContent(
       "Transformation saved",
     );
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Content has not been generated",
+    fireEvent.click(
+      screen.getByRole("button", { name: "Generate Executive Summary" }),
+    );
+    expect(
+      await screen.findByText("A short generated summary."),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/openai \/ gpt-6-luna/)).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/transformations/10/generate",
+      expect.objectContaining({ method: "POST", credentials: "include" }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
