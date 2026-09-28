@@ -35,20 +35,25 @@ type SavedTransformation = {
   output_types: OutputType[];
 };
 
+type ArtifactRunStatus = "pending" | "running" | "succeeded" | "failed";
+
+type GeneratedArtifactVersion = {
+  id: number;
+  version_number: number;
+  source_version_id: number;
+  source_version_number: number;
+  content: string;
+  provider: string;
+  model: string;
+  prompt_version: string;
+  prompt_hash: string;
+};
+
 type GeneratedArtifact = {
   artifact_run_id: number;
-  output_type: "executive_summary";
-  artifact_version: {
-    id: number;
-    version_number: number;
-    source_version_id: number;
-    source_version_number: number;
-    content: string;
-    provider: string;
-    model: string;
-    prompt_version: string;
-    prompt_hash: string;
-  };
+  output_type: OutputType;
+  status: ArtifactRunStatus;
+  artifact_version: GeneratedArtifactVersion | null;
 };
 
 type HealthState = "loading" | "online" | "offline";
@@ -91,6 +96,82 @@ const FIELD_LABELS: Record<string, string> = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isGeneratedArtifact(value: unknown): value is GeneratedArtifact {
+  if (
+    !isRecord(value) ||
+    !Number.isInteger(value.artifact_run_id) ||
+    !OUTPUT_TYPES.some((output) => output.value === value.output_type) ||
+    !["pending", "running", "succeeded", "failed"].includes(
+      String(value.status),
+    )
+  ) {
+    return false;
+  }
+  if (value.artifact_version === null) return value.status !== "succeeded";
+  if (!isRecord(value.artifact_version)) return false;
+  return (
+    typeof value.artifact_version.content === "string" &&
+    typeof value.artifact_version.provider === "string" &&
+    typeof value.artifact_version.model === "string" &&
+    typeof value.artifact_version.source_version_number === "number" &&
+    typeof value.artifact_version.version_number === "number"
+  );
+}
+
+function PresentationArtifact({ content }: { content: string }) {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    return <p>Presentation content could not be displayed.</p>;
+  }
+  if (
+    !isRecord(value) ||
+    typeof value.title !== "string" ||
+    !Array.isArray(value.slides)
+  ) {
+    return <p>Presentation content could not be displayed.</p>;
+  }
+  const slides = value.slides.filter(
+    (slide): slide is Record<string, unknown> =>
+      isRecord(slide) &&
+      typeof slide.title === "string" &&
+      typeof slide.key_message === "string" &&
+      Array.isArray(slide.bullets) &&
+      slide.bullets.every((bullet: unknown) => typeof bullet === "string") &&
+      typeof slide.visual_recommendation === "string" &&
+      typeof slide.speaker_notes === "string",
+  );
+  if (slides.length !== value.slides.length) {
+    return <p>Presentation content could not be displayed.</p>;
+  }
+  return (
+    <div>
+      <h3>{value.title}</h3>
+      {slides.map((slide, index) => (
+        <article className="presentation-slide" key={`${index}-${slide.title}`}>
+          <h4>
+            Slide {index + 1}: {slide.title as string}
+          </h4>
+          <p>{slide.key_message as string}</p>
+          <ul>
+            {(slide.bullets as string[]).map((bullet, bulletIndex) => (
+              <li key={`${bulletIndex}-${bullet}`}>{bullet}</li>
+            ))}
+          </ul>
+          <p>
+            <strong>Visual recommendation:</strong>{" "}
+            {slide.visual_recommendation as string}
+          </p>
+          <p>
+            <strong>Speaker notes:</strong> {slide.speaker_notes as string}
+          </p>
+        </article>
+      ))}
+    </div>
+  );
 }
 
 function isSavedTransformation(value: unknown): value is SavedTransformation {
@@ -185,8 +266,9 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<SavedTransformation | null>(null);
-  const [generatedArtifact, setGeneratedArtifact] =
-    useState<GeneratedArtifact | null>(null);
+  const [generatedArtifacts, setGeneratedArtifacts] = useState<
+    GeneratedArtifact[]
+  >([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [logoutError, setLogoutError] = useState(false);
@@ -221,7 +303,7 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
     setRequest((current) => ({ ...current, [field]: value }));
     setError(null);
     setSaved(null);
-    setGeneratedArtifact(null);
+    setGeneratedArtifacts([]);
     setGenerationError(null);
   }
 
@@ -238,7 +320,7 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
     setSourceFile(null);
     setError(null);
     setSaved(null);
-    setGeneratedArtifact(null);
+    setGeneratedArtifacts([]);
     setGenerationError(null);
   }
 
@@ -246,7 +328,7 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
     if (!file) return;
     setError(null);
     setSaved(null);
-    setGeneratedArtifact(null);
+    setGeneratedArtifacts([]);
     setGenerationError(null);
     setSourceFile(null);
     setRequest((current) => ({ ...current, source_text: "" }));
@@ -356,7 +438,7 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
     }
   }
 
-  async function generateExecutiveSummary() {
+  async function generateSelectedArtifacts() {
     if (!saved) return;
     setGenerationError(null);
     setIsGenerating(true);
@@ -380,31 +462,59 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
         setGenerationError(
           code === "generation_not_configured"
             ? "Generation is not configured on this server."
-            : "The Executive Summary could not be generated. Please retry.",
+            : "The selected outputs could not be generated. Please retry.",
         );
         return;
       }
       if (
         !isRecord(body) ||
-        body.status !== "succeeded" ||
-        !isRecord(body.artifact_version) ||
-        typeof body.artifact_version.content !== "string" ||
-        typeof body.artifact_version.provider !== "string" ||
-        typeof body.artifact_version.model !== "string" ||
-        typeof body.artifact_version.source_version_number !== "number"
+        !["succeeded", "partial_failure", "running"].includes(
+          String(body.status),
+        ) ||
+        !Array.isArray(body.artifacts) ||
+        !body.artifacts.every(isGeneratedArtifact)
       ) {
         setGenerationError(
           "The backend returned an unexpected generation response.",
         );
         return;
       }
-      setGeneratedArtifact(body as GeneratedArtifact);
+      setGeneratedArtifacts(body.artifacts);
     } catch {
       setGenerationError(
-        "Could not reach the backend to generate the Executive Summary.",
+        "Could not reach the backend to generate the selected outputs.",
       );
     } finally {
       setIsGenerating(false);
+    }
+  }
+
+  async function retryArtifact(artifactRunId: number) {
+    setGenerationError(null);
+    try {
+      const response = await fetch(
+        `/api/artifact-runs/${artifactRunId}/retry`,
+        {
+          method: "POST",
+          credentials: "include",
+        },
+      );
+      const body: unknown = await response.json();
+      if (!response.ok || !isGeneratedArtifact(body)) {
+        setGenerationError(
+          "The failed output could not be retried. Please try again.",
+        );
+        return;
+      }
+      setGeneratedArtifacts((current) =>
+        current.map((artifact) =>
+          artifact.artifact_run_id === artifactRunId ? body : artifact,
+        ),
+      );
+    } catch {
+      setGenerationError(
+        "Could not reach the backend to retry the failed output.",
+      );
     }
   }
 
@@ -696,13 +806,15 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
                 {saved.output_types.length === 1 ? "output" : "outputs"}.
               </span>
             </div>
-            {saved.output_types.includes("executive_summary") && (
+            {saved.output_types.length > 0 && (
               <button
                 type="button"
-                onClick={generateExecutiveSummary}
-                disabled={isGenerating || generatedArtifact !== null}
+                onClick={generateSelectedArtifacts}
+                disabled={isGenerating || generatedArtifacts.length > 0}
               >
-                {isGenerating ? "Generating…" : "Generate Executive Summary"}
+                {isGenerating
+                  ? "Generating selected outputs…"
+                  : "Generate selected outputs"}
               </button>
             )}
             {generationError && (
@@ -710,18 +822,59 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
                 {generationError}
               </p>
             )}
-            {generatedArtifact && (
-              <section aria-labelledby="generated-summary-heading">
-                <h2 id="generated-summary-heading">Executive Summary</h2>
-                <p>
-                  Source V
-                  {generatedArtifact.artifact_version.source_version_number} ·{" "}
-                  {generatedArtifact.artifact_version.provider} /{" "}
-                  {generatedArtifact.artifact_version.model}
-                </p>
-                <div className="generated-artifact">
-                  {generatedArtifact.artifact_version.content}
-                </div>
+            {generatedArtifacts.length > 0 && (
+              <section aria-labelledby="generated-artifacts-heading">
+                <h2 id="generated-artifacts-heading">Generated outputs</h2>
+                {generatedArtifacts.map((artifact) => {
+                  const label =
+                    OUTPUT_TYPES.find(
+                      (output) => output.value === artifact.output_type,
+                    )?.label ?? artifact.output_type;
+                  return (
+                    <article
+                      className="generated-artifact"
+                      key={artifact.artifact_run_id}
+                    >
+                      <h3>{label}</h3>
+                      <p role="status">
+                        {artifact.status === "succeeded"
+                          ? "Succeeded"
+                          : artifact.status === "failed"
+                            ? "Failed"
+                            : artifact.status === "running"
+                              ? "Generating"
+                              : "Pending"}
+                      </p>
+                      {artifact.artifact_version && (
+                        <>
+                          <p>
+                            Source V
+                            {artifact.artifact_version.source_version_number} ·{" "}
+                            {artifact.artifact_version.provider} /{" "}
+                            {artifact.artifact_version.model}
+                          </p>
+                          {artifact.output_type === "presentation" ? (
+                            <PresentationArtifact
+                              content={artifact.artifact_version.content}
+                            />
+                          ) : (
+                            <pre>{artifact.artifact_version.content}</pre>
+                          )}
+                        </>
+                      )}
+                      {artifact.status === "failed" && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void retryArtifact(artifact.artifact_run_id)
+                          }
+                        >
+                          Retry {label}
+                        </button>
+                      )}
+                    </article>
+                  );
+                })}
               </section>
             )}
           </div>

@@ -468,6 +468,34 @@ button:disabled {
   font-size: 0.9rem;
 }
 
+.saved-transformation {
+  display: grid;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.generated-artifact {
+  padding: 20px;
+  border: 1px solid #d3dce9;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.generated-artifact pre {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font: inherit;
+  line-height: 1.65;
+}
+
+.presentation-slide {
+  margin-top: 14px;
+  padding: 16px;
+  border-left: 3px solid #5478aa;
+  border-radius: 0 8px 8px 0;
+  background: #f5f8fc;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;

@@ -329,19 +329,24 @@ describe("transformation request form", () => {
       .mockResolvedValueOnce(
         jsonResponse({
           status: "succeeded",
-          artifact_run_id: 40,
-          output_type: "executive_summary",
-          artifact_version: {
-            id: 50,
-            version_number: 1,
-            source_version_id: 30,
-            source_version_number: 1,
-            content: "A short generated summary.",
-            provider: "openai",
-            model: "gpt-6-luna",
-            prompt_version: "1",
-            prompt_hash: "b".repeat(64),
-          },
+          artifacts: [
+            {
+              artifact_run_id: 40,
+              output_type: "executive_summary",
+              status: "succeeded",
+              artifact_version: {
+                id: 50,
+                version_number: 1,
+                source_version_id: 30,
+                source_version_number: 1,
+                content: "A short generated summary.",
+                provider: "openai",
+                model: "gpt-6-luna",
+                prompt_version: "1",
+                prompt_hash: "b".repeat(64),
+              },
+            },
+          ],
         }),
       );
     installWorkspaceFetch(fetchMock);
@@ -360,7 +365,7 @@ describe("transformation request form", () => {
       "Transformation saved",
     );
     fireEvent.click(
-      screen.getByRole("button", { name: "Generate Executive Summary" }),
+      screen.getByRole("button", { name: "Generate selected outputs" }),
     );
     expect(
       await screen.findByText("A short generated summary."),
@@ -382,6 +387,123 @@ describe("transformation request form", () => {
           supporting_context: "For local administrators.",
         }),
       }),
+    );
+  });
+
+  it("shows independent output results and retries only the failed artifact", async () => {
+    const presentationContent = JSON.stringify({
+      title: "Community center",
+      slides: [
+        {
+          title: "Opening",
+          key_message: "The center opened Saturday.",
+          bullets: ["Opening day was Saturday."],
+          visual_recommendation: "Entrance photo.",
+          speaker_notes: "Welcome the community.",
+        },
+        {
+          title: "Next steps",
+          key_message: "Visit during posted hours.",
+          bullets: ["Check the posted schedule."],
+          visual_recommendation: "Hours sign.",
+          speaker_notes: "Share the schedule.",
+        },
+      ],
+    });
+    const successfulVersion = {
+      id: 50,
+      version_number: 1,
+      source_version_id: 30,
+      source_version_number: 1,
+      content: "A short generated summary.",
+      provider: "openai",
+      model: "gpt-6-luna",
+      prompt_version: "1",
+      prompt_hash: "b".repeat(64),
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(healthResponse)
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ...savedResponse,
+          output_types: ["executive_summary", "advisory", "presentation"],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          status: "partial_failure",
+          artifacts: [
+            {
+              artifact_run_id: 40,
+              output_type: "executive_summary",
+              status: "succeeded",
+              artifact_version: successfulVersion,
+            },
+            {
+              artifact_run_id: 41,
+              output_type: "advisory",
+              status: "failed",
+              artifact_version: null,
+            },
+            {
+              artifact_run_id: 42,
+              output_type: "presentation",
+              status: "succeeded",
+              artifact_version: {
+                ...successfulVersion,
+                id: 52,
+                content: presentationContent,
+              },
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          artifact_run_id: 41,
+          output_type: "advisory",
+          status: "succeeded",
+          artifact_version: {
+            ...successfulVersion,
+            id: 53,
+            content: "The advisory is ready.",
+          },
+        }),
+      );
+    installWorkspaceFetch(fetchMock);
+
+    await renderAuthenticatedWorkspace();
+    fillRequiredControls();
+    for (const output of [
+      "Executive Summary",
+      "Formal Advisory",
+      "Presentation + Speaker Notes",
+    ]) {
+      fireEvent.click(screen.getByRole("checkbox", { name: output }));
+    }
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save transformation" }),
+    );
+    await screen.findByText("Transformation saved");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Generate selected outputs" }),
+    );
+
+    expect(await screen.findByText("Failed")).toBeInTheDocument();
+    expect(screen.getByText("Welcome the community.")).toBeInTheDocument();
+    expect(screen.queryByText(presentationContent)).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Retry Formal Advisory" }),
+    );
+
+    expect(
+      await screen.findByText("The advisory is ready."),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/api/artifact-runs/41/retry",
+      expect.objectContaining({ method: "POST", credentials: "include" }),
     );
   });
 
