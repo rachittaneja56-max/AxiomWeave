@@ -1,9 +1,11 @@
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from app.auth import require_current_user
 from app.domain.transformation import SOURCE_TEXT_MAX_LENGTH
+from app.models import User
 
 router = APIRouter()
 
@@ -35,7 +37,10 @@ def source_error(status_code: int, code: str, message: str) -> HTTPException:
 
 
 @router.post("/sources/text-file", response_model=ExtractedText)
-async def extract_text_file(file: Annotated[UploadFile, File()]) -> ExtractedText:
+async def extract_text_file(
+    file: Annotated[UploadFile, File()],
+    _user: Annotated[User, Depends(require_current_user)],
+) -> ExtractedText:
     filename = file.filename or ""
     extension = filename.rpartition(".")[2].lower()
     extension = f".{extension}" if extension else ""

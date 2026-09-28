@@ -8,6 +8,12 @@ from app.main import app
 client: TestClient = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def use_authenticated_test_client(authorized_client: TestClient) -> None:
+    global client
+    client = authorized_client
+
+
 def upload(filename: str, content: bytes, content_type: str = "application/octet-stream"):
     return client.post(
         "/api/sources/text-file",

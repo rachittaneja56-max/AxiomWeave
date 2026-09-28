@@ -5,7 +5,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
 const healthResponse = {
@@ -33,6 +33,25 @@ function jsonResponse(body: unknown, status = 200) {
   };
 }
 
+function installWorkspaceFetch(fetchMock: ReturnType<typeof vi.fn>) {
+  const delegateFetch = fetchMock as unknown as (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ) => Promise<unknown>;
+  const routedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (input === "/api/auth/session") {
+      return Promise.resolve(jsonResponse({ authenticated: true }));
+    }
+    return delegateFetch(input, init);
+  });
+  vi.stubGlobal("fetch", routedFetch);
+}
+
+async function renderAuthenticatedWorkspace() {
+  render(<App />);
+  await screen.findByRole("heading", { name: "Content transformation" });
+}
+
 function fillRequiredControls() {
   fireEvent.change(screen.getByLabelText("Text source"), {
     target: { value: preparedRequest.source_text },
@@ -58,15 +77,28 @@ function selectMultipleOutputs() {
 }
 
 describe("transformation request form", () => {
+  beforeEach(() => {
+    vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "test-web-client");
+    vi.stubGlobal("google", {
+      accounts: {
+        id: {
+          initialize: vi.fn(),
+          renderButton: vi.fn(),
+        },
+      },
+    });
+  });
+
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
-  it("renders the request controls and permits selecting multiple outputs", () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(healthResponse));
+  it("renders the request controls and permits selecting multiple outputs", async () => {
+    installWorkspaceFetch(vi.fn().mockResolvedValue(healthResponse));
 
-    render(<App />);
+    await renderAuthenticatedWorkspace();
 
     expect(
       screen.getByRole("heading", { name: "Content transformation" }),
@@ -117,9 +149,9 @@ describe("transformation request form", () => {
           request: { ...preparedRequest, source_text: extractedSource },
         }),
       );
-    vi.stubGlobal("fetch", fetchMock);
+    installWorkspaceFetch(fetchMock);
 
-    render(<App />);
+    await renderAuthenticatedWorkspace();
     fireEvent.click(screen.getByRole("radio", { name: "Upload text file" }));
     const file = new File([extractedSource], "garden.md", {
       type: "text/markdown",
@@ -173,9 +205,9 @@ describe("transformation request form", () => {
       .mockResolvedValueOnce(
         jsonResponse({ filename: "bad.txt", source_text: "missing metadata" }),
       );
-    vi.stubGlobal("fetch", fetchMock);
+    installWorkspaceFetch(fetchMock);
 
-    render(<App />);
+    await renderAuthenticatedWorkspace();
     fireEvent.click(screen.getByRole("radio", { name: "Upload text file" }));
     const file = new File(["plain text"], "source.txt", { type: "text/plain" });
     fireEvent.change(screen.getByLabelText("Text file (.txt or .md)"), {
@@ -196,9 +228,9 @@ describe("transformation request form", () => {
       .fn()
       .mockResolvedValueOnce(healthResponse)
       .mockRejectedValueOnce(new Error("private network detail"));
-    vi.stubGlobal("fetch", fetchMock);
+    installWorkspaceFetch(fetchMock);
 
-    render(<App />);
+    await renderAuthenticatedWorkspace();
     fireEvent.click(screen.getByRole("radio", { name: "Upload text file" }));
     const file = new File(["plain text"], "source.txt", { type: "text/plain" });
     fireEvent.change(screen.getByLabelText("Text file (.txt or .md)"), {
@@ -229,9 +261,9 @@ describe("transformation request form", () => {
       .mockResolvedValueOnce(
         jsonResponse({ status: "ready", request: preparedRequest }),
       );
-    vi.stubGlobal("fetch", fetchMock);
+    installWorkspaceFetch(fetchMock);
 
-    render(<App />);
+    await renderAuthenticatedWorkspace();
     fireEvent.click(screen.getByRole("radio", { name: "Upload text file" }));
     const file = new File([extractedSource], "source.txt", {
       type: "text/plain",
@@ -264,9 +296,9 @@ describe("transformation request form", () => {
       .mockResolvedValueOnce(
         jsonResponse({ status: "ready", request: preparedRequest }),
       );
-    vi.stubGlobal("fetch", fetchMock);
+    installWorkspaceFetch(fetchMock);
 
-    render(<App />);
+    await renderAuthenticatedWorkspace();
     fillRequiredControls();
     selectMultipleOutputs();
     fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
@@ -290,9 +322,9 @@ describe("transformation request form", () => {
 
   it("gives local feedback for missing source and output selection", async () => {
     const fetchMock = vi.fn().mockResolvedValue(healthResponse);
-    vi.stubGlobal("fetch", fetchMock);
+    installWorkspaceFetch(fetchMock);
 
-    render(<App />);
+    await renderAuthenticatedWorkspace();
     fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Enter source text",
@@ -325,9 +357,9 @@ describe("transformation request form", () => {
           422,
         ),
       );
-    vi.stubGlobal("fetch", fetchMock);
+    installWorkspaceFetch(fetchMock);
 
-    render(<App />);
+    await renderAuthenticatedWorkspace();
     fillRequiredControls();
     selectMultipleOutputs();
     fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
@@ -343,9 +375,9 @@ describe("transformation request form", () => {
       .fn()
       .mockResolvedValueOnce(healthResponse)
       .mockRejectedValueOnce(new Error("private network detail"));
-    vi.stubGlobal("fetch", fetchMock);
+    installWorkspaceFetch(fetchMock);
 
-    render(<App />);
+    await renderAuthenticatedWorkspace();
     fillRequiredControls();
     selectMultipleOutputs();
     fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
@@ -363,9 +395,9 @@ describe("transformation request form", () => {
       .fn()
       .mockResolvedValueOnce(healthResponse)
       .mockResolvedValueOnce(jsonResponse({ status: "ready", request: {} }));
-    vi.stubGlobal("fetch", fetchMock);
+    installWorkspaceFetch(fetchMock);
 
-    render(<App />);
+    await renderAuthenticatedWorkspace();
     fillRequiredControls();
     selectMultipleOutputs();
     fireEvent.click(screen.getByRole("button", { name: "Prepare request" }));
@@ -374,5 +406,145 @@ describe("transformation request form", () => {
       "unexpected response",
     );
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+});
+
+describe("AxiomWeave sign-in", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  beforeEach(() => {
+    vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "configured-web-client");
+  });
+
+  it("keeps the workspace hidden while session state is unresolved", () => {
+    let resolveSession:
+      ((response: ReturnType<typeof jsonResponse>) => void) | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveSession = resolve;
+          }),
+      ),
+    );
+    render(<App />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Checking your AxiomWeave session",
+    );
+    expect(screen.queryByLabelText("Text source")).not.toBeInTheDocument();
+    resolveSession?.(jsonResponse({ authenticated: false }, 401));
+  });
+
+  it("shows the product sign-in screen without password fields", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({}, 401)));
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Sign in to AxiomWeave" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("AXIOMWEAVE")).toBeInTheDocument();
+    expect(
+      screen.getByText("One source. Many artifacts. Every claim traceable."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Multi-output transformation")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/email|password/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/forgot password/i)).not.toBeInTheDocument();
+  });
+
+  it("explains when the Google client ID is not configured", async () => {
+    vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({}, 401)));
+    render(<App />);
+
+    expect(
+      await screen.findByText(/Set SIH_GOOGLE_CLIENT_ID for local development/),
+    ).toBeInTheDocument();
+  });
+
+  it("initializes GIS with the configured client ID and sends the callback credential", async () => {
+    const initialize = vi.fn();
+    const renderButton = vi.fn();
+    vi.stubGlobal("google", { accounts: { id: { initialize, renderButton } } });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({}, 401))
+      .mockResolvedValueOnce(jsonResponse({ authenticated: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Sign in to AxiomWeave" });
+    await waitFor(() =>
+      expect(initialize).toHaveBeenCalledWith(
+        expect.objectContaining({ client_id: "configured-web-client" }),
+      ),
+    );
+    expect(renderButton).toHaveBeenCalledWith(
+      expect.any(HTMLElement),
+      expect.objectContaining({ text: "continue_with" }),
+    );
+    const callback = initialize.mock.calls[0][0].callback as (response: {
+      credential: string;
+    }) => Promise<void>;
+    await callback({ credential: "opaque-google-token" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/auth/google",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        body: JSON.stringify({ credential: "opaque-google-token" }),
+      }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Content transformation" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("opaque-google-token")).not.toBeInTheDocument();
+  });
+
+  it("shows a safe login error and returns to sign-in after logout", async () => {
+    const initialize = vi.fn();
+    vi.stubGlobal("google", {
+      accounts: { id: { initialize, renderButton: vi.fn() } },
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({}, 401))
+      .mockResolvedValueOnce(
+        jsonResponse({ error: "private token detail" }, 401),
+      )
+      .mockResolvedValueOnce(jsonResponse({ authenticated: true }))
+      .mockResolvedValueOnce(jsonResponse({ status: "ok" }))
+      .mockResolvedValueOnce(jsonResponse({}, 204));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    await screen.findByRole("heading", { name: "Sign in to AxiomWeave" });
+    const callback = initialize.mock.calls[0][0].callback as (response: {
+      credential: string;
+    }) => Promise<void>;
+    await callback({ credential: "sensitive-token-value" });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Sign-in could not be completed",
+    );
+    expect(screen.queryByText("sensitive-token-value")).not.toBeInTheDocument();
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ authenticated: true }));
+    await callback({ credential: "valid-token" });
+    expect(
+      await screen.findByRole("heading", { name: "Content transformation" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(
+      await screen.findByRole("heading", { name: "Sign in to AxiomWeave" }),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/auth/logout",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(screen.queryByLabelText("Text source")).not.toBeInTheDocument();
   });
 });

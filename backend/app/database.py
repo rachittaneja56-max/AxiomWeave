@@ -1,4 +1,6 @@
 import sqlite3
+from collections.abc import Iterator
+from functools import lru_cache
 from typing import cast
 
 from sqlalchemy import Engine, event
@@ -32,3 +34,16 @@ def enable_sqlite_foreign_keys(
 
 def create_session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
+@lru_cache(maxsize=1)
+def _application_session_factory() -> sessionmaker[Session]:
+    return create_session_factory(create_database_engine())
+
+
+def get_db_session() -> Iterator[Session]:
+    session = _application_session_factory()()
+    try:
+        yield session
+    finally:
+        session.close()

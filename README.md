@@ -12,11 +12,13 @@ The React/Vite frontend prepares a bounded text transformation request. Operator
 
 The backend now includes a SQLite persistence schema and Alembic migration for users, sessions, sources, source versions and segments, transformation runs, artifact runs, and artifact versions. The schema models source and artifact version history; the application does not yet save user workflows through API routes.
 
-The following workflows are not implemented: Google authentication, session issuance, owner isolation at the API layer, saved-source APIs, user-facing generation, review/history UI, source evidence, discrepancy warnings, source revision and targeted updates, and export. Database ownership fields alone do not enforce API access control. Structural validation and internal generation do not establish factual correctness.
+Google Identity Services provides browser sign-in, and the backend verifies the Google ID token against `SIH_GOOGLE_CLIENT_ID`. AxiomWeave maps the verified Google `sub` to a local user and issues a separate eight-hour application session in an HttpOnly, SameSite=Lax cookie. Only the session token digest is stored. Logout revokes the local session. Text-file extraction and transformation request preparation require a valid local session; health remains public. Explicit owner-scoped query functions cover the persisted source, source-version, transformation-run, artifact-run, and artifact-version hierarchy for future routes.
+
+The following workflows are not implemented: saved-source APIs, user-visible persisted transformations, SourceSegment creation, supporting-context persistence, TransformationRun persistence, artifact-generation API, live provider, dashboard, artifact review/history UI, source evidence, discrepancy warnings, source revision and targeted updates, and export. The owner-scoped selectors are available for these persisted records, but there are no user-facing APIs for them yet. Structural validation and internal generation do not establish factual correctness.
 
 ## Architecture
 
-The implemented request path is `Browser → React/Vite → FastAPI health, text extraction, and request preparation`. The backend also has a SQLAlchemy persistence boundary and SQLite migration. Persistence is not connected to the existing API routes. See [docs/architecture.md](docs/architecture.md) for the implemented path and boundaries.
+The implemented request path is `Browser → Google Identity Services → AxiomWeave local session → React/Vite → authenticated FastAPI workspace routes`. Health remains public. The backend also has a SQLAlchemy persistence boundary, SQLite migration, and owner-scoped query helpers. Saved-source and artifact workflows are not yet connected to API routes. See [docs/architecture.md](docs/architecture.md) for the implemented path and boundaries.
 
 ## Quick start
 
@@ -53,6 +55,9 @@ If you change `SIH_PORT`, set it in both the backend and frontend terminal envir
 | `SIH_HOST` | `127.0.0.1` | Backend bind address |
 | `SIH_PORT` | `8000` | Backend port |
 | `SIH_DATABASE_URL` | `sqlite:///./axiomweave.db` | Local relational database URL |
+| `SIH_GOOGLE_CLIENT_ID` | unset | Google OAuth Web application client ID; passed to Vite as the public GIS client ID |
+
+For local or demo sign-in, create a Google OAuth Web application client and add the actual frontend origin to its authorized JavaScript origins (for example, the Vite development origin). Add the final demo origin when it is known. GIS callback mode does not require a redirect URI, Google client secret, or Drive scope. Keep `.env` local and do not commit credentials.
 
 ## Development checks
 

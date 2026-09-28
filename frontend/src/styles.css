@@ -96,6 +96,128 @@ h1 {
   background: #8a94a5;
 }
 
+.workspace-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.button-secondary {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid #d4dbe5;
+  background: #fff;
+  color: #26364d;
+}
+
+.button-secondary:hover:not(:disabled) {
+  background: #f4f6f9;
+}
+
+.signin-shell {
+  display: grid;
+  width: min(100% - 48px, 1100px);
+  min-height: 100vh;
+  align-items: center;
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+  gap: clamp(36px, 8vw, 104px);
+  margin: 0 auto;
+  padding: 48px 0;
+}
+
+.signin-story {
+  max-width: 620px;
+}
+
+.signin-kicker,
+.signin-brand {
+  color: #3159a8;
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.signin-brand {
+  margin: 0 0 20px;
+  color: #172b4d;
+  font-size: 1rem;
+}
+
+.signin-story h1 {
+  max-width: 590px;
+  margin: 0 0 18px;
+  color: #142846;
+  font-size: clamp(2.2rem, 5vw, 3.4rem);
+  line-height: 1.12;
+}
+
+.signin-description {
+  max-width: 540px;
+  color: #596579;
+  font-size: 1.08rem;
+  line-height: 1.65;
+}
+
+.signin-tagline {
+  margin: 0 0 12px;
+  color: #3159a8;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.signin-benefits {
+  display: grid;
+  gap: 14px;
+  margin: 30px 0 0;
+  padding: 0;
+  color: #303b4e;
+  list-style: none;
+}
+
+.signin-benefits li::before {
+  margin-right: 11px;
+  color: #3159a8;
+  content: "•";
+  font-size: 1.2rem;
+}
+
+.signin-card {
+  display: grid;
+  min-height: 245px;
+  align-content: center;
+  gap: 17px;
+  padding: 32px;
+  border: 1px solid #e1e5eb;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 18px 54px rgb(23 32 51 / 7%);
+}
+
+.signin-card .eyebrow,
+.signin-card h2 {
+  margin-bottom: 0;
+}
+
+.google-button {
+  min-height: 44px;
+}
+
+.signin-message {
+  margin: 0;
+  color: #596579;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.signin-loading {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  color: #596579;
+}
+
 .health--online .health-dot {
   background: #1b8b5a;
 }
@@ -357,6 +479,14 @@ button:disabled {
 }
 
 @media (max-width: 720px) {
+  .signin-shell {
+    width: min(100% - 32px, 560px);
+    align-content: center;
+    grid-template-columns: 1fr;
+    gap: 32px;
+    padding: 32px 0;
+  }
+
   .page-shell {
     width: min(100% - 28px, 960px);
     padding-top: 32px;
@@ -365,6 +495,11 @@ button:disabled {
   .page-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .workspace-header-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .output-options {

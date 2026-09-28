@@ -3,19 +3,24 @@
 ## Implemented request path
 
 ```text
-Browser → React/Vite frontend → HTTP API → FastAPI
-                                      ├→ GET /api/health
-                                      ├→ POST /api/sources/text-file
-                                      └→ POST /api/transformations/prepare
+Browser -> Google Identity Services -> POST /api/auth/google
+       -> AxiomWeave local session cookie -> React/Vite -> FastAPI
+                                                   |-> GET /api/health (public)
+                                                   |-> GET /api/auth/session
+                                                   |-> POST /api/auth/logout
+                                                   |-> POST /api/sources/text-file (authenticated)
+                                                   `-> POST /api/transformations/prepare (authenticated)
 ```
 
-The browser submits pasted text or uses the stateless text-file extraction endpoint to populate the same canonical source text. The backend validates and returns the canonical request as ready for a later stage. No artifact content is generated through the API.
+Google Identity Services returns an ID token to the browser callback. The browser sends the credential to the backend, which verifies the signature and audience against `SIH_GOOGLE_CLIENT_ID`, then identifies the local account by the stable Google `sub`. The backend issues a separate random application-session token, persists only its SHA-256 digest, and returns it in an HttpOnly, SameSite=Lax cookie. The cookie is Secure outside development and expires after eight hours. Logout revokes the session and clears its cookie. No Google access token, refresh token, client secret, or Drive scope is used.
+
+Health remains public. Text-file extraction and transformation request preparation require an application session. Pasted or extracted source is validated and returned as a request ready for a later stage; it is not persisted or generated through these routes. Source text and supporting context remain untrusted input.
 
 ## Persistence foundation
 
 The backend defines SQLAlchemy 2 models and an Alembic migration for `User`, `AuthSession`, `Source`, `SourceVersion`, `SourceSegment`, `TransformationRun`, `ArtifactRun`, and `ArtifactVersion`. The default database is SQLite, configured through `SIH_DATABASE_URL`. SQLite connections enable foreign-key enforcement. Source and artifact version number uniqueness constraints allow distinct historical versions while preventing duplicate version numbers for the same parent.
 
-These records are not connected to API routes. Google authentication, session issuance, owner-scoped API access, saved-source workflows, user-facing generation, review/history, source evidence, discrepancy warnings, source revision, and export are not implemented. Owner fields in the schema are not API access control.
+Saved-source and artifact records are not connected to user-facing API routes. Explicit owner-scoped selectors constrain queries for Source, SourceVersion, TransformationRun, ArtifactRun, and ArtifactVersion by their owning user. These establish the query boundary for future endpoints but do not imply that those APIs exist. Saved-source workflows, user-facing generation, review/history, source evidence, discrepancy warnings, source revision, and export are not implemented.
 
 ## Generation boundary
 

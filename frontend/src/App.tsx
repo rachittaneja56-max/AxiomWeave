@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 const OUTPUT_TYPES = [
   { value: "executive_summary", label: "Executive summary" },
@@ -154,7 +154,7 @@ function validationMessage(body: unknown): string {
   return `Please review: ${[...new Set(labels)].join(", ")}.`;
 }
 
-export default function App() {
+function Workspace({ onLogout }: { onLogout: () => void }) {
   const [health, setHealth] = useState<HealthState>("loading");
   const [request, setRequest] =
     useState<TransformationRequest>(INITIAL_REQUEST);
@@ -225,6 +225,7 @@ export default function App() {
       formData.append("file", file);
       const response = await fetch("/api/sources/text-file", {
         method: "POST",
+        credentials: "include",
         body: formData,
       });
       let body: unknown;
@@ -281,6 +282,7 @@ export default function App() {
     try {
       const response = await fetch("/api/transformations/prepare", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
       });
@@ -332,15 +334,21 @@ export default function App() {
     <main className="page-shell">
       <header className="page-header">
         <div>
+          <p className="eyebrow">AXIOMWEAVE</p>
           <p className="eyebrow">Smart India Hackathon 2026 · NTRO</p>
           <h1>Content transformation</h1>
           <p className="intro">
             Prepare one source and choose the communication materials you need.
           </p>
         </div>
-        <div className={`health health--${health}`} aria-live="polite">
-          <span className="health-dot" aria-hidden="true" />
-          {healthText}
+        <div className="workspace-header-actions">
+          <div className={`health health--${health}`} aria-live="polite">
+            <span className="health-dot" aria-hidden="true" />
+            {healthText}
+          </div>
+          <button type="button" className="button-secondary" onClick={onLogout}>
+            Sign out
+          </button>
         </div>
       </header>
 
@@ -564,5 +572,212 @@ export default function App() {
         )}
       </form>
     </main>
+  );
+}
+
+type AuthState = "loading" | "signed_out" | "signed_in";
+
+const initializedGoogleApis = new WeakMap<object, string>();
+
+function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
+  const buttonContainer = useRef<HTMLDivElement>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+
+  useEffect(() => {
+    if (!clientId) return;
+    let mounted = true;
+    let script: HTMLScriptElement | null = null;
+
+    const initialize = () => {
+      if (!mounted || !window.google || !buttonContainer.current) return;
+      const googleId = window.google.accounts.id;
+      if (initializedGoogleApis.get(googleId) !== clientId) {
+        googleId.initialize({
+          client_id: clientId,
+          callback: async (response) => {
+            const credential = response.credential;
+            if (!credential) {
+              setMessage(
+                "Google sign-in did not return a credential. Please try again.",
+              );
+              return;
+            }
+            setMessage(null);
+            try {
+              const result = await fetch("/api/auth/google", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ credential }),
+              });
+              if (!result.ok) {
+                setMessage("Sign-in could not be completed. Please try again.");
+                return;
+              }
+              const body: unknown = await result.json();
+              if (!isRecord(body) || body.authenticated !== true) {
+                setMessage(
+                  "Sign-in returned an unexpected response. Please try again.",
+                );
+                return;
+              }
+              onSignedIn();
+            } catch {
+              setMessage(
+                "Could not reach AxiomWeave. Check the connection and try again.",
+              );
+            }
+          },
+        });
+        initializedGoogleApis.set(googleId, clientId);
+      }
+      buttonContainer.current.replaceChildren();
+      googleId.renderButton(buttonContainer.current, {
+        theme: "outline",
+        size: "large",
+        text: "continue_with",
+        width: 280,
+      });
+    };
+
+    if (window.google) {
+      initialize();
+    } else {
+      script = document.querySelector<HTMLScriptElement>(
+        "#google-identity-services",
+      );
+      if (!script) {
+        script = document.createElement("script");
+        script.id = "google-identity-services";
+        script.src = "https://accounts.google.com/gsi/client";
+        script.async = true;
+        script.defer = true;
+        script.addEventListener("load", initialize, { once: true });
+        script.addEventListener(
+          "error",
+          () => {
+            if (mounted)
+              setMessage(
+                "Google sign-in could not load. Check your connection and configuration, then refresh to retry.",
+              );
+          },
+          { once: true },
+        );
+        document.head.append(script);
+      } else {
+        script.addEventListener("load", initialize, { once: true });
+      }
+    }
+
+    return () => {
+      mounted = false;
+      script?.removeEventListener("load", initialize);
+    };
+  }, [clientId, onSignedIn]);
+
+  return (
+    <main className="signin-shell">
+      <section className="signin-story" aria-labelledby="product-name">
+        <p className="signin-kicker">Source-grounded communication</p>
+        <p className="signin-brand">AXIOMWEAVE</p>
+        <h1 id="product-name">
+          Source-Grounded Content Transformation Workspace
+        </h1>
+        <p className="signin-tagline">
+          One source. Many artifacts. Every claim traceable.
+        </p>
+        <p className="signin-description">
+          Transform one authoritative source into traceable, reviewable
+          communication artifacts.
+        </p>
+        <ul className="signin-benefits">
+          <li>Multi-output transformation</li>
+          <li>Source-linked evidence</li>
+          <li>Version-aware review</li>
+        </ul>
+      </section>
+      <section className="signin-card" aria-labelledby="signin-heading">
+        <p className="eyebrow">AxiomWeave</p>
+        <h2 id="signin-heading">Sign in to AxiomWeave</h2>
+        {clientId ? (
+          <div
+            ref={buttonContainer}
+            className="google-button"
+            aria-label="Continue with Google"
+          />
+        ) : (
+          <p className="signin-message" role="status">
+            Google sign-in is not configured. Set SIH_GOOGLE_CLIENT_ID for local
+            development.
+          </p>
+        )}
+        {message && (
+          <p className="signin-message" role="alert">
+            {message}
+          </p>
+        )}
+      </section>
+    </main>
+  );
+}
+
+export default function App() {
+  const [authState, setAuthState] = useState<AuthState>("loading");
+
+  useEffect(() => {
+    let mounted = true;
+    void fetch("/api/auth/session", { credentials: "include" })
+      .then(async (response) => {
+        if (!mounted) return;
+        if (response.status === 401) {
+          setAuthState("signed_out");
+          return;
+        }
+        if (!response.ok) throw new Error("session unavailable");
+        const body: unknown = await response.json();
+        setAuthState(
+          isRecord(body) && body.authenticated === true
+            ? "signed_in"
+            : "signed_out",
+        );
+      })
+      .catch(() => {
+        if (mounted) setAuthState("signed_out");
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  async function signOut() {
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch {
+      // Clear the local workspace view even when the network is unavailable.
+    } finally {
+      setAuthState("signed_out");
+    }
+  }
+
+  if (authState === "loading") {
+    return (
+      <main className="signin-loading" role="status">
+        Checking your AxiomWeave session…
+      </main>
+    );
+  }
+  if (authState === "signed_out") {
+    return <SignIn onSignedIn={() => setAuthState("signed_in")} />;
+  }
+  return (
+    <Workspace
+      onLogout={() => {
+        void signOut();
+      }}
+    />
   );
 }
