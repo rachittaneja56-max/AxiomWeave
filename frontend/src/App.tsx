@@ -102,6 +102,38 @@ type TransformationDetail = {
   artifact_runs: ReviewArtifactRun[];
 };
 
+type EvidenceLink = {
+  id: number;
+  artifact_version_id: number;
+  claim_text: string;
+  source_version_id: number;
+  source_segment_id: number | null;
+  source_quote: string | null;
+  source_locator: string | null;
+  status: "linked" | "support_not_located";
+  created_at: string;
+};
+
+type SourceVersionContent = {
+  id: number;
+  version_number: number;
+  content_hash: string;
+  source_text: string;
+};
+
+type DiscrepancyFinding = {
+  id: number;
+  source_version_id: number;
+  artifact_version_a_id: number;
+  artifact_version_b_id: number;
+  statement_a: string;
+  statement_b: string;
+  discrepancy_type: string;
+  explanation: string;
+  review_status: "open" | "dismissed";
+  created_at: string;
+};
+
 type WorkspaceScreen = "dashboard" | "new" | "review";
 
 type HealthState = "loading" | "online" | "offline";
@@ -401,6 +433,18 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
   >(null);
   const [editContent, setEditContent] = useState("");
   const [isReviewActionRunning, setIsReviewActionRunning] = useState(false);
+  const [evidenceByVersion, setEvidenceByVersion] = useState<
+    Record<number, EvidenceLink[]>
+  >({});
+  const [sourceContentById, setSourceContentById] = useState<
+    Record<number, SourceVersionContent>
+  >({});
+  const [visibleSources, setVisibleSources] = useState<Record<number, boolean>>(
+    {},
+  );
+  const [findingsByPair, setFindingsByPair] = useState<
+    Record<string, DiscrepancyFinding | null>
+  >({});
   const [logoutError, setLogoutError] = useState(false);
 
   useEffect(() => {
@@ -473,6 +517,10 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
       setReviewDetail(body);
       setSelectedVersions({});
       setEditingArtifactRunId(null);
+      setEvidenceByVersion({});
+      setSourceContentById({});
+      setVisibleSources({});
+      setFindingsByPair({});
       setScreen("review");
     } catch {
       setReviewError("Could not open this review workspace. Please retry.");
@@ -813,6 +861,146 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
     }
   }
 
+  async function loadEvidence(artifactVersionId: number) {
+    setReviewError(null);
+    try {
+      const response = await fetch(
+        `/api/artifact-versions/${artifactVersionId}/evidence`,
+        { credentials: "include" },
+      );
+      if (!response.ok) throw new Error("evidence unavailable");
+      const body: unknown = await response.json();
+      if (!Array.isArray(body)) throw new Error("invalid evidence response");
+      setEvidenceByVersion((current) => ({
+        ...current,
+        [artifactVersionId]: body as EvidenceLink[],
+      }));
+    } catch {
+      setReviewError("Saved evidence could not be loaded. Please retry.");
+    }
+  }
+
+  async function analyzeEvidence(version: ReviewArtifactVersion) {
+    setReviewError(null);
+    setIsReviewActionRunning(true);
+    try {
+      const response = await fetch(
+        `/api/artifact-versions/${version.id}/evidence/analyze`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_version_id: version.source_version_id,
+          }),
+        },
+      );
+      if (!response.ok) throw new Error("evidence analysis failed");
+      const body: unknown = await response.json();
+      if (!Array.isArray(body)) throw new Error("invalid evidence response");
+      setEvidenceByVersion((current) => ({
+        ...current,
+        [version.id]: body as EvidenceLink[],
+      }));
+    } catch {
+      setReviewError("Evidence analysis could not be completed. Please retry.");
+    } finally {
+      setIsReviewActionRunning(false);
+    }
+  }
+
+  async function toggleSource(sourceVersionId: number) {
+    if (sourceContentById[sourceVersionId]) {
+      setVisibleSources((current) => ({
+        ...current,
+        [sourceVersionId]: !current[sourceVersionId],
+      }));
+      return;
+    }
+    setReviewError(null);
+    try {
+      const response = await fetch(`/api/source-versions/${sourceVersionId}`, {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("source unavailable");
+      const body: unknown = await response.json();
+      if (!isRecord(body) || typeof body.source_text !== "string") {
+        throw new Error("invalid source response");
+      }
+      setSourceContentById((current) => ({
+        ...current,
+        [sourceVersionId]: body as SourceVersionContent,
+      }));
+      setVisibleSources((current) => ({ ...current, [sourceVersionId]: true }));
+    } catch {
+      setReviewError("The source version could not be opened. Please retry.");
+    }
+  }
+
+  async function analyzeDiscrepancy(
+    versionA: ReviewArtifactVersion,
+    versionB: ReviewArtifactVersion,
+  ) {
+    const pairKey = [versionA.id, versionB.id].sort((a, b) => a - b).join(":");
+    setReviewError(null);
+    setIsReviewActionRunning(true);
+    try {
+      const response = await fetch("/api/discrepancies/analyze", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          artifact_version_a_id: versionA.id,
+          artifact_version_b_id: versionB.id,
+        }),
+      });
+      if (!response.ok) throw new Error("discrepancy analysis failed");
+      const body: unknown = await response.json();
+      if (!isRecord(body)) throw new Error("invalid discrepancy response");
+      const finding =
+        isRecord(body.finding) && Number.isInteger(body.finding.id)
+          ? (body.finding as unknown as DiscrepancyFinding)
+          : null;
+      setFindingsByPair((current) => ({ ...current, [pairKey]: finding }));
+    } catch {
+      setReviewError(
+        "Possible discrepancy analysis could not be completed. Please retry.",
+      );
+    } finally {
+      setIsReviewActionRunning(false);
+    }
+  }
+
+  async function dismissDiscrepancy(finding: DiscrepancyFinding) {
+    setReviewError(null);
+    setIsReviewActionRunning(true);
+    try {
+      const response = await fetch(`/api/discrepancies/${finding.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ review_status: "dismissed" }),
+      });
+      if (!response.ok) throw new Error("dismissal failed");
+      const body: unknown = await response.json();
+      if (!isRecord(body)) throw new Error("invalid finding response");
+      const updated = body as unknown as DiscrepancyFinding;
+      const pairKey = [
+        updated.artifact_version_a_id,
+        updated.artifact_version_b_id,
+      ]
+        .sort((a, b) => a - b)
+        .join(":");
+      setFindingsByPair((current) => ({ ...current, [pairKey]: updated }));
+    } catch {
+      setReviewError(
+        "The discrepancy decision could not be saved. Please retry.",
+      );
+    } finally {
+      setIsReviewActionRunning(false);
+    }
+  }
+
   async function handleLogout() {
     setLogoutError(false);
     if (!(await onLogout())) setLogoutError(true);
@@ -1123,6 +1311,121 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
                                 {selectedVersion.content}
                               </pre>
                             )}
+                            <section
+                              className="evidence-panel"
+                              aria-label={`${label} evidence`}
+                            >
+                              <div className="evidence-panel-heading">
+                                <div>
+                                  <h4>Source evidence</h4>
+                                  <p>
+                                    Exact source quotations are checked locally.
+                                  </p>
+                                </div>
+                                <div className="evidence-panel-actions">
+                                  <button
+                                    type="button"
+                                    disabled={isReviewActionRunning}
+                                    onClick={() =>
+                                      void analyzeEvidence(selectedVersion)
+                                    }
+                                  >
+                                    Analyze evidence
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="button-secondary"
+                                    onClick={() =>
+                                      void loadEvidence(selectedVersion.id)
+                                    }
+                                  >
+                                    View saved evidence
+                                  </button>
+                                </div>
+                              </div>
+                              {evidenceByVersion[selectedVersion.id] ===
+                              undefined ? (
+                                <p>
+                                  Evidence has not been loaded for this version.
+                                </p>
+                              ) : evidenceByVersion[selectedVersion.id]
+                                  .length === 0 ? (
+                                <p>
+                                  No saved evidence claims for this version.
+                                </p>
+                              ) : (
+                                <ul className="evidence-list">
+                                  {evidenceByVersion[selectedVersion.id].map(
+                                    (evidence) => (
+                                      <li key={evidence.id}>
+                                        <strong>{evidence.claim_text}</strong>
+                                        {evidence.status === "linked" ? (
+                                          <>
+                                            <blockquote>
+                                              {evidence.source_quote}
+                                            </blockquote>
+                                            <p>
+                                              Source V
+                                              {
+                                                selectedVersion.source_version_number
+                                              }
+                                              {` · ID ${evidence.source_version_id}`}
+                                              {evidence.source_locator
+                                                ? ` · ${evidence.source_locator}`
+                                                : ""}
+                                            </p>
+                                            <button
+                                              type="button"
+                                              className="button-secondary"
+                                              onClick={() =>
+                                                void toggleSource(
+                                                  evidence.source_version_id,
+                                                )
+                                              }
+                                            >
+                                              {visibleSources[
+                                                evidence.source_version_id
+                                              ]
+                                                ? "Hide source"
+                                                : "View source"}
+                                            </button>
+                                            {visibleSources[
+                                              evidence.source_version_id
+                                            ] &&
+                                              sourceContentById[
+                                                evidence.source_version_id
+                                              ] && (
+                                                <div>
+                                                  <p className="evidence-source-meta">
+                                                    Source V
+                                                    {
+                                                      sourceContentById[
+                                                        evidence
+                                                          .source_version_id
+                                                      ].version_number
+                                                    }
+                                                    {` · SHA-256 ${sourceContentById[evidence.source_version_id].content_hash}`}
+                                                  </p>
+                                                  <pre className="evidence-source-text">
+                                                    {
+                                                      sourceContentById[
+                                                        evidence
+                                                          .source_version_id
+                                                      ].source_text
+                                                    }
+                                                  </pre>
+                                                </div>
+                                              )}
+                                          </>
+                                        ) : (
+                                          <p>Source support not located.</p>
+                                        )}
+                                      </li>
+                                    ),
+                                  )}
+                                </ul>
+                              )}
+                            </section>
                             {isLatest &&
                               editingArtifactRunId !==
                                 artifactRun.artifact_run_id && (
@@ -1188,6 +1491,87 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
                 );
               })}
             </div>
+          )}
+          {reviewDetail.artifact_runs.length > 1 && (
+            <section
+              className="discrepancy-panel"
+              aria-labelledby="discrepancy-heading"
+            >
+              <div>
+                <h3 id="discrepancy-heading">Possible discrepancies</h3>
+                <p>
+                  These warnings compare siblings from the same source. They do
+                  not choose a winner or change either artifact.
+                </p>
+              </div>
+              {reviewDetail.artifact_runs.flatMap((artifactRun, index) => {
+                const versionA = artifactRun.versions.at(-1);
+                if (!versionA) return [];
+                return reviewDetail.artifact_runs
+                  .slice(index + 1)
+                  .flatMap((siblingRun) => {
+                    const versionB = siblingRun.versions.at(-1);
+                    if (!versionB) return [];
+                    const labelA =
+                      OUTPUT_TYPES.find(
+                        (output) => output.value === artifactRun.output_type,
+                      )?.label ?? artifactRun.output_type;
+                    const labelB =
+                      OUTPUT_TYPES.find(
+                        (output) => output.value === siblingRun.output_type,
+                      )?.label ?? siblingRun.output_type;
+                    const pairKey = [versionA.id, versionB.id]
+                      .sort((a, b) => a - b)
+                      .join(":");
+                    const finding = findingsByPair[pairKey];
+                    return [
+                      <div className="discrepancy-pair" key={pairKey}>
+                        <button
+                          type="button"
+                          disabled={isReviewActionRunning}
+                          onClick={() =>
+                            void analyzeDiscrepancy(versionA, versionB)
+                          }
+                        >
+                          Check {labelA} against {labelB}
+                        </button>
+                        {finding === null && (
+                          <p role="status">No possible discrepancy found.</p>
+                        )}
+                        {finding && (
+                          <article className="discrepancy-finding">
+                            <strong>POSSIBLE DISCREPANCY</strong>
+                            <p>{finding.explanation}</p>
+                            <dl>
+                              <div>
+                                <dt>{labelA}</dt>
+                                <dd>{finding.statement_a}</dd>
+                              </div>
+                              <div>
+                                <dt>{labelB}</dt>
+                                <dd>{finding.statement_b}</dd>
+                              </div>
+                            </dl>
+                            <p>Type: {finding.discrepancy_type}</p>
+                            {finding.review_status === "open" ? (
+                              <button
+                                type="button"
+                                className="button-secondary"
+                                disabled={isReviewActionRunning}
+                                onClick={() => void dismissDiscrepancy(finding)}
+                              >
+                                Dismiss warning
+                              </button>
+                            ) : (
+                              <p className="review-state-note">Dismissed</p>
+                            )}
+                          </article>
+                        )}
+                      </div>,
+                    ];
+                  });
+              })}
+            </section>
           )}
           <p className="review-state-note">
             Accepting or rejecting records a workflow decision. It does not

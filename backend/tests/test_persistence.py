@@ -34,6 +34,8 @@ EXPECTED_TABLES = {
     "transformation_runs",
     "artifact_runs",
     "artifact_versions",
+    "evidence_links",
+    "discrepancy_findings",
 }
 
 
@@ -102,7 +104,7 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert set(inspector.get_table_names()) == EXPECTED_TABLES | {"alembic_version"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "6bcd182fea10"
+        assert revision == "a84e72119c60"
     finally:
         engine.dispose()
 

@@ -143,6 +143,7 @@ def test_openai_provider_uses_structured_outputs_for_presentations(
         transformation_instructions="Create a presentation.",
         supporting_context="Audience prefers a short briefing.",
         source_text="The center opened Saturday.",
+        artifact_content="Prior draft claims it opened Saturday.",
     )
 
     result = asyncio.run(provider.generate_structured(request, PresentationSpec))
@@ -152,6 +153,15 @@ def test_openai_provider_uses_structured_outputs_for_presentations(
     assert call["store"] is False
     assert call["reasoning"] == {"effort": "low"}
     assert call["text_format"] is PresentationSpec
+    assert len(call["input"]) == 4
+    assert (
+        '"supporting_context": "Audience prefers a short briefing."' in call["input"][1]["content"]
+    )
+    assert (
+        '"artifact_content": "Prior draft claims it opened Saturday."'
+        in call["input"][2]["content"]
+    )
+    assert '"source_text": "The center opened Saturday."' in call["input"][3]["content"]
     assert result.value.slides[0].speaker_notes == "Welcome attendees."
     assert result.provider == "openai"
     assert result.model == "gpt-6-luna"

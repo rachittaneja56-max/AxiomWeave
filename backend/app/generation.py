@@ -10,6 +10,7 @@ class GenerationRequest:
     transformation_instructions: str
     source_text: str
     supporting_context: str = ""
+    artifact_content: str = ""
 
 
 @dataclass(frozen=True, slots=True)

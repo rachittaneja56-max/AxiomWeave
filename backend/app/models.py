@@ -162,3 +162,65 @@ class ArtifactVersion(Base):
     prompt_hash: Mapped[str | None] = mapped_column(String(64))
     review_status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class EvidenceLink(Base):
+    __tablename__ = "evidence_links"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('linked', 'support_not_located')",
+            name="ck_evidence_links_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    artifact_version_id: Mapped[int] = mapped_column(
+        ForeignKey("artifact_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    claim_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_version_id: Mapped[int] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_segment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_segments.id", ondelete="RESTRICT"), index=True
+    )
+    source_quote: Mapped[str | None] = mapped_column(Text)
+    source_locator: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class DiscrepancyFinding(Base):
+    __tablename__ = "discrepancy_findings"
+    __table_args__ = (
+        UniqueConstraint(
+            "artifact_version_a_id",
+            "artifact_version_b_id",
+            name="uq_discrepancy_findings_version_pair",
+        ),
+        CheckConstraint(
+            "artifact_version_a_id != artifact_version_b_id",
+            name="ck_discrepancy_findings_distinct_versions",
+        ),
+        CheckConstraint(
+            "review_status IN ('open', 'dismissed')",
+            name="ck_discrepancy_findings_review_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_version_id: Mapped[int] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    artifact_version_a_id: Mapped[int] = mapped_column(
+        ForeignKey("artifact_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    artifact_version_b_id: Mapped[int] = mapped_column(
+        ForeignKey("artifact_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    statement_a: Mapped[str] = mapped_column(Text, nullable=False)
+    statement_b: Mapped[str] = mapped_column(Text, nullable=False)
+    discrepancy_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    review_status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

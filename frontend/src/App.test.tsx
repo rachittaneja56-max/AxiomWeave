@@ -243,6 +243,36 @@ describe("transformation request form", () => {
         return Promise.resolve(jsonResponse(detail()));
       }
       if (
+        input === "/api/artifact-versions/101/evidence/analyze" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(
+          jsonResponse([
+            {
+              id: 201,
+              artifact_version_id: 101,
+              claim_text: "The center opened on Saturday.",
+              source_version_id: 30,
+              source_segment_id: 301,
+              source_quote: "The center opened on Saturday.",
+              source_locator: "paragraph:1",
+              status: "linked",
+              created_at: "2026-09-29T00:00:00Z",
+            },
+          ]),
+        );
+      }
+      if (input === "/api/source-versions/30") {
+        return Promise.resolve(
+          jsonResponse({
+            id: 30,
+            version_number: 1,
+            content_hash: "a".repeat(64),
+            source_text: "The center opened on Saturday.",
+          }),
+        );
+      }
+      if (
         input === "/api/artifact-versions/101/review" &&
         init?.method === "PATCH"
       ) {
@@ -273,6 +303,19 @@ describe("transformation request form", () => {
       "/api/artifact-versions/101/review",
       expect.objectContaining({ method: "PATCH", credentials: "include" }),
     );
+
+    fireEvent.click(screen.getByRole("button", { name: "Analyze evidence" }));
+    expect(
+      await screen.findByText("The center opened on Saturday.", {
+        selector: "blockquote",
+      }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "View source" }));
+    expect(
+      await screen.findByText("The center opened on Saturday.", {
+        selector: "pre",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("extracts a selected file and submits its canonical source text", async () => {
