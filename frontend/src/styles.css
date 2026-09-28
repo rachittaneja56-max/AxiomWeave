@@ -600,6 +600,125 @@ button:disabled {
   padding: 20px 22px;
 }
 
+.source-revision-panel {
+  display: grid;
+  gap: 14px;
+  padding: 20px 22px;
+  border: 1px solid #dfe5ed;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.source-revision-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.source-revision-heading h3 {
+  margin: 0 0 6px;
+  color: #26364d;
+  font-size: 1.05rem;
+}
+
+.source-revision-heading p {
+  margin: 0;
+  color: #68758a;
+  font-size: 0.86rem;
+}
+
+.revision-badge {
+  display: inline-flex;
+  margin: 0 0 8px !important;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #eaf5ee;
+  color: #286b47 !important;
+  font-size: 0.72rem !important;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+.source-change-list,
+.affected-artifact-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.source-change-list li,
+.affected-artifact-list li {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid #e5e9ef;
+  border-radius: 8px;
+  background: #fafbfd;
+  color: #43536a;
+  font-size: 0.82rem;
+}
+
+.source-change-list strong {
+  color: #26364d;
+  text-transform: capitalize;
+}
+
+.source-change-list del,
+.source-change-list ins {
+  display: block;
+  padding: 7px 9px;
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+  white-space: pre-wrap;
+}
+
+.source-change-list del {
+  background: #fff1f0;
+  color: #8b3b35;
+}
+
+.source-change-list ins {
+  background: #edf8f0;
+  color: #286b47;
+}
+
+.revision-impact-note {
+  margin: 0;
+  color: #68758a;
+  font-size: 0.82rem;
+}
+
+.affected-artifact-list li {
+  border-color: #ecd9bd;
+  background: #fffaf2;
+}
+
+.affected-artifact-list strong {
+  color: #8a571c;
+  text-transform: uppercase;
+}
+
+.affected-artifact-list small {
+  color: #68758a;
+  line-height: 1.45;
+}
+
+.source-revision-editor {
+  display: grid;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid #e8ecf1;
+}
+
+.source-revision-editor textarea {
+  min-height: 180px;
+  resize: vertical;
+}
+
 .review-controls h3 {
   margin-bottom: 14px;
   font-size: 1rem;
@@ -950,6 +1069,10 @@ button:disabled {
 
   .review-controls dl {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .source-revision-heading {
+    flex-direction: column;
   }
 
   .review-artifact > header {

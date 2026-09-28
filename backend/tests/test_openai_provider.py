@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -144,6 +145,8 @@ def test_openai_provider_uses_structured_outputs_for_presentations(
         supporting_context="Audience prefers a short briefing.",
         source_text="The center opened Saturday.",
         artifact_content="Prior draft claims it opened Saturday.",
+        prior_source_text="The center opens Saturday.",
+        changed_source_material='[{"old_text":"Saturday","new_text":"Sunday"}]',
     )
 
     result = asyncio.run(provider.generate_structured(request, PresentationSpec))
@@ -153,7 +156,7 @@ def test_openai_provider_uses_structured_outputs_for_presentations(
     assert call["store"] is False
     assert call["reasoning"] == {"effort": "low"}
     assert call["text_format"] is PresentationSpec
-    assert len(call["input"]) == 4
+    assert len(call["input"]) == 6
     assert (
         '"supporting_context": "Audience prefers a short briefing."' in call["input"][1]["content"]
     )
@@ -161,7 +164,12 @@ def test_openai_provider_uses_structured_outputs_for_presentations(
         '"artifact_content": "Prior draft claims it opened Saturday."'
         in call["input"][2]["content"]
     )
-    assert '"source_text": "The center opened Saturday."' in call["input"][3]["content"]
+    assert '"prior_source_text": "The center opens Saturday."' in call["input"][3]["content"]
+    change_message = call["input"][4]["content"].splitlines()[-1]
+    assert json.loads(change_message) == {
+        "changed_source_material": '[{"old_text":"Saturday","new_text":"Sunday"}]'
+    }
+    assert '"source_text": "The center opened Saturday."' in call["input"][5]["content"]
     assert result.value.slides[0].speaker_notes == "Welcome attendees."
     assert result.provider == "openai"
     assert result.model == "gpt-6-luna"

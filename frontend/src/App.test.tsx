@@ -169,6 +169,7 @@ describe("transformation request form", () => {
 
   it("opens a saved artifact history and records an acceptance decision", async () => {
     let reviewStatus: "draft" | "accepted" = "draft";
+    let sourceRevisionCreated = false;
     const artifactVersion = () => ({
       id: 101,
       artifact_run_id: 41,
@@ -186,9 +187,9 @@ describe("transformation request form", () => {
     const detail = () => ({
       transformation_run_id: 10,
       source_version: {
-        id: 30,
-        version_number: 1,
-        content_hash: "a".repeat(64),
+        id: sourceRevisionCreated ? 31 : 30,
+        version_number: sourceRevisionCreated ? 2 : 1,
+        content_hash: sourceRevisionCreated ? "c".repeat(64) : "a".repeat(64),
         created_at: "2026-09-29T00:00:00Z",
       },
       controls: { audience: "Local residents" },
@@ -242,6 +243,75 @@ describe("transformation request form", () => {
       if (input === "/api/transformations/10") {
         return Promise.resolve(jsonResponse(detail()));
       }
+      if (input === "/api/transformations/10/revision-impact") {
+        return Promise.resolve(
+          jsonResponse({
+            transformation_run_id: 10,
+            parent_source_version: sourceRevisionCreated
+              ? {
+                  id: 30,
+                  version_number: 1,
+                  content_hash: "a".repeat(64),
+                  created_at: "2026-09-29T00:00:00Z",
+                }
+              : null,
+            source_version: {
+              id: sourceRevisionCreated ? 31 : 30,
+              version_number: sourceRevisionCreated ? 2 : 1,
+              content_hash: sourceRevisionCreated
+                ? "c".repeat(64)
+                : "a".repeat(64),
+              created_at: "2026-09-29T00:00:00Z",
+            },
+            changes: sourceRevisionCreated
+              ? [
+                  {
+                    change_type: "changed",
+                    locator: "paragraph:1",
+                    old_text: "The center opens Saturday.",
+                    new_text: "The center opens Sunday.",
+                  },
+                ]
+              : [],
+            potentially_affected_artifacts: sourceRevisionCreated
+              ? [
+                  {
+                    artifact_run_id: 41,
+                    artifact_version_id: 101,
+                    output_type: "executive_summary",
+                    artifact_version_number: 1,
+                    evidence_claims: ["The center opened on Saturday."],
+                  },
+                ]
+              : [],
+          }),
+        );
+      }
+      if (
+        input === "/api/transformations/10/source-versions" &&
+        init?.method === "POST"
+      ) {
+        sourceRevisionCreated = true;
+        return Promise.resolve(
+          jsonResponse({
+            transformation_run_id: 10,
+            parent_source_version: {
+              id: 30,
+              version_number: 1,
+              content_hash: "a".repeat(64),
+              created_at: "2026-09-29T00:00:00Z",
+            },
+            source_version: {
+              id: 31,
+              version_number: 2,
+              content_hash: "c".repeat(64),
+              created_at: "2026-09-29T00:00:00Z",
+            },
+            changes: [],
+            potentially_affected_artifacts: [],
+          }),
+        );
+      }
       if (
         input === "/api/artifact-versions/101/evidence/analyze" &&
         init?.method === "POST"
@@ -271,6 +341,18 @@ describe("transformation request form", () => {
             source_text: "The center opened on Saturday.",
           }),
         );
+      }
+      if (
+        input === "/api/artifact-runs/41/targeted-update" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(jsonResponse({ status: "succeeded" }));
+      }
+      if (
+        input === "/api/artifact-runs/41/regenerate" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(jsonResponse({ status: "succeeded" }));
       }
       if (
         input === "/api/artifact-versions/101/review" &&
@@ -315,6 +397,29 @@ describe("transformation request form", () => {
       await screen.findByText("The center opened on Saturday.", {
         selector: "pre",
       }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Update source" }));
+    expect(await screen.findByLabelText("New source version")).toHaveValue(
+      "The center opened on Saturday.",
+    );
+    fireEvent.change(screen.getByLabelText("New source version"), {
+      target: { value: "The center opened on Sunday." },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save new source version" }),
+    );
+    expect(await screen.findByText("SOURCE UPDATED")).toBeInTheDocument();
+    expect(screen.getByText("V1 → V2")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Targeted Update" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/artifact-runs/41/targeted-update",
+        expect.objectContaining({ method: "POST", credentials: "include" }),
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "Full regeneration from V2" }),
     ).toBeInTheDocument();
   });
 

@@ -134,6 +134,29 @@ type DiscrepancyFinding = {
   created_at: string;
 };
 
+type SourceSegmentChange = {
+  change_type: "added" | "removed" | "changed";
+  locator: string;
+  old_text: string | null;
+  new_text: string | null;
+};
+
+type AffectedArtifact = {
+  artifact_run_id: number;
+  artifact_version_id: number;
+  output_type: string;
+  artifact_version_number: number;
+  evidence_claims: string[];
+};
+
+type SourceRevisionStatus = {
+  transformation_run_id: number;
+  parent_source_version: DashboardItem["source_version"] | null;
+  source_version: DashboardItem["source_version"];
+  changes: SourceSegmentChange[];
+  potentially_affected_artifacts: AffectedArtifact[];
+};
+
 type WorkspaceScreen = "dashboard" | "new" | "review";
 
 type HealthState = "loading" | "online" | "offline";
@@ -445,6 +468,11 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
   const [findingsByPair, setFindingsByPair] = useState<
     Record<string, DiscrepancyFinding | null>
   >({});
+  const [revisionStatus, setRevisionStatus] =
+    useState<SourceRevisionStatus | null>(null);
+  const [showSourceRevisionEditor, setShowSourceRevisionEditor] =
+    useState(false);
+  const [sourceRevisionText, setSourceRevisionText] = useState("");
   const [logoutError, setLogoutError] = useState(false);
 
   useEffect(() => {
@@ -514,6 +542,16 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
       if (!isTransformationDetail(body)) {
         throw new Error("unexpected review response");
       }
+      const revisionResponse = await fetch(
+        `/api/transformations/${transformationRunId}/revision-impact`,
+        { credentials: "include" },
+      );
+      if (revisionResponse.ok) {
+        const revisionBody: unknown = await revisionResponse.json();
+        setRevisionStatus(revisionBody as SourceRevisionStatus);
+      } else {
+        setRevisionStatus(null);
+      }
       setReviewDetail(body);
       setSelectedVersions({});
       setEditingArtifactRunId(null);
@@ -521,6 +559,8 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
       setSourceContentById({});
       setVisibleSources({});
       setFindingsByPair({});
+      setShowSourceRevisionEditor(false);
+      setSourceRevisionText("");
       setScreen("review");
     } catch {
       setReviewError("Could not open this review workspace. Please retry.");
@@ -807,6 +847,80 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
       );
     } finally {
       setIsReviewActionRunning(false);
+    }
+  }
+
+  async function targetUpdateArtifact(artifactRunId: number) {
+    setReviewError(null);
+    setIsReviewActionRunning(true);
+    try {
+      const response = await fetch(
+        `/api/artifact-runs/${artifactRunId}/targeted-update`,
+        { method: "POST", credentials: "include" },
+      );
+      if (!response.ok) {
+        setReviewError(
+          "The targeted update could not be completed. Please retry.",
+        );
+        return;
+      }
+      await refreshReview();
+    } catch {
+      setReviewError("Could not reach the backend to update this artifact.");
+    } finally {
+      setIsReviewActionRunning(false);
+    }
+  }
+
+  async function saveSourceRevision() {
+    if (!reviewDetail) return;
+    setReviewError(null);
+    setIsReviewActionRunning(true);
+    try {
+      const response = await fetch(
+        `/api/transformations/${reviewDetail.transformation_run_id}/source-versions`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source_text: sourceRevisionText }),
+        },
+      );
+      if (!response.ok) {
+        setReviewError(
+          "The new source version could not be saved. Please retry.",
+        );
+        return;
+      }
+      setShowSourceRevisionEditor(false);
+      setSourceRevisionText("");
+      await refreshReview();
+    } catch {
+      setReviewError(
+        "Could not reach the backend to save the new source version.",
+      );
+    } finally {
+      setIsReviewActionRunning(false);
+    }
+  }
+
+  async function openSourceRevisionEditor() {
+    if (!reviewDetail) return;
+    const sourceVersionId = reviewDetail.source_version.id;
+    setReviewError(null);
+    try {
+      const response = await fetch(`/api/source-versions/${sourceVersionId}`, {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("source unavailable");
+      const body: unknown = await response.json();
+      if (!isRecord(body) || typeof body.source_text !== "string") {
+        throw new Error("invalid source response");
+      }
+      setSourceRevisionText(body.source_text);
+      setShowSourceRevisionEditor(true);
+    } catch {
+      setReviewError("The current source could not be opened for revision.");
     }
   }
 
@@ -1158,6 +1272,119 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
             <span className="workflow-status">{reviewDetail.status}</span>
           </div>
           <section
+            className="source-revision-panel"
+            aria-label="Source revision"
+          >
+            {revisionStatus?.parent_source_version ? (
+              <>
+                <div className="source-revision-heading">
+                  <div>
+                    <p className="revision-badge">SOURCE UPDATED</p>
+                    <h3>
+                      V{revisionStatus.parent_source_version.version_number} → V
+                      {revisionStatus.source_version.version_number}
+                    </h3>
+                    <p>
+                      {revisionStatus.changes.length} change
+                      {revisionStatus.changes.length === 1 ? "" : "s"} detected
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    onClick={() => void openSourceRevisionEditor()}
+                  >
+                    Update source again
+                  </button>
+                </div>
+                {revisionStatus.changes.length > 0 && (
+                  <ul className="source-change-list">
+                    {revisionStatus.changes.map((change) => (
+                      <li key={`${change.change_type}:${change.locator}`}>
+                        <strong>
+                          {change.change_type} · {change.locator}
+                        </strong>
+                        {change.old_text && <del>{change.old_text}</del>}
+                        {change.new_text && <ins>{change.new_text}</ins>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <p className="revision-impact-note">
+                  Affected artifacts are candidates for review; this is not
+                  proof that their content is incorrect.
+                </p>
+                {revisionStatus.potentially_affected_artifacts.length > 0 ? (
+                  <ul className="affected-artifact-list">
+                    {revisionStatus.potentially_affected_artifacts.map(
+                      (item) => (
+                        <li key={item.artifact_version_id}>
+                          <strong>Potentially affected</strong>
+                          <span>
+                            {OUTPUT_TYPES.find(
+                              (output) => output.value === item.output_type,
+                            )?.label ?? item.output_type}{" "}
+                            V{item.artifact_version_number}
+                          </span>
+                          {item.evidence_claims.map((claim, index) => (
+                            <small key={`${item.artifact_version_id}:${index}`}>
+                              {claim}
+                            </small>
+                          ))}
+                        </li>
+                      ),
+                    )}
+                  </ul>
+                ) : (
+                  <p>No linked evidence points to changed source segments.</p>
+                )}
+              </>
+            ) : (
+              <div className="source-revision-heading">
+                <div>
+                  <h3>Source V{reviewDetail.source_version.version_number}</h3>
+                  <p>Create a new source version without changing this one.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void openSourceRevisionEditor()}
+                >
+                  Update source
+                </button>
+              </div>
+            )}
+            {showSourceRevisionEditor && (
+              <div className="source-revision-editor">
+                <label htmlFor="source-revision-text">New source version</label>
+                <textarea
+                  id="source-revision-text"
+                  rows={8}
+                  maxLength={20_000}
+                  value={sourceRevisionText}
+                  onChange={(event) =>
+                    setSourceRevisionText(event.target.value)
+                  }
+                />
+                <div className="review-actions">
+                  <button
+                    type="button"
+                    disabled={isReviewActionRunning}
+                    onClick={() => void saveSourceRevision()}
+                  >
+                    Save new source version
+                  </button>
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    onClick={() => setShowSourceRevisionEditor(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+          <section
             className="review-controls"
             aria-labelledby="review-controls-heading"
           >
@@ -1451,8 +1678,31 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
                                       )
                                     }
                                   >
-                                    Regenerate
+                                    {revisionStatus?.parent_source_version
+                                      ? `Full regeneration from V${revisionStatus.source_version.version_number}`
+                                      : "Regenerate"}
                                   </button>
+                                  {revisionStatus?.parent_source_version &&
+                                    revisionStatus.potentially_affected_artifacts.some(
+                                      (item) =>
+                                        item.artifact_run_id ===
+                                        artifactRun.artifact_run_id,
+                                    ) &&
+                                    artifactRun.versions.at(-1)
+                                      ?.source_version_id !==
+                                      revisionStatus.source_version.id && (
+                                      <button
+                                        type="button"
+                                        disabled={isReviewActionRunning}
+                                        onClick={() =>
+                                          void targetUpdateArtifact(
+                                            artifactRun.artifact_run_id,
+                                          )
+                                        }
+                                      >
+                                        Targeted Update
+                                      </button>
+                                    )}
                                   <button
                                     type="button"
                                     className="button-secondary"

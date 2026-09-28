@@ -69,6 +69,9 @@ class SourceVersion(Base):
     source_id: Mapped[int] = mapped_column(
         ForeignKey("sources.id", ondelete="RESTRICT"), nullable=False, index=True
     )
+    parent_source_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="RESTRICT"), index=True
+    )
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     source_text: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)

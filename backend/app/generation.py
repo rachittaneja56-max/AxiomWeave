@@ -11,6 +11,8 @@ class GenerationRequest:
     source_text: str
     supporting_context: str = ""
     artifact_content: str = ""
+    prior_source_text: str = ""
+    changed_source_material: str = ""
 
 
 @dataclass(frozen=True, slots=True)

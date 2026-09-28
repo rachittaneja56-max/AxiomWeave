@@ -42,13 +42,28 @@ def segment_source_text(source_text: str) -> list[tuple[str, str]]:
     return segments
 
 
-def create_source_version(session: Session, source: Source, source_text: str) -> SourceVersion:
+def create_source_version(
+    session: Session,
+    source: Source,
+    source_text: str,
+    parent_source_version_id: int | None = None,
+) -> SourceVersion:
     canonical_text = normalize_source_text(source_text)
+    if parent_source_version_id is not None:
+        parent = session.scalar(
+            select(SourceVersion).where(
+                SourceVersion.id == parent_source_version_id,
+                SourceVersion.source_id == source.id,
+            )
+        )
+        if parent is None:
+            raise ValueError("Parent source version must belong to the source")
     latest_version = session.scalar(
         select(func.max(SourceVersion.version_number)).where(SourceVersion.source_id == source.id)
     )
     version = SourceVersion(
         source_id=source.id,
+        parent_source_version_id=parent_source_version_id,
         version_number=(latest_version or 0) + 1,
         source_text=canonical_text,
         content_hash=source_content_hash(canonical_text),
