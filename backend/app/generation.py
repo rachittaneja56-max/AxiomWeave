@@ -13,6 +13,8 @@ class GenerationRequest:
     artifact_content: str = ""
     prior_source_text: str = ""
     changed_source_material: str = ""
+    max_output_tokens: int = 1100
+    reasoning_effort: str = "low"
 
 
 @dataclass(frozen=True, slots=True)

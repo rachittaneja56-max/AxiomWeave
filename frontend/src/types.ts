@@ -177,6 +177,7 @@ export type SourceRevisionStatus = {
 export type SourceFileMetadata = {
   filename: string;
   character_count: number;
+  ocr_used: boolean;
 };
 
 export type PresentationSlide = {

@@ -14,6 +14,7 @@ def test_settings_use_safe_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         "SIH_DATABASE_URL",
         "SIH_ALLOW_REGISTRATION",
         "SIH_OPENAI_MODEL",
+        "SIH_OPENAI_UTILITY_MODEL",
         "OPENAI_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -28,6 +29,7 @@ def test_settings_use_safe_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.allow_registration is False
     assert settings.openai_api_key is None
     assert settings.openai_model == "gpt-6-luna"
+    assert settings.openai_utility_model == "gpt-5-nano"
 
 
 def test_settings_read_database_url_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,12 +55,14 @@ def test_settings_read_openai_configuration_from_environment(
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
     monkeypatch.setenv("SIH_OPENAI_MODEL", "gpt-6-luna")
+    monkeypatch.setenv("SIH_OPENAI_UTILITY_MODEL", "gpt-5-nano")
 
     settings_class = cast(Any, Settings)
     settings = settings_class(_env_file=None)
 
     assert settings.openai_api_key == "test-secret"
     assert settings.openai_model == "gpt-6-luna"
+    assert settings.openai_utility_model == "gpt-5-nano"
     assert "test-secret" not in repr(settings)
 
 

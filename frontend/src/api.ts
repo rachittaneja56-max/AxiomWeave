@@ -56,7 +56,7 @@ export const api = {
   extractTextFile: (file: File) => {
     const formData = new FormData();
     formData.append("file", file);
-    return requestJson("/api/sources/text-file", {
+    return requestJson("/api/sources/file", {
       method: "POST",
       body: formData,
     });

@@ -1,4 +1,5 @@
 import json
+from typing import Any, cast
 
 from openai import AsyncOpenAI
 from openai.types.responses import ResponseInputItemParam
@@ -93,12 +94,15 @@ class OpenAIGenerationProvider:
                 model=self._model,
                 instructions=request.application_instructions,
                 input=self._input_messages(request),
-                reasoning={"effort": "low"},
+                reasoning=cast(Any, {"effort": request.reasoning_effort}),
+                max_output_tokens=request.max_output_tokens,
                 store=False,
             )
         except Exception:
             raise GenerationProviderError() from None
 
+        if getattr(response, "status", None) == "incomplete":
+            raise GenerationProviderError()
         content = response.output_text
         return GenerationResult(text=content, provider="openai", model=self._model)
 
@@ -110,14 +114,15 @@ class OpenAIGenerationProvider:
                 model=self._model,
                 instructions=request.application_instructions,
                 input=self._input_messages(request),
-                reasoning={"effort": "low"},
+                reasoning=cast(Any, {"effort": request.reasoning_effort}),
+                max_output_tokens=request.max_output_tokens,
                 store=False,
                 text_format=response_model,
             )
         except Exception:
             raise GenerationProviderError() from None
 
-        if response.output_parsed is None:
+        if getattr(response, "status", None) == "incomplete" or response.output_parsed is None:
             raise GenerationProviderError()
         return StructuredGenerationResult(
             value=response.output_parsed, provider="openai", model=self._model

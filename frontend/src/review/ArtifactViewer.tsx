@@ -129,6 +129,7 @@ export function ArtifactViewer({
   onReviewStatus,
   onCopy,
   onDownload,
+  onPowerpointExport,
 }: {
   artifact: ReviewArtifactRun;
   version: ReviewArtifactVersion | null;
@@ -143,6 +144,7 @@ export function ArtifactViewer({
   onReviewStatus: (status: "accepted" | "rejected") => void;
   onCopy: (outputType: OutputType, content: string) => void;
   onDownload: (outputType: OutputType, content: string) => void;
+  onPowerpointExport: (content: string) => void;
 }) {
   const [editContent, setEditContent] = useState(version?.content ?? "");
   const [editing, setEditing] = useState(false);
@@ -189,6 +191,16 @@ export function ArtifactViewer({
         </div>
         {version && isLatest && !editing && (
           <div className="artifact-toolbar" aria-label="Artifact actions">
+            {artifact.output_type === "presentation" && (
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={() => onPowerpointExport(version.content)}
+              >
+                <Download aria-hidden="true" />
+                Download PowerPoint
+              </button>
+            )}
             <button
               type="button"
               className="button-primary button-primary--small"

@@ -12,23 +12,28 @@ from app.presentation import PresentationSpec, SlideSpec
 
 class ResponsesStub:
     def __init__(
-        self, output_text: str = "Generated summary", error: Exception | None = None
+        self,
+        output_text: str = "Generated summary",
+        error: Exception | None = None,
+        status: str = "completed",
     ) -> None:
         self.output_text = output_text
         self.error = error
+        self.status = status
         self.calls: list[dict[str, Any]] = []
 
     async def create(self, **kwargs: Any) -> SimpleNamespace:
         self.calls.append(kwargs)
         if self.error:
             raise self.error
-        return SimpleNamespace(output_text=self.output_text)
+        return SimpleNamespace(output_text=self.output_text, status=self.status)
 
     async def parse(self, **kwargs: Any) -> SimpleNamespace:
         self.calls.append(kwargs)
         if self.error:
             raise self.error
         return SimpleNamespace(
+            status=self.status,
             output_parsed=PresentationSpec(
                 title="Team update",
                 slides=[
@@ -47,7 +52,7 @@ class ResponsesStub:
                         speaker_notes="Share the posted hours.",
                     ),
                 ],
-            )
+            ),
         )
 
 
@@ -89,6 +94,7 @@ def test_openai_provider_uses_fixed_runtime_and_separate_authority_fields(
     assert call["instructions"] == "Application rules"
     assert call["reasoning"] == {"effort": "low"}
     assert call["store"] is False
+    assert call["max_output_tokens"] == 1100
     inputs = call["input"]
     assert len(inputs) == 3
     assert inputs[0]["content"] == "Write a summary"
@@ -127,6 +133,52 @@ def test_openai_provider_sanitizes_sdk_errors(monkeypatch: pytest.MonkeyPatch) -
     assert "test-key" not in str(error.value)
 
 
+def test_incomplete_output_is_a_provider_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    clients: list[AsyncOpenAIStub] = []
+
+    def make_client(**kwargs: Any) -> AsyncOpenAIStub:
+        client = AsyncOpenAIStub(**kwargs)
+        client.responses.status = "incomplete"
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr("app.openai_provider.AsyncOpenAI", make_client)
+    provider = OpenAIGenerationProvider("test-key", "gpt-6-luna")
+    request = GenerationRequest(
+        application_instructions="rules",
+        transformation_instructions="write",
+        source_text="source",
+        max_output_tokens=900,
+    )
+    with pytest.raises(GenerationProviderError):
+        asyncio.run(provider.generate(request))
+    assert clients[0].responses.calls[0]["max_output_tokens"] == 900
+
+
+def test_incomplete_structured_output_is_not_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    clients: list[AsyncOpenAIStub] = []
+
+    def make_client(**kwargs: Any) -> AsyncOpenAIStub:
+        client = AsyncOpenAIStub(**kwargs)
+        client.responses.status = "incomplete"
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr("app.openai_provider.AsyncOpenAI", make_client)
+    provider = OpenAIGenerationProvider("test-key", "gpt-6-luna")
+    with pytest.raises(GenerationProviderError):
+        asyncio.run(
+            provider.generate_structured(
+                GenerationRequest(
+                    application_instructions="rules",
+                    transformation_instructions="write",
+                    source_text="source",
+                ),
+                PresentationSpec,
+            )
+        )
+
+
 def test_openai_provider_uses_structured_outputs_for_presentations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -154,6 +206,7 @@ def test_openai_provider_uses_structured_outputs_for_presentations(
     call = clients[0].responses.calls[0]
     assert call["model"] == "gpt-6-luna"
     assert call["store"] is False
+    assert call["max_output_tokens"] == 1100
     assert call["reasoning"] == {"effort": "low"}
     assert call["text_format"] is PresentationSpec
     assert len(call["input"]) == 6

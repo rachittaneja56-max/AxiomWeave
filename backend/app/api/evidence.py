@@ -136,7 +136,7 @@ def get_analysis_provider() -> StructuredGenerationProvider | None:
     settings = get_settings()
     if not settings.openai_api_key:
         return None
-    return OpenAIGenerationProvider(settings.openai_api_key, settings.openai_model)
+    return OpenAIGenerationProvider(settings.openai_api_key, settings.openai_utility_model)
 
 
 def _owned_artifact_version(
@@ -276,6 +276,7 @@ async def analyze_artifact_evidence(
                 ),
                 source_text=source_version.source_text,
                 artifact_content=version.content,
+                max_output_tokens=1600,
             ),
             EvidenceAnalysis,
         )
@@ -383,6 +384,7 @@ async def analyze_sibling_discrepancy(
                     {"artifact_a": version_a.content, "artifact_b": version_b.content},
                     ensure_ascii=False,
                 ),
+                max_output_tokens=1000,
             ),
             DiscrepancyAnalysis,
         )

@@ -11,7 +11,13 @@ import { isRecord } from "./utils";
 
 type AuthState = "loading" | "signed_out" | "signed_in";
 
-function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
+function Workspace({
+  onLogout,
+  username,
+}: {
+  onLogout: () => Promise<boolean>;
+  username: string;
+}) {
   const [screen, setScreen] = useState<WorkspaceScreen>("dashboard");
   const [reviewId, setReviewId] = useState<number | null>(null);
   const [reviewTitle, setReviewTitle] = useState("Review workspace");
@@ -90,6 +96,7 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
       description={description}
       headerActions={headerActions}
       logoutError={logoutError}
+      username={username}
       onNavigate={navigate}
       onLogout={() => void handleLogout()}
     >
@@ -121,6 +128,7 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>("loading");
+  const [username, setUsername] = useState("");
 
   useEffect(() => {
     let mounted = true;
@@ -128,6 +136,8 @@ export default function App() {
       .session()
       .then((body) => {
         if (!mounted) return;
+        if (isRecord(body) && typeof body.username === "string")
+          setUsername(body.username);
         setAuthState(
           isRecord(body) && body.authenticated === true
             ? "signed_in"
@@ -161,7 +171,17 @@ export default function App() {
     );
   }
   if (authState === "signed_out") {
-    return <SignInScreen onSignedIn={() => setAuthState("signed_in")} />;
+    return (
+      <SignInScreen
+        onSignedIn={() => {
+          void api.session().then((body) => {
+            if (isRecord(body) && typeof body.username === "string")
+              setUsername(body.username);
+          });
+          setAuthState("signed_in");
+        }}
+      />
+    );
   }
-  return <Workspace onLogout={signOut} />;
+  return <Workspace onLogout={signOut} username={username} />;
 }

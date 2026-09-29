@@ -127,6 +127,7 @@ export function NewTransformationScreen({
       setSourceFile({
         filename: body.filename,
         character_count: body.character_count,
+        ocr_used: body.ocr_used,
       });
     } catch (requestError) {
       if (requestError instanceof ApiError) {
@@ -316,7 +317,7 @@ export function NewTransformationScreen({
                   aria-label="Upload source file"
                   className="visually-hidden"
                   type="file"
-                  accept=".txt,.md,text/plain,text/markdown"
+                  accept=".txt,.md,.docx,.pdf,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                   onChange={(event) =>
                     void extractSourceFile(event.target.files?.[0])
                   }
@@ -332,6 +333,11 @@ export function NewTransformationScreen({
                       <small>
                         {sourceFile.character_count.toLocaleString()} characters
                       </small>
+                      {sourceFile.ocr_used && (
+                        <small className="ocr-used-note">
+                          OCR used on scanned pages
+                        </small>
+                      )}
                     </span>
                     <button
                       type="button"
@@ -359,11 +365,13 @@ export function NewTransformationScreen({
                     </span>
                     <strong>
                       {isExtracting
-                        ? "Reading your file…"
-                        : "Drop a text file here"}
+                        ? "Reading document…"
+                        : "Drop a document here"}
                     </strong>
                     <span>or browse your device</span>
-                    <small>UTF-8 .txt or .md · up to 80 KiB</small>
+                    <small>
+                      TXT, MD, DOCX or PDF · source text up to 20,000 characters
+                    </small>
                   </label>
                 )}
               </div>

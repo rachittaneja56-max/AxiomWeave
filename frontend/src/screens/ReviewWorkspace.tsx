@@ -24,6 +24,7 @@ import {
   isSourceRevisionStatus,
   isTransformationDetail,
   outputLabel,
+  parsePresentation,
 } from "../utils";
 
 function pairKey(left: number, right: number): string {
@@ -389,6 +390,32 @@ export function ReviewWorkspace({
     setExportStatus(label + " Markdown downloaded.");
   }
 
+  async function downloadPowerPoint(content: string) {
+    const presentation = parsePresentation(content);
+    if (!presentation) {
+      setExportStatus("This presentation could not be exported.");
+      return;
+    }
+    try {
+      const { renderPresentationPptx, presentationFilename } =
+        await import("../pptx");
+      const blob = await renderPresentationPptx(presentation);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = presentationFilename(presentation.title);
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setExportStatus("Editable PowerPoint downloaded.");
+    } catch (error) {
+      setExportStatus(
+        error instanceof Error && error.message.startsWith("This slide")
+          ? error.message
+          : "PowerPoint export failed. Please try again.",
+      );
+    }
+  }
+
   function handleSourceUpdated(sourceText: string) {
     onTitleChange(deriveTransformationTitle(sourceText));
     void refreshReview();
@@ -511,6 +538,7 @@ export function ReviewWorkspace({
               }
               onCopy={copyArtifact}
               onDownload={downloadArtifact}
+              onPowerpointExport={(content) => void downloadPowerPoint(content)}
             />
           ) : (
             <div className="review-empty">

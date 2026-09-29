@@ -323,6 +323,7 @@ async def targeted_update_artifact(
         artifact_content=latest.content,
         prior_source_text=old_source.source_text,
         changed_source_material=json.dumps(changed_material, ensure_ascii=False),
+        max_output_tokens=2200,
     )
     structured_provider = cast(StructuredGenerationProvider, provider)
     try:

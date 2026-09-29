@@ -11,19 +11,19 @@ Teams often rewrite the same authoritative material for several audiences and fo
 ## Tier-A workflow
 
 - Username/password sign-in and an owner-scoped transformation dashboard.
-- Paste or upload UTF-8 `.txt` / `.md` source material; keep supporting context separate.
+- Paste source text or upload `.txt`, `.md`, `.docx`, or `.pdf`; keep supporting context separate. DOCX paragraphs, headings, and tables are extracted. PDFs use native text extraction first; scanned pages use OCR/Vision only when native text is unavailable.
 - Set audience, tone, language, detail, objective, and style.
 - Generate an Executive Summary, Professional / LinkedIn Post, Formal Advisory, and Presentation with speaker notes. A failed output can be retried independently.
 - Review and edit immutable artifact versions; accept or reject drafts.
 - Inspect exact source quotations and unsupported claims. Compare sibling outputs for possible discrepancies, then dismiss a finding without changing artifact text.
 - Save source V2, inspect a deterministic paragraph diff and potentially affected evidence, run a targeted update, or regenerate fully from V2.
-- Copy artifact text or download Markdown. Presentations export as readable slide sections with key messages, bullets, visual recommendations, and speaker notes.
+- Copy artifact text or download Markdown. Presentations also export as editable PowerPoint slides with speaker notes.
 
 ## Architecture
 
 The application is a React/Vite frontend and a FastAPI/SQLAlchemy modular monolith backed by SQLite for local use. AxiomWeave uses first-party username/password authentication for the Tier-A MVP. Password authentication is not phishing-resistant; it is the selected demo authentication method. Source versions are immutable and hashed. Generation uses the OpenAI Responses API through a provider boundary, with structured output for presentations, evidence proposals, discrepancy analysis, and targeted updates. `docs/architecture.md` gives the data and request flow.
 
-The pinned generation model is `gpt-6-luna`, with low reasoning effort and Responses API storage disabled. Only `OPENAI_API_KEY` configures model access. The provider cannot be selected by request data.
+Primary artifact generation uses `gpt-6-luna`; evidence and discrepancy analysis plus scanned-page OCR use `gpt-5-nano` by default. The server applies code-owned output-token limits and disables Responses API storage. Set `SIH_OPENAI_UTILITY_MODEL` to override the utility model. Only `OPENAI_API_KEY` configures model access. The provider cannot be selected by request data.
 
 ## Quick start
 
@@ -81,7 +81,7 @@ npm run build
 
 ## Scope and limitations
 
-This Tier-A MVP handles pasted/uploaded text rather than connected Drive files. Evidence analysis proposes claims with a model, but the application verifies each proposed quotation as an exact substring of its saved source version; this is traceability support, not a guarantee that every claim is complete or true. Discrepancy findings are review prompts. Source diffs are deterministic paragraph comparisons. The local SQLite setup is for development and demonstration, not a production deployment recipe.
+PDF OCR is a model-assisted fallback for scanned pages with little usable native text. It is not guaranteed to be perfect. PDF uploads are limited to 8 MiB and 20 pages; no more than 8 pages are sent for OCR. All extracted source text is normalized and limited to 20,000 characters without truncation. Evidence analysis proposes claims with a model, but the application verifies each proposed quotation as an exact substring of its saved source version; this is traceability support, not a guarantee that every claim is complete or true. Discrepancy findings are review prompts. Source diffs are deterministic paragraph comparisons. Image-only sources, video, URL/article ingestion, RAG, infographic rendering, and video package generation are not implemented. The local SQLite setup is for development and demonstration, not a production deployment recipe.
 
 ## SIH deliverables
 

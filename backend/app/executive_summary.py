@@ -74,6 +74,7 @@ class ExecutiveSummaryGenerator:
                 transformation_instructions=build_transformation_instructions(request),
                 source_text=request.source_text,
                 supporting_context=supporting_context,
+                max_output_tokens=900,
             )
         )
         content = result.text.strip()

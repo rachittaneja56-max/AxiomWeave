@@ -41,6 +41,12 @@ ARTIFACT_INSTRUCTIONS: dict[OutputType, str] = {
 ARTIFACT_PROMPT_VERSIONS: dict[OutputType, str] = {
     output_type: "1" for output_type in ARTIFACT_INSTRUCTIONS
 }
+OUTPUT_TOKEN_BUDGETS: dict[OutputType, int] = {
+    OutputType.EXECUTIVE_SUMMARY: 900,
+    OutputType.LINKEDIN_POST: 700,
+    OutputType.ADVISORY: 1100,
+    OutputType.PRESENTATION: 2800,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +108,7 @@ async def generate_artifact(
         transformation_instructions=_transformation_instructions(request, output_type),
         source_text=request.source_text,
         supporting_context=supporting_context,
+        max_output_tokens=OUTPUT_TOKEN_BUDGETS[output_type],
     )
     if output_type == OutputType.PRESENTATION:
         structured_provider = provider

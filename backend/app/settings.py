@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     allow_registration: bool = False
     openai_api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY", repr=False)
     openai_model: str = "gpt-6-luna"
+    openai_utility_model: str = "gpt-5-nano"
 
 
 @lru_cache

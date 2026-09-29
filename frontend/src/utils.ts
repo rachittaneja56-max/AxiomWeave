@@ -150,16 +150,17 @@ export function isSourceRevisionStatus(
 
 export function isExtractedText(value: unknown): value is {
   filename: string;
-  media_type: "text/plain" | "text/markdown";
+  media_type: string;
   character_count: number;
   source_text: string;
+  ocr_used: boolean;
 } {
   return (
     isRecord(value) &&
     typeof value.filename === "string" &&
-    (value.media_type === "text/plain" ||
-      value.media_type === "text/markdown") &&
+    typeof value.media_type === "string" &&
     typeof value.source_text === "string" &&
+    typeof value.ocr_used === "boolean" &&
     value.source_text.trim().length > 0 &&
     sourceCharacterCount(value.source_text) <= SOURCE_TEXT_MAX_LENGTH &&
     Number.isInteger(value.character_count) &&
@@ -168,8 +169,38 @@ export function isExtractedText(value: unknown): value is {
 }
 
 export function extractionError(body: unknown, status: number): string {
+  if (
+    isRecord(body) &&
+    isRecord(body.error) &&
+    typeof body.error.message === "string"
+  ) {
+    return body.error.message;
+  }
+  const detail = isRecord(body) && isRecord(body.detail) ? body.detail : null;
+  const code = detail && typeof detail.code === "string" ? detail.code : "";
+  const messages: Record<string, string> = {
+    unsupported_file: "Choose a TXT, MD, DOCX, or PDF file.",
+    unsupported_media_type: "The file type does not match its contents.",
+    file_too_large: "This file is too large. Choose a smaller document.",
+    too_many_pages: "This PDF has more than the 20-page limit.",
+    too_many_ocr_pages: "This PDF has more than the 8-scanned-page OCR limit.",
+    encrypted_pdf: "Password-protected PDFs are not supported.",
+    no_readable_text: "No readable text was found in this document.",
+    ocr_not_configured:
+      "This PDF has scanned pages, but scanned page reading is not configured.",
+    source_too_long:
+      "Extracted text exceeds the 20,000-character source limit.",
+    invalid_pdf: "This PDF could not be opened. Check the file and try again.",
+    invalid_document:
+      "This DOCX file could not be opened. Check the file and try again.",
+    invalid_encoding: "The text file must use UTF-8 encoding.",
+    empty_source: "The document does not contain any readable text.",
+    empty_pdf: "This PDF does not contain any pages.",
+    ocr_failed: "Scanned pages could not be read. Please try another PDF.",
+  };
+  if (messages[code]) return messages[code];
   const message =
-    isRecord(body) && isRecord(body.error) ? body.error.message : null;
+    detail && typeof detail.message === "string" ? detail.message : null;
   if (typeof message === "string") return message;
   if (status === 413) {
     return "This file is too large. Choose a text file up to 80 KiB.";

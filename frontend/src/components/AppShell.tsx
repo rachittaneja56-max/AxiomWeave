@@ -10,6 +10,7 @@ type AppShellProps = {
   description?: string;
   headerActions?: ReactNode;
   logoutError?: boolean;
+  username: string;
   onNavigate: (screen: "dashboard" | "new") => void;
   onLogout: () => void;
   children: ReactNode;
@@ -22,6 +23,7 @@ export function AppShell({
   description,
   headerActions,
   logoutError = false,
+  username,
   onNavigate,
   onLogout,
   children,
@@ -79,6 +81,9 @@ export function AppShell({
         </nav>
         <div className="sidebar-footer">
           <div className="sidebar-footer__line" />
+          <div className="sidebar-account" aria-label="Signed-in account">
+            <span>{username}</span>
+          </div>
           <p className="sidebar-footer__promise">
             <span className="promise-dot" aria-hidden="true" />
             One source. Many artifacts.

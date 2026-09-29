@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import * as pptxExport from "./pptx";
 
 const preparedRequest = {
   source_text: "The team will open a community garden on Saturday.",
@@ -49,7 +50,9 @@ function installWorkspaceFetch(fetchMock: ReturnType<typeof vi.fn>) {
   ) => Promise<unknown>;
   const routedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     if (input === "/api/auth/session") {
-      return Promise.resolve(jsonResponse({ authenticated: true }));
+      return Promise.resolve(
+        jsonResponse({ authenticated: true, username: "judge_demo" }),
+      );
     }
     if (input === "/api/transformations" && init?.method !== "POST") {
       return Promise.resolve(jsonResponse([]));
@@ -220,7 +223,9 @@ describe("transformation request form", () => {
     });
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       if (input === "/api/auth/session") {
-        return Promise.resolve(jsonResponse({ authenticated: true }));
+        return Promise.resolve(
+          jsonResponse({ authenticated: true, username: "judge_demo" }),
+        );
       }
       if (input === "/api/transformations" && init?.method !== "POST") {
         return Promise.resolve(
@@ -384,6 +389,7 @@ describe("transformation request form", () => {
       }),
     ).toBeInTheDocument();
     expect(screen.getByText("AxiomWeave")).toBeInTheDocument();
+    expect(screen.getByText("judge_demo")).toBeInTheDocument();
     expect(
       screen.queryByText(/SIH|NTRO|SHA-256|Backend connected/i),
     ).not.toBeInTheDocument();
@@ -419,6 +425,16 @@ describe("transformation request form", () => {
       },
       revokeObjectURL: vi.fn(),
     });
+    const renderPptx = vi
+      .spyOn(pptxExport, "renderPresentationPptx")
+      .mockResolvedValue(new Blob(["pptx"], { type: "application/zip" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Download PowerPoint" }),
+    );
+    expect(
+      await screen.findByText("Editable PowerPoint downloaded."),
+    ).toBeInTheDocument();
+    expect(renderPptx).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByLabelText("More artifact actions"));
     fireEvent.click(screen.getByRole("button", { name: "Download Markdown" }));
     expect(
@@ -428,7 +444,7 @@ describe("transformation request form", () => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result));
       reader.onerror = () => reject(reader.error);
-      reader.readAsText(downloadedBlobs[0]);
+      reader.readAsText(downloadedBlobs[1]);
     });
     expect(markdown).toContain("# Slide 1 — Opening");
     expect(markdown).toContain("**Key message**");
@@ -570,7 +586,9 @@ describe("transformation request form", () => {
     };
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       if (input === "/api/auth/session") {
-        return Promise.resolve(jsonResponse({ authenticated: true }));
+        return Promise.resolve(
+          jsonResponse({ authenticated: true, username: "judge_demo" }),
+        );
       }
       if (input === "/api/transformations") {
         return Promise.resolve(
@@ -683,6 +701,7 @@ describe("transformation request form", () => {
           media_type: "text/markdown",
           character_count: extractedSource.length,
           source_text: extractedSource,
+          ocr_used: true,
         }),
       )
       .mockResolvedValueOnce(jsonResponse(savedResponse))
@@ -713,9 +732,10 @@ describe("transformation request form", () => {
         .find((status) => status.textContent?.includes("garden.md"))
         ?.textContent,
     ).toContain("44 characters");
+    expect(screen.getByText("OCR used on scanned pages")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "/api/sources/text-file",
+      "/api/sources/file",
       expect.objectContaining({ method: "POST", body: expect.any(FormData) }),
     );
 
@@ -796,6 +816,7 @@ describe("transformation request form", () => {
           media_type: "text/plain",
           character_count: extractedSource.length,
           source_text: extractedSource,
+          ocr_used: false,
         }),
       )
       .mockResolvedValueOnce(jsonResponse(savedResponse));
