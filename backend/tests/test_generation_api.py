@@ -10,6 +10,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.generation import get_generation_provider
+from app.artifact_generators import ARTIFACT_INSTRUCTIONS, OUTPUT_TOKEN_BUDGETS
+from app.domain.transformation import OutputType
 from app.generation import (
     GenerationProviderError,
     GenerationRequest,
@@ -166,6 +168,98 @@ def test_missing_openai_configuration_fails_run_without_fake_version(
     assert len(read_artifact_runs(factory)) == 1
     assert read_artifact_runs(factory)[0].status == "failed"
     assert read_artifact_versions(factory) == []
+
+
+def test_x_post_budget_contract_and_oversize_fails_without_persisting_version(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    assert OutputType.X_POST in ARTIFACT_INSTRUCTIONS
+    assert OUTPUT_TOKEN_BUDGETS[OutputType.X_POST] == 220
+    install_provider(FixedProvider(text="😀" * 281))
+    run_id = client.post(
+        "/api/transformations",
+        json={
+            "source_text": "A sourced announcement.",
+            "output_types": ["x_post"],
+            "audience": "public",
+            "tone": "clear",
+            "language": "English",
+            "detail_level": "brief",
+            "objective": "inform",
+            "style": "plain",
+        },
+    ).json()["transformation_run_id"]
+    response = client.post(f"/api/transformations/{run_id}/generate")
+    assert response.status_code == 200
+    assert response.json()["status"] == "partial_failure"
+    assert response.json()["artifacts"][0]["status"] == "failed"
+    assert read_artifact_versions(factory) == []
+
+
+def test_x_post_within_unicode_codepoint_bound_is_persisted(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    install_provider(FixedProvider(text="😀" * 280))
+    run_id = client.post(
+        "/api/transformations",
+        json={
+            "source_text": "A sourced announcement.",
+            "output_types": ["x_post"],
+            "audience": "public",
+            "tone": "clear",
+            "language": "English",
+            "detail_level": "brief",
+            "objective": "inform",
+            "style": "plain",
+        },
+    ).json()["transformation_run_id"]
+    response = client.post(f"/api/transformations/{run_id}/generate")
+    assert response.status_code == 200
+    assert response.json()["status"] == "succeeded"
+    assert len(response.json()["artifacts"][0]["artifact_version"]["content"]) == 280
+    assert len(read_artifact_versions(factory)) == 1
+
+
+def test_x_partial_failure_preserves_sibling_and_retries_x_only(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    failing_provider = FixedProvider(text="A grounded post.", fail_on_call=2)
+    install_provider(failing_provider)
+    run_id = client.post(
+        "/api/transformations",
+        json={
+            "source_text": "A sourced announcement.",
+            "output_types": ["executive_summary", "x_post"],
+            "audience": "public",
+            "tone": "clear",
+            "language": "English",
+            "detail_level": "brief",
+            "objective": "inform",
+            "style": "plain",
+        },
+    ).json()["transformation_run_id"]
+
+    first = client.post(f"/api/transformations/{run_id}/generate")
+    assert first.json()["status"] == "partial_failure"
+    assert [item["status"] for item in first.json()["artifacts"]] == ["succeeded", "failed"]
+    runs = read_artifact_runs(factory)
+    summary_run, x_run = runs
+    assert len(read_artifact_versions(factory)) == 1
+
+    retry_provider = FixedProvider(text="A grounded post.")
+    install_provider(retry_provider)
+    retried = client.post(f"/api/artifact-runs/{x_run.id}/retry")
+    assert retried.json()["status"] == "succeeded"
+    assert retried.json()["output_type"] == "x_post"
+    assert len(retry_provider.requests) == 1
+    assert len(read_artifact_versions(factory)) == 2
+    assert summary_run.status == "succeeded"
 
 
 def test_provider_failure_marks_run_failed_without_version(

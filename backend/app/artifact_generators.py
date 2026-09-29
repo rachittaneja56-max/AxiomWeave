@@ -29,6 +29,12 @@ ARTIFACT_INSTRUCTIONS: dict[OutputType, str] = {
         "Write a professional LinkedIn post using only source-supported facts. Do not invent "
         "statistics, quotes, dates, hashtags, or claims."
     ),
+    OutputType.X_POST: (
+        "Write ONE concise X Post using only source-supported facts. Keep it to a maximum of "
+        "280 Unicode code points. Do not fabricate handles, links, quotations, statistics, "
+        "dates, or claims. Hashtags are optional and should be used only when clearly useful; "
+        "emojis are not required."
+    ),
     OutputType.ADVISORY: (
         "Write a clear, formal advisory using only source-supported facts. Do not invent "
         "statistics, quotes, dates, or claims."
@@ -39,11 +45,13 @@ ARTIFACT_INSTRUCTIONS: dict[OutputType, str] = {
     ),
 }
 ARTIFACT_PROMPT_VERSIONS: dict[OutputType, str] = {
-    output_type: "1" for output_type in ARTIFACT_INSTRUCTIONS
+    output_type: "2" if output_type == OutputType.X_POST else "1"
+    for output_type in ARTIFACT_INSTRUCTIONS
 }
 OUTPUT_TOKEN_BUDGETS: dict[OutputType, int] = {
     OutputType.EXECUTIVE_SUMMARY: 900,
     OutputType.LINKEDIN_POST: 700,
+    OutputType.X_POST: 220,
     OutputType.ADVISORY: 1100,
     OutputType.PRESENTATION: 2800,
 }
@@ -135,6 +143,8 @@ async def generate_artifact(
     content = result.text.strip()
     if not content:
         raise ValueError("Generation returned no content")
+    if output_type == OutputType.X_POST and len(content) > 280:
+        raise ValueError("Generated X Post exceeds 280 Unicode code points")
     return ArtifactDraft(
         content=content,
         provider=result.provider,

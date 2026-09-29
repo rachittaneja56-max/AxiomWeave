@@ -12,6 +12,7 @@ from app.document_extraction import (
 )
 from app.models import User
 from app.settings import get_settings
+from app.url_import import URLImportError, URLImportRequest, URLImportResult, import_public_url
 
 router = APIRouter()
 MAX_TEXT_FILE_BYTES = 80 * 1024
@@ -129,3 +130,15 @@ async def extract_source_file(
             status_code = 415
         raise source_error(status_code, error.code, error.message) from None
     return _response(filename, result)
+
+
+@router.post("/sources/url", response_model=URLImportResult)
+async def extract_source_url(
+    body: URLImportRequest,
+    _user: Annotated[User, Depends(require_current_user)],
+) -> URLImportResult:
+    try:
+        return await import_public_url(body.url)
+    except URLImportError as error:
+        status = 413 if error.code in {"response_too_large", "source_too_large"} else 422
+        raise source_error(status, error.code, str(error)) from None

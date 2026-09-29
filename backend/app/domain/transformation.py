@@ -63,6 +63,7 @@ TIER_A_OUTPUT_TYPES = frozenset(
     {
         OutputType.EXECUTIVE_SUMMARY,
         OutputType.LINKEDIN_POST,
+        OutputType.X_POST,
         OutputType.ADVISORY,
         OutputType.PRESENTATION,
     }

@@ -61,6 +61,8 @@ export const api = {
       body: formData,
     });
   },
+  extractUrl: (url: string) =>
+    requestJson("/api/sources/url", jsonInit("POST", { url })),
   createTransformation: (request: TransformationRequest) =>
     requestJson("/api/transformations", jsonInit("POST", request)),
   generate: (transformationId: number) =>

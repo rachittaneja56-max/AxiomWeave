@@ -6,14 +6,14 @@ One source. Many artifacts. Every claim traceable.
 
 ## Problem and solution
 
-Teams often rewrite the same authoritative material for several audiences and formats. Manual reuse can introduce drift, hide unsupported claims, and make later source corrections hard to apply. AxiomWeave is a source-grounded content transformation workspace for saving a source and communication brief once, generating four related deliverables, and reviewing each version with its source provenance visible.
+Teams often rewrite the same authoritative material for several audiences and formats. Manual reuse can introduce drift, hide unsupported claims, and make later source corrections hard to apply. AxiomWeave is a source-grounded content transformation workspace for saving a source and communication brief once, generating five related deliverables, and reviewing each version with its source provenance visible.
 
 ## Tier-A workflow
 
 - Username/password sign-in and an owner-scoped transformation dashboard.
-- Paste source text or upload `.txt`, `.md`, `.docx`, or `.pdf`; keep supporting context separate. DOCX paragraphs, headings, and tables are extracted. PDFs use native text extraction first; scanned pages use OCR/Vision only when native text is unavailable.
+- Paste source text, upload `.txt`, `.md`, `.docx`, or `.pdf`, or import one public HTTP/HTTPS article URL; keep supporting context separate. DOCX paragraphs, headings, and tables are extracted. PDFs use native text extraction first; scanned pages use OCR/Vision only when native text is unavailable. URL import reads one public page without login, JavaScript rendering, or crawling.
 - Set audience, tone, language, detail, objective, and style.
-- Generate an Executive Summary, Professional / LinkedIn Post, Formal Advisory, and Presentation with speaker notes. A failed output can be retried independently.
+- Generate an Executive Summary, Professional / LinkedIn Post, X Post, Formal Advisory, and Presentation with speaker notes. X Post is one source-grounded update capped at 280 Unicode code points. A failed output can be retried independently.
 - Review and edit immutable artifact versions; accept or reject drafts.
 - Inspect exact source quotations and unsupported claims. Compare sibling outputs for possible discrepancies, then dismiss a finding without changing artifact text.
 - Save source V2, inspect a deterministic paragraph diff and potentially affected evidence, run a targeted update, or regenerate fully from V2.
@@ -81,7 +81,7 @@ npm run build
 
 ## Scope and limitations
 
-PDF OCR is a model-assisted fallback for scanned pages with little usable native text. It is not guaranteed to be perfect. PDF uploads are limited to 8 MiB and 20 pages; no more than 8 pages are sent for OCR. All extracted source text is normalized and limited to 20,000 characters without truncation. Evidence analysis proposes claims with a model, but the application verifies each proposed quotation as an exact substring of its saved source version; this is traceability support, not a guarantee that every claim is complete or true. Discrepancy findings are review prompts. Source diffs are deterministic paragraph comparisons. Image-only sources, video, URL/article ingestion, RAG, infographic rendering, and video package generation are not implemented. The local SQLite setup is for development and demonstration, not a production deployment recipe.
+PDF OCR is a model-assisted fallback for scanned pages with little usable native text. It is not guaranteed to be perfect. PDF uploads are limited to 8 MiB and 20 pages; no more than 8 pages are sent for OCR. URL import supports public HTTP/HTTPS text and HTML pages up to 2 MiB, with at most three validated redirects; extracted text is limited to 20,000 characters without truncation. It does not log in, execute JavaScript, or crawl. Evidence analysis proposes claims with a model, but the application verifies each proposed quotation as an exact substring of its saved source version; this is traceability support, not a guarantee that every claim is complete or true. Discrepancy findings are review prompts. Source diffs are deterministic paragraph comparisons. Standalone image input, video input, RAG, infographic rendering, and video package generation are not implemented. The local SQLite setup is for development and demonstration, not a production deployment recipe.
 
 ## SIH deliverables
 

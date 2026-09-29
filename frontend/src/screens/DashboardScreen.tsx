@@ -4,6 +4,7 @@ import {
   FileCheck2,
   FileText,
   Megaphone,
+  MessageCircle,
   Presentation,
   RefreshCw,
 } from "lucide-react";
@@ -22,6 +23,7 @@ import { OUTPUT_TYPES, type DashboardItem, type OutputType } from "../types";
 const OUTPUT_ICONS: Record<OutputType, typeof FileText> = {
   executive_summary: FileCheck2,
   linkedin_post: Megaphone,
+  x_post: MessageCircle,
   advisory: FileText,
   presentation: Presentation,
 };

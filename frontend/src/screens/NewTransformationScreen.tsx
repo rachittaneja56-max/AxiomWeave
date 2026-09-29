@@ -5,6 +5,7 @@ import {
   FileText,
   LoaderCircle,
   Megaphone,
+  MessageCircle,
   Presentation,
   Upload,
   X,
@@ -46,12 +47,13 @@ const INITIAL_REQUEST: TransformationRequest = {
 const OUTPUT_ICONS: Record<OutputType, typeof FileText> = {
   executive_summary: FileCheck2,
   linkedin_post: Megaphone,
+  x_post: MessageCircle,
   advisory: FileText,
   presentation: Presentation,
 };
 
 type Phase = "idle" | "saving" | "generating" | "ready";
-type SourceMode = "paste" | "upload";
+type SourceMode = "paste" | "upload" | "url";
 
 export function NewTransformationScreen({
   onOpenReview,
@@ -69,6 +71,7 @@ export function NewTransformationScreen({
     useState<TransformationRequest>(INITIAL_REQUEST);
   const [sourceMode, setSourceMode] = useState<SourceMode>("paste");
   const [sourceFile, setSourceFile] = useState<SourceFileMetadata | null>(null);
+  const [sourceUrl, setSourceUrl] = useState("");
   const [isExtracting, setIsExtracting] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
   const [saved, setSaved] = useState<SavedTransformation | null>(null);
@@ -100,6 +103,7 @@ export function NewTransformationScreen({
     setSourceMode(mode);
     setRequest((current) => ({ ...current, source_text: "" }));
     setSourceFile(null);
+    setSourceUrl("");
     if (fileInput.current) fileInput.current.value = "";
     setError(null);
   }
@@ -135,6 +139,45 @@ export function NewTransformationScreen({
       } else {
         setError(
           "Could not reach the service to read this file. Check the connection and try again.",
+        );
+      }
+    } finally {
+      setIsExtracting(false);
+    }
+  }
+
+  async function importUrl() {
+    if (isLocked || isExtracting) return;
+    setError(null);
+    setSourceFile(null);
+    setRequest((current) => ({ ...current, source_text: "" }));
+    setIsExtracting(true);
+    try {
+      const body = await api.extractUrl(sourceUrl);
+      if (
+        !isRecord(body) ||
+        typeof body.source_text !== "string" ||
+        typeof body.title !== "string" ||
+        typeof body.character_count !== "number"
+      ) {
+        setError("The page could not be read in the expected format.");
+        return;
+      }
+      setRequest((current) => ({
+        ...current,
+        source_text: body.source_text as string,
+      }));
+      setSourceFile({
+        filename: "Imported page: " + body.title,
+        character_count: body.character_count,
+        ocr_used: false,
+      });
+    } catch (requestError) {
+      if (requestError instanceof ApiError) {
+        setError(extractionError(requestError.body, requestError.status));
+      } else {
+        setError(
+          "Could not reach the service to read this page. Check the connection and try again.",
         );
       }
     } finally {
@@ -291,6 +334,16 @@ export function NewTransformationScreen({
               >
                 Upload a file
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sourceMode === "url"}
+                className={sourceMode === "url" ? "is-selected" : ""}
+                onClick={() => switchSourceMode("url")}
+                disabled={isLocked || isExtracting}
+              >
+                Import from URL
+              </button>
             </div>
             {sourceMode === "paste" ? (
               <label className="source-text-wrap" htmlFor="source-text">
@@ -307,6 +360,61 @@ export function NewTransformationScreen({
                   disabled={isLocked}
                 />
               </label>
+            ) : sourceMode === "url" ? (
+              <div className="url-import-panel">
+                {sourceFile ? (
+                  <div className="upload-file" role="status" aria-live="polite">
+                    <span className="upload-file__icon">
+                      <FileText />
+                    </span>
+                    <span className="upload-file__name">
+                      <strong>{sourceFile.filename}</strong>
+                      <small>
+                        {sourceFile.character_count.toLocaleString()} characters
+                      </small>
+                    </span>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="Remove imported page"
+                      onClick={clearUploadedFile}
+                      disabled={isLocked}
+                    >
+                      <X aria-hidden="true" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="url-import-form">
+                    <label htmlFor="source-url">Public page URL</label>
+                    <div className="url-import-form__row">
+                      <input
+                        id="source-url"
+                        type="url"
+                        inputMode="url"
+                        placeholder="https://example.com/article"
+                        value={sourceUrl}
+                        onChange={(event) => setSourceUrl(event.target.value)}
+                        disabled={isLocked || isExtracting}
+                      />
+                      <button
+                        type="button"
+                        className="button-secondary"
+                        onClick={() => void importUrl()}
+                        disabled={isLocked || isExtracting || !sourceUrl.trim()}
+                      >
+                        {isExtracting ? (
+                          <LoaderCircle className="status-spin" />
+                        ) : null}
+                        {isExtracting ? "Reading page" : "Read public page"}
+                      </button>
+                    </div>
+                    <p>
+                      One public HTTP or HTTPS page. Login pages and
+                      JavaScript-rendered pages may not be available.
+                    </p>
+                  </div>
+                )}
+              </div>
             ) : (
               <div
                 className={"upload-dropzone" + (sourceFile ? " has-file" : "")}

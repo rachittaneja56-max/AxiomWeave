@@ -223,13 +223,61 @@ def test_source_v2_diff_impact_targeted_update_and_full_regeneration(
     assert regenerated.json()["artifact_version"]["version_number"] == 3
     assert regenerated.json()["artifact_version"]["source_version_id"] == source_v2_id
     assert regenerated.json()["artifact_version"]["content"] == "Full regeneration from source V2."
-
     detail = client.get(f"/api/transformations/{transformation_id}").json()
     versions = detail["artifact_runs"][0]["versions"]
     assert [item["version_number"] for item in versions] == [1, 2, 3]
     assert [item["source_version_id"] for item in versions] == [
         update_body["parent_source_version"]["id"],
         source_v2_id,
+        source_v2_id,
+    ]
+
+
+def test_x_post_targeted_update_from_source_v2_keeps_output_contract(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+) -> None:
+    client, _engine, _factory = auth_database
+    login(client)
+    provider = RevisionProvider()
+    install_revision_provider(provider)
+    response = client.post(
+        "/api/transformations",
+        json={
+            "source_text": "The center opens Saturday.",
+            "output_types": ["x_post"],
+            "audience": "community",
+            "tone": "clear",
+            "language": "English",
+            "detail_level": "brief",
+            "objective": "inform",
+            "style": "plain",
+        },
+    )
+    transformation_id = response.json()["transformation_run_id"]
+    generated = client.post(f"/api/transformations/{transformation_id}/generate").json()
+    artifact = generated["artifacts"][0]
+
+    revised = client.post(
+        f"/api/transformations/{transformation_id}/source-versions",
+        json={"source_text": "The center opens Sunday."},
+    )
+    assert revised.status_code == 200
+    source_v2_id = revised.json()["source_version"]["id"]
+    targeted = client.post(f"/api/artifact-runs/{artifact['artifact_run_id']}/targeted-update")
+    assert targeted.status_code == 200
+    version = targeted.json()["artifact_version"]
+    assert version["source_version_id"] == source_v2_id
+    assert version["version_number"] == 2
+    assert len(version["content"]) <= 280
+    request = provider.structured_requests[-1]
+    assert request.max_output_tokens == 220
+    assert "maximum of 280 Unicode code points" in request.transformation_instructions
+
+    detail = client.get(f"/api/transformations/{transformation_id}").json()
+    versions = detail["artifact_runs"][0]["versions"]
+    assert [item["version_number"] for item in versions] == [1, 2]
+    assert [item["source_version_id"] for item in versions] == [
+        revised.json()["parent_source_version"]["id"],
         source_v2_id,
     ]
 

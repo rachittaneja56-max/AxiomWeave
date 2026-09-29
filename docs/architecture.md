@@ -12,7 +12,8 @@ The backend verifies passwords with Argon2id, maps the normalized username to a 
 ## Source, brief, and generated artifacts
 
 ```text
-Paste / TXT / MD / DOCX / PDF
+Paste / TXT / MD / DOCX / PDF / one public URL
+  -> for URLs: safe bounded HTTP fetch -> HTML/main-content extraction
   -> text or DOCX extraction; PDF native text extraction page by page
   -> OCR/Vision fallback only for PDF pages with under 40 usable native characters
   -> normalized Source -> immutable SourceVersion + SHA-256 + SourceSegments
@@ -20,7 +21,9 @@ Paste / TXT / MD / DOCX / PDF
   -> ArtifactRun per selected format -> immutable ArtifactVersion history
 ```
 
-The four Tier-A output types are executive summary, LinkedIn post, formal advisory, and presentation with speaker notes. Each output has an independent run state, allowing partial failure and retry. Version history records its source version, provider/model, prompt version/hash, and review status. Human edits create another version. Presentation content is validated structured data and is rendered with React text nodes for review.
+The five Tier-A output types are executive summary, LinkedIn post, X Post, formal advisory, and presentation with speaker notes. X Post output is limited to 220 provider output tokens and validated at 280 Unicode code points before persistence. Each output has an independent run state, allowing partial failure and retry. Version history records its source version, provider/model, prompt version/hash, and review status. Human edits create another version. Presentation content is validated structured data and is rendered with React text nodes for review.
+
+URL imports accept one public HTTP/HTTPS page at a time. The fetcher validates DNS results and pins the connection to a validated public IP, manually revalidates up to three redirects, streams at most 2 MiB, and extracts readable HTML or plain text. The normalized result enters the source composer and then follows the same immutable SourceVersion path as pasted and uploaded text. It does not crawl or execute page scripts.
 
 ## OpenAI generation boundary
 

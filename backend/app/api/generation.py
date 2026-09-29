@@ -19,6 +19,7 @@ router = APIRouter()
 SUPPORTED_OUTPUTS = (
     OutputType.EXECUTIVE_SUMMARY,
     OutputType.LINKEDIN_POST,
+    OutputType.X_POST,
     OutputType.ADVISORY,
     OutputType.PRESENTATION,
 )
@@ -45,7 +46,7 @@ class GeneratedArtifactVersion(BaseModel):
 
 class ArtifactRunDetail(BaseModel):
     artifact_run_id: int
-    output_type: Literal["executive_summary", "linkedin_post", "advisory", "presentation"]
+    output_type: Literal["executive_summary", "linkedin_post", "x_post", "advisory", "presentation"]
     status: Literal["pending", "running", "succeeded", "failed"]
     artifact_version: GeneratedArtifactVersion | None
 
@@ -122,7 +123,7 @@ def _run_detail(session: Session, user: User, artifact_run: ArtifactRun) -> Arti
     return ArtifactRunDetail(
         artifact_run_id=artifact_run.id,
         output_type=cast(
-            Literal["executive_summary", "linkedin_post", "advisory", "presentation"],
+            Literal["executive_summary", "linkedin_post", "x_post", "advisory", "presentation"],
             artifact_run.output_type,
         ),
         status=cast(Literal["pending", "running", "succeeded", "failed"], artifact_run.status),

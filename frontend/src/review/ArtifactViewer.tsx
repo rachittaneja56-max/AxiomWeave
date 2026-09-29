@@ -316,7 +316,22 @@ export function ArtifactViewer({
         ) : artifact.output_type === "presentation" ? (
           <PresentationViewer content={version.content} />
         ) : (
-          <article className="artifact-document">
+          <article
+            className={
+              "artifact-document" +
+              (artifact.output_type === "x_post"
+                ? " artifact-document--x-post"
+                : "")
+            }
+          >
+            {artifact.output_type === "x_post" && (
+              <p
+                className="x-post-character-count"
+                aria-label="Character count"
+              >
+                {Array.from(version.content.trim()).length} / 280 characters
+              </p>
+            )}
             <div className="artifact-document__lineage">
               <span>Source</span>
               <span />

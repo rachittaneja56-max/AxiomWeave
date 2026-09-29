@@ -26,7 +26,7 @@ from app.source_versions import create_source_version
 
 router = APIRouter()
 
-_OUTPUT_TYPES = ("executive_summary", "linkedin_post", "advisory", "presentation")
+_OUTPUT_TYPES = ("executive_summary", "linkedin_post", "x_post", "advisory", "presentation")
 _ARTIFACT_STATUSES = ("pending", "running", "succeeded", "failed")
 
 
@@ -38,7 +38,7 @@ class SourceVersionSummary(BaseModel):
 
 
 class DashboardArtifactState(BaseModel):
-    output_type: Literal["executive_summary", "linkedin_post", "advisory", "presentation"]
+    output_type: Literal["executive_summary", "linkedin_post", "x_post", "advisory", "presentation"]
     status: Literal["pending", "running", "succeeded", "failed"] | None
     latest_version_number: int | None
     review_status: Literal["draft", "accepted", "rejected"] | None
@@ -70,7 +70,7 @@ class ArtifactVersionHistory(BaseModel):
 
 class ArtifactRunHistory(BaseModel):
     artifact_run_id: int
-    output_type: Literal["executive_summary", "linkedin_post", "advisory", "presentation"]
+    output_type: Literal["executive_summary", "linkedin_post", "x_post", "advisory", "presentation"]
     status: Literal["pending", "running", "succeeded", "failed"]
     versions: list[ArtifactVersionHistory]
 
@@ -218,7 +218,7 @@ def _artifact_history(
     return ArtifactRunHistory(
         artifact_run_id=artifact_run.id,
         output_type=cast(
-            Literal["executive_summary", "linkedin_post", "advisory", "presentation"],
+            Literal["executive_summary", "linkedin_post", "x_post", "advisory", "presentation"],
             artifact_run.output_type,
         ),
         status=cast(Literal["pending", "running", "succeeded", "failed"], artifact_run.status),

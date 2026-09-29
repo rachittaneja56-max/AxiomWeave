@@ -1,4 +1,10 @@
-import { FileCheck2, FileText, Megaphone, Presentation } from "lucide-react";
+import {
+  FileCheck2,
+  FileText,
+  Megaphone,
+  MessageCircle,
+  Presentation,
+} from "lucide-react";
 import type { ReviewArtifactRun, OutputType } from "../types";
 import { artifactStatus, outputLabel } from "../utils";
 import { StatusBadge } from "../components/StatusBadge";
@@ -6,6 +12,7 @@ import { StatusBadge } from "../components/StatusBadge";
 const OUTPUT_ICONS: Record<OutputType, typeof FileText> = {
   executive_summary: FileCheck2,
   linkedin_post: Megaphone,
+  x_post: MessageCircle,
   advisory: FileText,
   presentation: Presentation,
 };

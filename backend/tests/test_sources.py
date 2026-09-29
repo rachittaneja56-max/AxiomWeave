@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.api.sources import MAX_TEXT_FILE_BYTES
 from app.domain.transformation import SOURCE_TEXT_MAX_LENGTH
 from app.main import app
+from app.url_import import URLImportResult
 
 client: TestClient = TestClient(app)
 PDF: Any = pymupdf
@@ -46,6 +47,31 @@ def test_extracts_utf8_txt_with_canonical_metadata() -> None:
         "page_count": None,
         "ocr_used": False,
     }
+
+
+def test_authenticated_url_import_returns_normalized_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_import(url: str) -> URLImportResult:
+        assert url == "https://example.com/article"
+        text = "# News\n\nArticle text."
+        return URLImportResult(
+            source_url=url,
+            final_url=url,
+            title="News",
+            character_count=len(text),
+            source_text=text,
+        )
+
+    monkeypatch.setattr("app.api.sources.import_public_url", fake_import)
+    response = client.post("/api/sources/url", json={"url": "https://example.com/article"})
+    assert response.status_code == 200
+    assert response.json()["title"] == "News"
+    assert response.json()["source_text"] == "# News\n\nArticle text."
+    assert response.json()["extraction_method"] == "url_html"
+
+
+def test_url_import_rejects_invalid_scheme_without_fetching() -> None:
+    response = client.post("/api/sources/url", json={"url": "file:///etc/passwd"})
+    assert response.status_code == 422
 
 
 def test_extracts_markdown_and_supports_utf8_bom() -> None:

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.artifact_generators import ARTIFACT_INSTRUCTIONS, OUTPUT_TOKEN_BUDGETS
 from app.auth import require_current_user
 from app.database import get_db_session
 from app.domain.transformation import OutputType
@@ -316,6 +317,11 @@ async def targeted_update_artifact(
                 f"Detail level: {transformation.detail_level}",
                 f"Objective: {transformation.objective}",
                 f"Style: {transformation.style}",
+                *(
+                    (ARTIFACT_INSTRUCTIONS[OutputType.X_POST],)
+                    if output_type == OutputType.X_POST
+                    else ()
+                ),
             )
         ),
         source_text=new_source.source_text,
@@ -323,7 +329,7 @@ async def targeted_update_artifact(
         artifact_content=latest.content,
         prior_source_text=old_source.source_text,
         changed_source_material=json.dumps(changed_material, ensure_ascii=False),
-        max_output_tokens=2200,
+        max_output_tokens=OUTPUT_TOKEN_BUDGETS.get(output_type, 2200),
     )
     structured_provider = cast(StructuredGenerationProvider, provider)
     try:
@@ -340,6 +346,8 @@ async def targeted_update_artifact(
             content = result.value.content.strip()
         if not content:
             raise ValueError("The targeted update returned empty content")
+        if output_type == OutputType.X_POST and len(content) > 280:
+            raise ValueError("The targeted X Post exceeds 280 Unicode code points")
     except Exception:
         raise HTTPException(
             status_code=502,

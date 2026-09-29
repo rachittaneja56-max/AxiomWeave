@@ -131,9 +131,12 @@ describe("transformation request form", () => {
         "Context can guide the writing, but it is not treated as source evidence.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getAllByRole("checkbox")).toHaveLength(4);
+    expect(screen.getAllByRole("checkbox")).toHaveLength(5);
     expect(
-      screen.queryByLabelText(/X post|Infographic|Video package/i),
+      screen.getByRole("checkbox", { name: "X Post" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText(/Infographic|Video package/i),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Paste text" })).toHaveAttribute(
       "aria-selected",
@@ -141,6 +144,9 @@ describe("transformation request form", () => {
     );
     expect(
       screen.getByRole("tab", { name: "Upload a file" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: "Import from URL" }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Audience")).toBeInTheDocument();
     expect(screen.getByLabelText("Tone")).toBeInTheDocument();
@@ -748,6 +754,51 @@ describe("transformation request form", () => {
     expect(
       JSON.parse(fetchMock.mock.calls[1][1].body as string),
     ).toHaveProperty("supporting_context", "");
+  });
+
+  it("imports one public URL and uses its extracted text as the source", async () => {
+    const extractedSource = "An article about a public garden opening.";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          source_url: "https://example.test/article",
+          final_url: "https://example.test/article",
+          title: "Garden article",
+          character_count: extractedSource.length,
+          source_text: extractedSource,
+          extraction_method: "url_html",
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(savedResponse))
+      .mockResolvedValueOnce(
+        jsonResponse({ status: "succeeded", artifacts: [] }),
+      );
+    installWorkspaceFetch(fetchMock);
+
+    await renderAuthenticatedWorkspace();
+    fireEvent.click(screen.getByRole("tab", { name: "Import from URL" }));
+    fireEvent.change(screen.getByLabelText("Public page URL"), {
+      target: { value: "https://example.test/article" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Read public page" }));
+    expect(
+      await screen.findByText("Imported page: Garden article"),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/sources/url",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ url: "https://example.test/article" }),
+      }),
+    );
+    selectMultipleOutputs();
+    fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
+    await screen.findByRole("heading", { name: "Your artifacts" });
+    expect(
+      JSON.parse(fetchMock.mock.calls[1][1].body as string).source_text,
+    ).toBe(extractedSource);
   });
 
   it("shows extraction errors and rejects malformed successful responses", async () => {

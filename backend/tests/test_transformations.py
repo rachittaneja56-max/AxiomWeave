@@ -1,5 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -65,6 +66,16 @@ def test_prepare_accepts_multiple_output_types() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ready", "request": request}
+
+
+def test_create_accepts_x_and_rejects_inactive_output_types() -> None:
+    from app.domain.transformation import CreateTransformationRequest
+
+    request = valid_request(output_types=["x_post"])
+    assert CreateTransformationRequest.model_validate(request).output_types[0].value == "x_post"
+    for inactive in ("infographic", "video_package"):
+        with pytest.raises(ValidationError):
+            CreateTransformationRequest.model_validate(valid_request(output_types=[inactive]))
 
 
 @pytest.mark.parametrize("source_text", ["", " \n\t"])
@@ -234,7 +245,7 @@ def test_persists_source_snapshot_segments_and_controls(
 @pytest.mark.parametrize(
     ("overrides", "field"),
     [
-        ({"output_types": ["x_post"]}, "output_types"),
+        ({"output_types": ["infographic"]}, "output_types"),
         ({"owner_id": 999}, "owner_id"),
         ({"user_id": 999}, "user_id"),
         ({"source_text": " \t\r\n"}, "source_text"),

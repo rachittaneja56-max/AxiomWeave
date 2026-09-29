@@ -12,6 +12,12 @@ export const OUTPUT_TYPES = [
     description: "A polished update for a professional audience.",
   },
   {
+    value: "x_post",
+    label: "X Post",
+    shortLabel: "X Post",
+    description: "A concise social update for quick public communication.",
+  },
+  {
     value: "advisory",
     label: "Formal Advisory",
     shortLabel: "Advisory",
