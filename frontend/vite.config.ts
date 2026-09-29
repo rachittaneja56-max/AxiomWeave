@@ -36,6 +36,7 @@ export default defineConfig(({ mode }) => {
       proxy,
     },
     preview: {
+      allowedHosts: true,
       proxy,
     },
     test: {
