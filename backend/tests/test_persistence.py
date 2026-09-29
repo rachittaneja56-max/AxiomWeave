@@ -105,7 +105,7 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert set(inspector.get_table_names()) == EXPECTED_TABLES | {"alembic_version"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "b745f01c6d52"
+        assert revision == "c2a7e18f4d91"
     finally:
         engine.dispose()
 
@@ -172,6 +172,87 @@ def test_auth_migration_preserves_legacy_user_and_owned_rows(tmp_path: Path) -> 
                 == 41
             )
             assert connection.scalar(text("SELECT user_id FROM auth_sessions WHERE id = 1")) == 41
+            assert (
+                connection.scalar(text("SELECT revoked_at FROM auth_sessions WHERE id = 1"))
+                is not None
+            )
+    finally:
+        engine.dispose()
+
+
+def test_password_cutover_revokes_existing_sessions_without_deleting_owned_data(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'cutover.sqlite3').as_posix()}"
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "b745f01c6d52")
+    engine = create_database_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, username, password_hash, created_at) "
+                    "VALUES (52, 'legacy-migrated-52', '!disabled-legacy-google!', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO auth_sessions "
+                    "(id, user_id, session_token_digest, expires_at, revoked_at, created_at) "
+                    "VALUES "
+                    "(1, 52, :active_digest, :expiry, NULL, CURRENT_TIMESTAMP), "
+                    "(2, 52, :revoked_digest, :expiry, :revoked_at, CURRENT_TIMESTAMP)"
+                ),
+                {
+                    "active_digest": "a" * 64,
+                    "revoked_digest": "b" * 64,
+                    "expiry": "2099-01-01",
+                    "revoked_at": "2026-01-01 00:00:00",
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO sources (id, owner_id, title, created_at) "
+                    "VALUES (7, 52, 'preserved source', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_versions "
+                    "(id, source_id, version_number, source_text, content_hash, created_at) "
+                    "VALUES (9, 7, 1, 'preserved text', :hash, CURRENT_TIMESTAMP)"
+                ),
+                {"hash": "c" * 64},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO transformation_runs "
+                    "(id, owner_id, source_version_id, supporting_context, audience, tone, "
+                    "language, detail_level, objective, style, selected_output_types, created_at) "
+                    "VALUES (11, 52, 9, '', 'Public', 'Clear', 'English', 'standard', "
+                    "'Inform', 'Plain', '[]', CURRENT_TIMESTAMP)"
+                )
+            )
+
+        command.upgrade(config, "head")
+
+        with engine.connect() as connection:
+            sessions = connection.execute(
+                text("SELECT id, revoked_at FROM auth_sessions ORDER BY id")
+            ).all()
+            assert sessions[0].revoked_at is not None
+            assert str(sessions[1].revoked_at).startswith("2026-01-01")
+            assert connection.scalar(text("SELECT id FROM users WHERE id = 52")) == 52
+            assert connection.scalar(text("SELECT owner_id FROM sources WHERE id = 7")) == 52
+            assert (
+                connection.scalar(text("SELECT owner_id FROM transformation_runs WHERE id = 11"))
+                == 52
+            )
+            assert connection.scalar(text("SELECT source_text FROM source_versions WHERE id = 9")) == (
+                "preserved text"
+            )
     finally:
         engine.dispose()
 

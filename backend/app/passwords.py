@@ -13,6 +13,15 @@ _BLOCKED_PASSWORDS = {
     "letmein",
     "axiomweave",
     "axiomweave123",
+    "passwordpassword",
+    "password1234567",
+    "123456789012345",
+    "qwertyqwerty123",
+    "letmeinletmein123",
+    "axiomweaveaxiom",
+    "administrator123",
+    "iloveyouiloveyou",
+    "welcome123456789",
 }
 
 

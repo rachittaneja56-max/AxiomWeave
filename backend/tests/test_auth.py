@@ -89,15 +89,23 @@ def test_password_primitives() -> None:
     assert verify_password("fictional test passphrase", first)
     assert not verify_password("wrong fictional phrase", first)
     assert not verify_password("anything", "!disabled-legacy-google!")
-    for value in ("short", "x" * 129, "Password123"):
+    for value in (
+        "short",
+        "x" * 129,
+        "Password123",
+        "123456789012345",
+        "PasswordPassword",
+        "QWERTYQWERTY123",
+        "Administrator123",
+    ):
         try:
             validate_password(value)
         except ValueError:
             pass
         else:
             raise AssertionError("invalid password accepted")
-    validate_password("123456789012345")
-    validate_password("long passphrase with spaces and ?")
+    validate_password("river glass autumn notebook")
+    validate_password("café river glass notebook")
 
 
 def test_generic_failure_dummy_path_and_persistent_throttle(
