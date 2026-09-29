@@ -45,7 +45,11 @@ export function AppShell({
   }
 
   return (
-    <div className="app-frame">
+    <div
+      className={
+        "app-frame" + (screen === "review" ? " app-frame--review" : "")
+      }
+    >
       <button
         type="button"
         className={"sidebar-scrim" + (menuOpen ? " is-visible" : "")}
@@ -56,10 +60,8 @@ export function AppShell({
       <aside className={"app-sidebar" + (menuOpen ? " is-open" : "")}>
         <div className="sidebar-brand">
           <BrandMark />
-          <span className="sidebar-caption">Source-grounded workspace</span>
         </div>
         <nav className="sidebar-nav" aria-label="Main navigation">
-          <p className="sidebar-section-label">Workspace</p>
           <button
             type="button"
             className={"sidebar-link" + (screen !== "new" ? " is-active" : "")}
@@ -84,10 +86,6 @@ export function AppShell({
           <div className="sidebar-account" aria-label="Signed-in account">
             <span>{username}</span>
           </div>
-          <p className="sidebar-footer__promise">
-            <span className="promise-dot" aria-hidden="true" />
-            One source. Many artifacts.
-          </p>
           <button type="button" className="sidebar-link" onClick={onLogout}>
             <LogOut aria-hidden="true" />
             <span>Sign out</span>
@@ -107,12 +105,24 @@ export function AppShell({
           >
             {menuOpen ? <X aria-hidden="true" /> : <Menu aria-hidden="true" />}
           </button>
-          <div className="breadcrumb" aria-label="Breadcrumb">
+          <div
+            className={
+              "breadcrumb" + (screen === "review" ? " breadcrumb--review" : "")
+            }
+            aria-label="Breadcrumb"
+          >
             <span>Workspace</span>
             <ArrowUpRight aria-hidden="true" />
             <span>{eyebrow}</span>
           </div>
-          <div className="topbar-actions">{headerActions}</div>
+          <div
+            className={
+              "topbar-actions" +
+              (screen === "review" ? " topbar-actions--review" : "")
+            }
+          >
+            {headerActions}
+          </div>
         </header>
         <main className={"content-area content-area--" + screen}>
           <div className="page-heading">

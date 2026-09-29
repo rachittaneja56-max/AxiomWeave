@@ -4702,3 +4702,284 @@ h4 {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Review workspace polish */
+.sidebar-footer {
+  gap: 8px;
+}
+
+.sidebar-footer__line {
+  margin-bottom: 4px;
+}
+
+.sidebar-account {
+  color: #d7e2dd;
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+@media (min-width: 721px) {
+  .app-frame--review .app-topbar {
+    display: none;
+  }
+
+  .content-area--review {
+    height: 100dvh;
+    padding-top: 26px;
+    padding-bottom: 20px;
+  }
+}
+
+.content-area--review .page-heading {
+  min-height: 0;
+  margin-bottom: 14px;
+}
+
+.content-area--review .page-heading h1 {
+  max-width: 900px;
+  font-size: clamp(1.75rem, 2.1vw, 2rem);
+  line-height: 1.18;
+}
+
+.review-context {
+  margin-bottom: 10px;
+}
+
+.source-revision {
+  margin-bottom: 12px;
+  border-radius: 12px;
+}
+
+.source-revision__summary {
+  min-height: 64px;
+  gap: 12px;
+  padding: 10px 16px;
+}
+
+.review-layout {
+  grid-template-columns: 250px minmax(0, 1fr) 360px;
+  gap: 18px;
+}
+
+.artifact-rail,
+.artifact-viewer,
+.review-inspector {
+  border-radius: 15px;
+}
+
+.artifact-rail {
+  padding: 20px 14px 14px;
+}
+
+.artifact-rail__heading {
+  padding: 0 8px 18px;
+}
+
+.artifact-rail ul {
+  gap: 8px;
+}
+
+.artifact-rail__item {
+  min-height: 62px;
+  padding: 9px 8px;
+}
+
+.artifact-viewer {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  overflow: visible;
+}
+
+.artifact-viewer__header {
+  flex: 0 0 auto;
+  gap: 12px 16px;
+  padding: 16px 22px;
+}
+
+.artifact-toolbar {
+  gap: 7px;
+}
+
+.artifact-more__menu {
+  z-index: 30;
+  width: 210px;
+  padding: 6px;
+}
+
+.artifact-more__menu button {
+  min-height: 42px;
+  gap: 10px;
+  padding: 0 10px;
+}
+
+.artifact-document {
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  flex: 1 1 auto;
+  margin: 0;
+  overflow: auto;
+  padding: 30px clamp(28px, 4vw, 52px) 40px;
+  font-size: 0.9rem;
+  line-height: 1.72;
+}
+
+.artifact-document--x-post {
+  max-width: 620px;
+}
+
+.presentation-viewer {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.review-inspector {
+  min-height: 0;
+}
+
+.inspector-heading {
+  padding: 20px 22px 14px;
+}
+
+.inspector-tabs {
+  gap: 3px;
+  padding: 0 16px;
+  overflow: hidden;
+}
+
+.inspector-tabs button {
+  gap: 6px;
+  padding: 0 4px;
+  font-size: 0.72rem;
+}
+
+.inspector-body {
+  padding: 20px 22px 22px;
+}
+
+.inspector-panel-content {
+  gap: 18px;
+}
+
+.inspector-panel-intro {
+  gap: 12px;
+}
+
+@media (max-width: 1390px) and (min-width: 901px) {
+  .review-layout {
+    grid-template-columns: 230px minmax(0, 1fr) 330px;
+    gap: 16px;
+  }
+
+  .artifact-viewer__header {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .artifact-toolbar {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .inspector-heading {
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+
+  .inspector-body {
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+}
+
+@media (max-width: 900px) {
+  .app-frame--review .app-topbar {
+    display: flex;
+  }
+
+  .app-frame--review .breadcrumb {
+    display: none;
+  }
+
+  .app-frame--review .topbar-actions--review {
+    display: flex;
+  }
+
+  .content-area--review {
+    height: auto;
+    padding-top: 26px;
+  }
+
+  .artifact-viewer {
+    overflow: visible;
+  }
+
+  .review-layout {
+    grid-template-columns: minmax(160px, 0.55fr) minmax(0, 1.45fr);
+  }
+
+  .artifact-document {
+    flex: initial;
+    max-width: 850px;
+    overflow: visible;
+  }
+}
+
+@media (max-width: 720px) {
+  .content-area--review .page-heading {
+    margin-bottom: 17px;
+  }
+
+  .content-area--review .page-heading h1 {
+    font-size: 1.55rem;
+  }
+
+  .review-layout {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .artifact-viewer__header {
+    padding: 16px;
+  }
+
+  .artifact-document {
+    padding: 21px 20px 34px;
+  }
+
+  .review-inspector {
+    min-height: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .artifact-viewer__header {
+    padding: 14px;
+  }
+
+  .artifact-document {
+    padding: 17px 15px 27px;
+    font-size: 0.83rem;
+    line-height: 1.7;
+  }
+
+  .inspector-heading {
+    padding: 14px 12px 9px;
+  }
+
+  .inspector-tabs {
+    padding: 0 4px;
+  }
+
+  .inspector-tabs button {
+    gap: 4px;
+    padding: 0 6px;
+    font-size: 0.64rem;
+  }
+
+  .inspector-body {
+    padding: 12px;
+  }
+}
