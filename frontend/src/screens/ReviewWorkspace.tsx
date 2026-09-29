@@ -482,6 +482,16 @@ export function ReviewWorkspace({
           else void regenerateArtifact(artifactRunId);
         }}
       />
+      <ArtifactRail
+        artifacts={artifacts}
+        activeArtifactId={activeArtifact?.artifact_run_id ?? null}
+        sourceVersion={detail.source_version.version_number}
+        onSelect={(artifactRunId) => {
+          setActiveArtifactId(artifactRunId);
+          setActiveTab("evidence");
+          setExportStatus(null);
+        }}
+      />
       {(error || message) && (
         <p
           className={error ? "notice notice--error" : "notice"}
@@ -506,15 +516,6 @@ export function ReviewWorkspace({
         </div>
       ) : (
         <div className="review-layout">
-          <ArtifactRail
-            artifacts={artifacts}
-            activeArtifactId={activeArtifact?.artifact_run_id ?? null}
-            onSelect={(artifactRunId) => {
-              setActiveArtifactId(artifactRunId);
-              setActiveTab("evidence");
-              setExportStatus(null);
-            }}
-          />
           {activeArtifact ? (
             <ArtifactViewer
               artifact={activeArtifact}

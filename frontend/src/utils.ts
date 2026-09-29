@@ -320,6 +320,15 @@ export function transformationStatus(item: DashboardItem): string {
   ) {
     return "Ready for review";
   }
+  if (
+    statuses.length > 0 &&
+    statuses.every((artifact) => artifact.review_status === "accepted")
+  ) {
+    return "Accepted";
+  }
+  if (statuses.some((artifact) => artifact.review_status === "rejected")) {
+    return "Rejected";
+  }
   if (item.status === "Complete") return "Complete";
   return "Draft";
 }

@@ -1,12 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { ArrowUpRight, Files, LogOut, Menu, Plus, X } from "lucide-react";
+import { Files, LogOut, Menu, Plus, X } from "lucide-react";
 import type { WorkspaceScreen } from "../types";
 import { BrandMark } from "./BrandMark";
 
 type AppShellProps = {
   screen: WorkspaceScreen;
   pageTitle: string;
-  eyebrow?: string;
   description?: string;
   headerActions?: ReactNode;
   logoutError?: boolean;
@@ -14,12 +13,12 @@ type AppShellProps = {
   onNavigate: (screen: "dashboard" | "new") => void;
   onLogout: () => void;
   children: ReactNode;
+  contextualNavigation?: ReactNode;
 };
 
 export function AppShell({
   screen,
   pageTitle,
-  eyebrow = "Workspace",
   description,
   headerActions,
   logoutError = false,
@@ -27,6 +26,7 @@ export function AppShell({
   onNavigate,
   onLogout,
   children,
+  contextualNavigation,
 }: AppShellProps) {
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -57,7 +57,17 @@ export function AppShell({
         tabIndex={menuOpen ? 0 : -1}
         onClick={() => setMenuOpen(false)}
       />
-      <aside className={"app-sidebar" + (menuOpen ? " is-open" : "")}>
+      <aside
+        className={"app-sidebar" + (menuOpen ? " is-open" : "")}
+        onClick={(event) => {
+          if (
+            (event.target as HTMLElement).closest(
+              ".review-sidebar-context__item",
+            )
+          )
+            setMenuOpen(false);
+        }}
+      >
         <div className="sidebar-brand">
           <BrandMark />
         </div>
@@ -81,6 +91,8 @@ export function AppShell({
             <span>New transformation</span>
           </button>
         </nav>
+        {contextualNavigation}
+        <div id="review-context-navigation" />
         <div className="sidebar-footer">
           <div className="sidebar-footer__line" />
           <div className="sidebar-account" aria-label="Signed-in account">
@@ -105,16 +117,7 @@ export function AppShell({
           >
             {menuOpen ? <X aria-hidden="true" /> : <Menu aria-hidden="true" />}
           </button>
-          <div
-            className={
-              "breadcrumb" + (screen === "review" ? " breadcrumb--review" : "")
-            }
-            aria-label="Breadcrumb"
-          >
-            <span>Workspace</span>
-            <ArrowUpRight aria-hidden="true" />
-            <span>{eyebrow}</span>
-          </div>
+          <div className="topbar-spacer" aria-hidden="true" />
           <div
             className={
               "topbar-actions" +

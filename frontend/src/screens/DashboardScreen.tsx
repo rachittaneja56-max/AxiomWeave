@@ -1,32 +1,15 @@
 import { useEffect, useState } from "react";
-import {
-  ArrowRight,
-  FileCheck2,
-  FileText,
-  Megaphone,
-  MessageCircle,
-  Presentation,
-  RefreshCw,
-} from "lucide-react";
+import { ArrowRight, RefreshCw } from "lucide-react";
 import { api } from "../api";
 import { EmptyState } from "../components/EmptyState";
 import { StatusBadge } from "../components/StatusBadge";
 import {
-  artifactStatus,
   deriveTransformationTitle,
   isDashboardItem,
   relativeDate,
   transformationStatus,
 } from "../utils";
-import { OUTPUT_TYPES, type DashboardItem, type OutputType } from "../types";
-
-const OUTPUT_ICONS: Record<OutputType, typeof FileText> = {
-  executive_summary: FileCheck2,
-  linkedin_post: Megaphone,
-  x_post: MessageCircle,
-  advisory: FileText,
-  presentation: Presentation,
-};
+import type { DashboardItem } from "../types";
 
 type DashboardRow = {
   item: DashboardItem;
@@ -129,91 +112,51 @@ export function DashboardScreen({
                 {rows.length} transformation{rows.length === 1 ? "" : "s"}
               </h2>
             </div>
-            <div className="dashboard-overview__key">
-              <span className="legend-dot legend-dot--ready" />
-              <span>Artifacts ready to review</span>
-            </div>
           </div>
           <div className="transformation-list">
             {rows.map(({ item, title }) => (
-              <article
+              <button
+                type="button"
                 className="transformation-card"
                 key={item.transformation_run_id}
+                aria-label={title}
+                onClick={() =>
+                  onOpenReview(
+                    item.transformation_run_id,
+                    title,
+                    item.source_version.version_number,
+                  )
+                }
               >
                 <div className="transformation-card__main">
                   <div className="transformation-card__heading">
                     <div>
+                      <h2 className="card-title">{title}</h2>
                       <p className="card-kicker">
                         Source V{item.source_version.version_number}
-                        <span aria-hidden="true"> · </span>
+                        <span aria-hidden="true"> � </span>
                         Updated {relativeDate(item.updated_at)}
+                        <span aria-hidden="true"> � </span>
+                        {
+                          item.artifact_states.filter(
+                            (artifact) => artifact.status !== null,
+                          ).length
+                        }{" "}
+                        artifact
+                        {item.artifact_states.filter(
+                          (artifact) => artifact.status !== null,
+                        ).length === 1
+                          ? ""
+                          : "s"}
                       </p>
-                      <h2>
-                        <button
-                          type="button"
-                          className="card-title-button"
-                          onClick={() =>
-                            onOpenReview(
-                              item.transformation_run_id,
-                              title,
-                              item.source_version.version_number,
-                            )
-                          }
-                        >
-                          <span>{title}</span>
-                          <ArrowRight aria-hidden="true" />
-                        </button>
-                      </h2>
                     </div>
                     <StatusBadge status={transformationStatus(item)} />
                   </div>
-                  <div
-                    className="artifact-indicators"
-                    aria-label="Artifact status"
-                  >
-                    {OUTPUT_TYPES.map((output) => {
-                      const state = item.artifact_states.find(
-                        (artifact) => artifact.output_type === output.value,
-                      );
-                      const status = artifactStatus(
-                        state?.status ?? null,
-                        state?.review_status ?? null,
-                      );
-                      const Icon = OUTPUT_ICONS[output.value];
-                      return (
-                        <span
-                          className={
-                            "artifact-indicator artifact-indicator--" +
-                            status.toLowerCase().replaceAll(" ", "-")
-                          }
-                          key={output.value}
-                          title={output.label + ": " + status}
-                        >
-                          <Icon aria-hidden="true" />
-                          <span>{output.shortLabel}</span>
-                          <span className="artifact-indicator__status">
-                            {status}
-                          </span>
-                        </span>
-                      );
-                    })}
-                  </div>
                 </div>
-                <button
-                  type="button"
-                  className="transformation-card__open"
-                  onClick={() =>
-                    onOpenReview(
-                      item.transformation_run_id,
-                      title,
-                      item.source_version.version_number,
-                    )
-                  }
-                >
-                  Open review
+                <span className="transformation-card__open" aria-hidden="true">
                   <ArrowRight aria-hidden="true" />
-                </button>
-              </article>
+                </span>
+              </button>
             ))}
           </div>
           <button type="button" className="dashboard-more" onClick={onCreate}>

@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import {
   FileCheck2,
   FileText,
@@ -7,7 +8,6 @@ import {
 } from "lucide-react";
 import type { ReviewArtifactRun, OutputType } from "../types";
 import { artifactStatus, outputLabel } from "../utils";
-import { StatusBadge } from "../components/StatusBadge";
 
 const OUTPUT_ICONS: Record<OutputType, typeof FileText> = {
   executive_summary: FileCheck2,
@@ -20,18 +20,34 @@ const OUTPUT_ICONS: Record<OutputType, typeof FileText> = {
 export function ArtifactRail({
   artifacts,
   activeArtifactId,
+  sourceVersion,
   onSelect,
 }: {
   artifacts: ReviewArtifactRun[];
   activeArtifactId: number | null;
+  sourceVersion: number;
   onSelect: (artifactRunId: number) => void;
 }) {
-  return (
-    <nav className="artifact-rail" aria-label="Artifacts">
-      <div className="artifact-rail__heading">
-        <p className="eyebrow">Your output</p>
-        <h2>Artifacts</h2>
-      </div>
+  const target = document.getElementById("review-context-navigation");
+  if (!target) return null;
+  return createPortal(
+    <nav className="review-sidebar-context" aria-label="Review navigation">
+      <p className="sidebar-section-label">Source</p>
+      <button
+        type="button"
+        className="sidebar-link"
+        onClick={() =>
+          document
+            .querySelector(".source-revision")
+            ?.scrollIntoView({ behavior: "smooth" })
+        }
+      >
+        <FileText aria-hidden="true" />
+        <span>Source V{sourceVersion}</span>
+      </button>
+      {artifacts.length > 0 && (
+        <p className="sidebar-section-label">Artifacts</p>
+      )}
       <ul>
         {artifacts.map((artifact) => {
           const latest = artifact.versions.at(-1);
@@ -45,7 +61,7 @@ export function ArtifactRail({
               <button
                 type="button"
                 className={
-                  "artifact-rail__item" +
+                  "sidebar-link review-sidebar-context__item" +
                   (artifact.artifact_run_id === activeArtifactId
                     ? " is-active"
                     : "")
@@ -55,34 +71,26 @@ export function ArtifactRail({
                     ? "page"
                     : undefined
                 }
+                aria-label={outputLabel(artifact.output_type)}
                 onClick={() => onSelect(artifact.artifact_run_id)}
               >
-                <span className="artifact-rail__icon">
+                <span className="review-sidebar-context__label">
                   <Icon aria-hidden="true" />
+                  <span>{outputLabel(artifact.output_type)}</span>
                 </span>
-                <span className="artifact-rail__copy">
-                  <strong>{outputLabel(artifact.output_type)}</strong>
-                  <small>
-                    {latest ? "Version " + latest.version_number : status}
-                  </small>
-                </span>
-                <span
-                  className={
-                    "artifact-rail__status artifact-rail__status--" +
-                    status.toLowerCase().replaceAll(" ", "-")
-                  }
-                  aria-label={status}
-                  title={status}
-                />
+                {latest && (
+                  <span
+                    className="review-sidebar-context__dot"
+                    aria-hidden="true"
+                    title={status}
+                  />
+                )}
               </button>
             </li>
           );
         })}
       </ul>
-      <div className="artifact-rail__key">
-        <StatusBadge status="Ready for review" compact />
-        <p>Choose an artifact to review its content and source support.</p>
-      </div>
-    </nav>
+    </nav>,
+    target,
   );
 }

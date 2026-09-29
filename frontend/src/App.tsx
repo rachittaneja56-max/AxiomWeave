@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { api } from "./api";
 import { AppShell } from "./components/AppShell";
 import { DashboardScreen } from "./screens/DashboardScreen";
@@ -21,7 +21,7 @@ function Workspace({
   const [screen, setScreen] = useState<WorkspaceScreen>("dashboard");
   const [reviewId, setReviewId] = useState<number | null>(null);
   const [reviewTitle, setReviewTitle] = useState("Review workspace");
-  const [reviewSourceVersion, setReviewSourceVersion] = useState(1);
+  const [, setReviewSourceVersion] = useState(1);
   const [logoutError, setLogoutError] = useState(false);
   const [pendingOutput, setPendingOutput] = useState<OutputType | undefined>();
 
@@ -54,12 +54,6 @@ function Workspace({
       : screen === "new"
         ? "New transformation"
         : reviewTitle;
-  const eyebrow =
-    screen === "dashboard"
-      ? "All transformations"
-      : screen === "new"
-        ? "Create"
-        : "Source V" + reviewSourceVersion + " · Review";
   const description =
     screen === "dashboard"
       ? "Create, review and update source-grounded content."
@@ -77,22 +71,12 @@ function Workspace({
         <Plus aria-hidden="true" />
         New transformation
       </button>
-    ) : (
-      <button
-        type="button"
-        className="button-quiet"
-        onClick={() => navigate("dashboard")}
-      >
-        <ArrowLeft aria-hidden="true" />
-        Transformations
-      </button>
-    );
+    ) : null;
 
   return (
     <AppShell
       screen={screen}
       pageTitle={pageTitle}
-      eyebrow={eyebrow}
       description={description}
       headerActions={headerActions}
       logoutError={logoutError}

@@ -399,7 +399,15 @@ describe("transformation request form", () => {
     expect(
       screen.queryByText(/SIH|NTRO|SHA-256|Backend connected/i),
     ).not.toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button", { name: "Open review" }));
+    expect(
+      screen.queryByText("Artifacts ready to review"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Not selected")).not.toBeInTheDocument();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "The center opened on Saturday.",
+      }),
+    );
     expect(
       await screen.findByRole("heading", {
         name: "The center opened on Saturday.",
@@ -651,10 +659,27 @@ describe("transformation request form", () => {
 
     render(<App />);
     await screen.findByRole("button", { name: "Community center updates" });
-    fireEvent.click(await screen.findByRole("button", { name: "Open review" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Community center updates" }),
+    );
     expect(
       await screen.findByRole("heading", { name: "Executive Summary" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: "Review navigation" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("navigation", { name: "Artifacts" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Source V1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Executive Summary" }),
+    ).toHaveAttribute("aria-current", "page");
+    expect(
+      screen.queryByRole("button", { name: "X Post" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Update" })).toBeInTheDocument();
     expect(document.querySelector("script")).toBeNull();
     expect(
@@ -673,9 +698,7 @@ describe("transformation request form", () => {
       ),
     );
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /Presentation Version 1/ }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Presentation" }));
     expect(
       await screen.findByRole("heading", { name: "Presentation" }),
     ).toBeInTheDocument();
