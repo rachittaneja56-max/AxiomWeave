@@ -3,7 +3,7 @@ from typing import Any, cast
 from app.settings import Settings
 
 
-def test_generation_and_revision_use_primary_model_analysis_uses_utility(
+def test_generation_revision_and_analysis_use_primary_model(
     monkeypatch: Any,
 ) -> None:
     captured: list[str] = []
@@ -28,4 +28,4 @@ def test_generation_and_revision_use_primary_model_analysis_uses_utility(
     get_analysis_provider()
     get_revision_provider()
 
-    assert captured == ["gpt-6-luna", "gpt-5-nano", "gpt-6-luna"]
+    assert captured == ["gpt-6-luna", "gpt-6-luna", "gpt-6-luna"]

@@ -276,6 +276,29 @@ def test_sibling_discrepancy_is_advisory_and_dismissal_only_changes_review_state
     assert before == after
 
 
+def test_sibling_discrepancy_provider_failure_is_safe_502(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+) -> None:
+    client, _engine, _factory = auth_database
+    login(client)
+    set_providers(FakeGenerationProvider(), FakeAnalysisProvider(fail=True))
+    _transformation_id, _source_version_id, version_a_id, version_b_id = create_sibling_artifacts(
+        client
+    )
+
+    response = client.post(
+        "/api/discrepancies/analyze",
+        json={
+            "artifact_version_a_id": version_a_id,
+            "artifact_version_b_id": version_b_id,
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "discrepancy_analysis_failed"
+    assert response.json()["error"]["message"] == "Discrepancy analysis failed."
+
+
 def test_equivalent_paraphrases_create_no_discrepancy_and_cross_user_access_is_denied(
     auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
 ) -> None:

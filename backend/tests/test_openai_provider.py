@@ -179,6 +179,35 @@ def test_incomplete_structured_output_is_not_accepted(monkeypatch: pytest.Monkey
         )
 
 
+def test_missing_parsed_structured_output_is_logged_safely_and_rejected(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = AsyncOpenAIStub(api_key="test", timeout=60, max_retries=0)
+
+    async def parse_without_value(**_kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(status="completed", output_parsed=None)
+
+    def make_client(**_kwargs: Any) -> AsyncOpenAIStub:
+        return client
+
+    monkeypatch.setattr("app.openai_provider.AsyncOpenAI", make_client)
+    monkeypatch.setattr(client.responses, "parse", parse_without_value)
+    provider = OpenAIGenerationProvider("test-key", "gpt-6-luna")
+    secret_data = "private source and artifact text"
+    request = GenerationRequest(
+        application_instructions=secret_data,
+        transformation_instructions="analyze",
+        source_text=secret_data,
+    )
+
+    with pytest.raises(GenerationProviderError):
+        asyncio.run(provider.generate_structured(request, PresentationSpec))
+
+    assert "Structured generation parse missing" in caplog.text
+    assert "gpt-6-luna" in caplog.text
+    assert secret_data not in caplog.text
+
+
 def test_openai_provider_uses_structured_outputs_for_presentations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

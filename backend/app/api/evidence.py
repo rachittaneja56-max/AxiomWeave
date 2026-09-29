@@ -136,7 +136,7 @@ def get_analysis_provider() -> StructuredGenerationProvider | None:
     settings = get_settings()
     if not settings.openai_api_key:
         return None
-    return OpenAIGenerationProvider(settings.openai_api_key, settings.openai_utility_model)
+    return OpenAIGenerationProvider(settings.openai_api_key, settings.openai_model)
 
 
 def _owned_artifact_version(

@@ -173,6 +173,7 @@ describe("transformation request form", () => {
   it("opens a saved artifact history and records an acceptance decision", async () => {
     let reviewStatus: "draft" | "accepted" = "draft";
     let sourceRevisionCreated = false;
+    let failEvidenceAnalysisOnce = true;
     const artifactVersion = () => ({
       id: 101,
       artifact_run_id: 41,
@@ -336,6 +337,10 @@ describe("transformation request form", () => {
         input === "/api/artifact-versions/101/evidence/analyze" &&
         init?.method === "POST"
       ) {
+        if (failEvidenceAnalysisOnce) {
+          failEvidenceAnalysisOnce = false;
+          return Promise.resolve(jsonResponse({}, 502));
+        }
         return Promise.resolve(
           jsonResponse([
             {
@@ -396,6 +401,10 @@ describe("transformation request form", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("AxiomWeave")).toBeInTheDocument();
     expect(screen.getByText("judge_demo")).toBeInTheDocument();
+    expect(document.body.textContent).toMatch(
+      /Source V1\s*·\s*Updated[\s\S]*?·\s*1 artifact/,
+    );
+    expect(document.body.textContent).not.toContain("\uFFFD");
     expect(
       screen.queryByText(/SIH|NTRO|SHA-256|Backend connected/i),
     ).not.toBeInTheDocument();
@@ -486,6 +495,10 @@ describe("transformation request form", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Evidence" }));
     fireEvent.click(screen.getByRole("button", { name: "Analyze claims" }));
     expect(
+      await screen.findByText("Claims could not be analyzed. Please retry."),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Analyze claims" }));
+    expect(
       await screen.findByText("The center opened on Saturday.", {
         selector: "blockquote",
       }),
@@ -567,7 +580,7 @@ describe("transformation request form", () => {
       transformation_run_id: 10,
       source_version: sourceVersion,
       controls: { audience: "Residents" },
-      output_types: ["executive_summary", "presentation"],
+      output_types: ["executive_summary", "presentation", "advisory"],
       status: "Review Required",
       created_at: "2026-09-29T00:00:00Z",
       updated_at: "2026-09-29T00:00:00Z",
@@ -584,6 +597,19 @@ describe("transformation request form", () => {
           status: "succeeded",
           versions: [presentationVersion],
         },
+        {
+          artifact_run_id: 54,
+          output_type: "advisory",
+          status: "succeeded",
+          versions: [
+            {
+              ...presentationVersion,
+              id: 53,
+              artifact_run_id: 54,
+              content: "The center opens at noon.",
+            },
+          ],
+        },
       ],
     };
     const finding = {
@@ -598,6 +624,7 @@ describe("transformation request form", () => {
       review_status: "open",
       created_at: "2026-09-29T00:00:00Z",
     };
+    let failAllComparisons = false;
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       if (input === "/api/auth/session") {
         return Promise.resolve(
@@ -643,7 +670,31 @@ describe("transformation request form", () => {
         );
       }
       if (input === "/api/discrepancies/analyze") {
-        return Promise.resolve(jsonResponse({ finding }));
+        const callNumber = fetchMock.mock.calls.filter(
+          ([path]) => path === "/api/discrepancies/analyze",
+        ).length;
+        if (callNumber === 1 || failAllComparisons)
+          return Promise.resolve(jsonResponse({}, 502));
+        if (callNumber === 3)
+          return Promise.resolve(jsonResponse({ finding: null }));
+        const pair = JSON.parse(String(init?.body)) as {
+          artifact_version_a_id: number;
+          artifact_version_b_id: number;
+        };
+        return Promise.resolve(
+          jsonResponse({
+            finding: {
+              ...finding,
+              id: callNumber === 2 ? 202 : 201,
+              artifact_version_a_id: pair.artifact_version_a_id,
+              artifact_version_b_id: pair.artifact_version_b_id,
+              explanation:
+                callNumber === 2
+                  ? "The drafts give different opening days."
+                  : "The opening dates also differ.",
+            },
+          }),
+        );
       }
       if (
         input === "/api/artifact-versions/51/review" &&
@@ -680,6 +731,9 @@ describe("transformation request form", () => {
     expect(
       screen.queryByRole("button", { name: "X Post" }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Formal Advisory" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Update" })).toBeInTheDocument();
     expect(document.querySelector("script")).toBeNull();
     expect(
@@ -713,11 +767,44 @@ describe("transformation request form", () => {
     expect(
       await screen.findByText("The drafts give different opening days."),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Some sibling comparisons could not be completed/),
+    ).toBeInTheDocument();
     expect(screen.getByText("Possible discrepancy")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/discrepancies/analyze",
       expect.objectContaining({ method: "POST", credentials: "include" }),
     );
+    expect(
+      fetchMock.mock.calls.filter(
+        ([path]) => path === "/api/discrepancies/analyze",
+      ),
+    ).toHaveLength(3);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Check sibling consistency" }),
+    );
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(
+          ([path]) => path === "/api/discrepancies/analyze",
+        ),
+      ).toHaveLength(4),
+    );
+    expect(
+      screen.queryByText(/Some sibling comparisons could not be completed/),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByText("The opening dates also differ."),
+    ).toBeInTheDocument();
+    failAllComparisons = true;
+    fireEvent.click(
+      screen.getByRole("button", { name: "Check sibling consistency" }),
+    );
+    expect(
+      await screen.findByText(
+        "Sibling consistency could not be checked. Please retry.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("extracts a selected file and submits its canonical source text", async () => {

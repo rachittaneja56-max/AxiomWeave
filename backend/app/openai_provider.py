@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Any, cast
 
 from openai import AsyncOpenAI
@@ -11,6 +12,8 @@ from app.generation import (
     GenerationResult,
     StructuredGenerationResult,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIGenerationProvider:
@@ -119,10 +122,35 @@ class OpenAIGenerationProvider:
                 store=False,
                 text_format=response_model,
             )
-        except Exception:
+        except Exception as exc:
+            exception_name = type(exc).__name__
+            status_code = getattr(exc, "status_code", None)
+            logger.warning(
+                "Structured generation failed operation=%s provider=openai model=%s "
+                "exception=%s provider_status=%s",
+                response_model.__name__,
+                self._model,
+                exception_name,
+                status_code if isinstance(status_code, int) else "unavailable",
+            )
             raise GenerationProviderError() from None
 
-        if getattr(response, "status", None) == "incomplete" or response.output_parsed is None:
+        response_status = getattr(response, "status", None)
+        if response_status == "incomplete":
+            logger.warning(
+                "Structured generation incomplete operation=%s provider=openai model=%s",
+                response_model.__name__,
+                self._model,
+            )
+            raise GenerationProviderError()
+        if response.output_parsed is None:
+            logger.warning(
+                "Structured generation parse missing operation=%s provider=openai model=%s "
+                "response_status=%s",
+                response_model.__name__,
+                self._model,
+                response_status or "unavailable",
+            )
             raise GenerationProviderError()
         return StructuredGenerationResult(
             value=response.output_parsed, provider="openai", model=self._model

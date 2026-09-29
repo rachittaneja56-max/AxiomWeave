@@ -265,6 +265,7 @@ export function deriveTransformationTitle(sourceText: string): string {
     .replace(/[*_~]/g, "")
     .replaceAll(String.fromCharCode(96), "")
     .replace(/^\[([^\]]+)\]\([^)]*\)$/, "$1")
+    .replace(/\s*\(Prompt\s+\d+\)\s*$/i, "")
     .trim();
   if (!cleaned) return "Untitled transformation";
   if (cleaned.length <= 68) return cleaned;

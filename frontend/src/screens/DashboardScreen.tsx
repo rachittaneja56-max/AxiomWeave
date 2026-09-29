@@ -134,9 +134,9 @@ export function DashboardScreen({
                       <h2 className="card-title">{title}</h2>
                       <p className="card-kicker">
                         Source V{item.source_version.version_number}
-                        <span aria-hidden="true"> � </span>
+                        <span aria-hidden="true"> · </span>
                         Updated {relativeDate(item.updated_at)}
-                        <span aria-hidden="true"> � </span>
+                        <span aria-hidden="true"> · </span>
                         {
                           item.artifact_states.filter(
                             (artifact) => artifact.status !== null,

@@ -176,6 +176,7 @@ function EvidencePanel({
 function WarningsPanel({
   warnings,
   checked,
+  partialWarnings,
   checking,
   busy,
   onCheck,
@@ -183,6 +184,7 @@ function WarningsPanel({
 }: {
   warnings: WarningItem[];
   checked: boolean;
+  partialWarnings: boolean;
   checking: boolean;
   busy: boolean;
   onCheck: () => void;
@@ -212,6 +214,12 @@ function WarningsPanel({
         )}
         {checking ? "Checking artifacts…" : "Check sibling consistency"}
       </button>
+      {partialWarnings && (
+        <p className="notice" role="status">
+          Some sibling comparisons could not be completed. Successful
+          comparisons are shown below. Retry the remaining checks.
+        </p>
+      )}
       {!checked ? (
         <div className="inspector-note">
           <Info aria-hidden="true" />
@@ -454,6 +462,7 @@ export function InspectorPanel({
   sourceContent,
   warnings,
   warningsChecked,
+  partialWarnings,
   checkingWarnings,
   busy,
   onLoadEvidence,
@@ -474,6 +483,7 @@ export function InspectorPanel({
   sourceContent: Record<number, SourceVersionContent>;
   warnings: WarningItem[];
   warningsChecked: boolean;
+  partialWarnings: boolean;
   checkingWarnings: boolean;
   busy: boolean;
   onLoadEvidence: () => void;
@@ -556,6 +566,7 @@ export function InspectorPanel({
           <WarningsPanel
             warnings={warnings}
             checked={warningsChecked}
+            partialWarnings={partialWarnings}
             checking={checkingWarnings}
             busy={busy}
             onCheck={onCheckWarnings}

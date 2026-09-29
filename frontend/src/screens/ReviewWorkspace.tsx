@@ -61,6 +61,8 @@ export function ReviewWorkspace({
     Record<string, DiscrepancyFinding | null>
   >({});
   const [warningsChecked, setWarningsChecked] = useState(false);
+  const [failedPairIds, setFailedPairIds] = useState<[number, number][]>([]);
+  const [partialWarnings, setPartialWarnings] = useState(false);
   const [loading, setLoading] = useState(true);
   const [checkingWarnings, setCheckingWarnings] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -257,7 +259,7 @@ export function ReviewWorkspace({
         [version.id]: body as EvidenceLink[],
       }));
     } catch {
-      setActionError("Evidence analysis could not be completed. Please retry.");
+      setActionError("Claims could not be analyzed. Please retry.");
     } finally {
       setBusy(false);
     }
@@ -296,7 +298,6 @@ export function ReviewWorkspace({
       return;
     }
     setCheckingWarnings(true);
-    setWarningsChecked(false);
     setError(null);
     setMessage(null);
     const next: Record<string, DiscrepancyFinding | null> = {};
@@ -313,30 +314,48 @@ export function ReviewWorkspace({
           version: ReviewArtifactVersion;
         } => Boolean(entry.version),
       );
-    try {
-      for (let left = 0; left < withVersions.length; left += 1) {
-        for (let right = left + 1; right < withVersions.length; right += 1) {
-          const a = withVersions[left].version;
-          const b = withVersions[right].version;
-          const key = pairKey(a.id, b.id);
-          const body = await api.analyzeDiscrepancy(a.id, b.id);
-          if (!isRecord(body)) throw new Error("Unexpected warning response.");
-          const finding =
-            isRecord(body.finding) && Number.isInteger(body.finding.id)
-              ? (body.finding as unknown as DiscrepancyFinding)
-              : null;
-          next[key] = finding;
-        }
+    const allPairs: [number, number][] = [];
+    for (let left = 0; left < withVersions.length; left += 1) {
+      for (let right = left + 1; right < withVersions.length; right += 1) {
+        allPairs.push([
+          withVersions[left].version.id,
+          withVersions[right].version.id,
+        ]);
       }
-      setFindingsByPair(next);
-      setWarningsChecked(true);
-    } catch {
+    }
+    const pairs = failedPairIds.length ? failedPairIds : allPairs;
+    const byVersionId = new Map(
+      withVersions.map(({ version }) => [version.id, version]),
+    );
+    const failed: [number, number][] = [];
+    let succeeded = 0;
+    for (const [aId, bId] of pairs) {
+      const a = byVersionId.get(aId);
+      const b = byVersionId.get(bId);
+      if (!a || !b) continue;
+      const key = pairKey(a.id, b.id);
+      try {
+        const body = await api.analyzeDiscrepancy(a.id, b.id);
+        if (!isRecord(body)) throw new Error("Unexpected warning response.");
+        const finding =
+          isRecord(body.finding) && Number.isInteger(body.finding.id)
+            ? (body.finding as unknown as DiscrepancyFinding)
+            : null;
+        next[key] = finding;
+        succeeded += 1;
+      } catch {
+        failed.push([aId, bId]);
+      }
+    }
+    setCheckingWarnings(false);
+    if (succeeded > 0) {
       setFindingsByPair((current) => ({ ...current, ...next }));
-      setActionError(
-        "Sibling consistency could not be checked for every artifact. Please retry.",
-      );
-    } finally {
-      setCheckingWarnings(false);
+      setWarningsChecked(true);
+    }
+    setFailedPairIds(failed);
+    setPartialWarnings(failed.length > 0 && succeeded > 0);
+    if (failed.length > 0 && succeeded === 0) {
+      setActionError("Sibling consistency could not be checked. Please retry.");
     }
   }
 
@@ -562,6 +581,7 @@ export function ReviewWorkspace({
             sourceContent={sourceContent}
             warnings={warnings}
             warningsChecked={warningsChecked}
+            partialWarnings={partialWarnings}
             checkingWarnings={checkingWarnings}
             busy={busy}
             onLoadEvidence={() =>
