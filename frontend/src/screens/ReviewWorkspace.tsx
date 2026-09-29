@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoaderCircle, RefreshCw, GitBranch, X } from "lucide-react";
 import { api } from "../api";
 import { StatusBadge } from "../components/StatusBadge";
@@ -6,6 +6,7 @@ import { ArtifactRail } from "../review/ArtifactRail";
 import { ArtifactViewer } from "../review/ArtifactViewer";
 import { InspectorPanel } from "../review/InspectorPanel";
 import { SourceRevisionPanel } from "../review/SourceRevisionPanel";
+import { SourceViewerDialog } from "../review/SourceViewerDialog";
 import type {
   DiscrepancyFinding,
   EvidenceLink,
@@ -54,9 +55,6 @@ export function ReviewWorkspace({
   const [evidenceByVersion, setEvidenceByVersion] = useState<
     Record<number, EvidenceLink[]>
   >({});
-  const [sourceContent, setSourceContent] = useState<
-    Record<number, SourceVersionContent>
-  >({});
   const [findingsByPair, setFindingsByPair] = useState<
     Record<string, DiscrepancyFinding | null>
   >({});
@@ -71,11 +69,63 @@ export function ReviewWorkspace({
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [traceabilityOpen, setTraceabilityOpen] = useState(false);
+  const [sourceViewer, setSourceViewer] = useState<{
+    source: SourceVersionContent;
+    quote?: string | null;
+  } | null>(null);
+  const [sourceLoading, setSourceLoading] = useState(false);
+  const traceabilityTrigger = useRef<HTMLButtonElement>(null);
+  const traceabilityDialog = useRef<HTMLElement>(null);
+
+  const closeTraceability = useCallback(() => setTraceabilityOpen(false), []);
+  const closeSourceViewer = useCallback(() => setSourceViewer(null), []);
+
+  async function openSourceViewer(
+    sourceVersionId: number,
+    quote?: string | null,
+  ) {
+    setTraceabilityOpen(false);
+    setSourceLoading(true);
+    try {
+      const body = await api.sourceVersion(sourceVersionId);
+      if (
+        !isRecord(body) ||
+        typeof body.source_text !== "string" ||
+        typeof body.version_number !== "number"
+      )
+        throw new Error("invalid source");
+      setSourceViewer({ source: body as SourceVersionContent, quote });
+    } catch {
+      setActionError("The source version could not be opened. Please retry.");
+    } finally {
+      setSourceLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!traceabilityOpen) traceabilityTrigger.current?.focus();
+  }, [traceabilityOpen]);
 
   useEffect(() => {
     if (!traceabilityOpen) return;
+    traceabilityDialog.current?.focus();
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === "Escape") setTraceabilityOpen(false);
+      if (event.key === "Tab") {
+        const items = traceabilityDialog.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        );
+        if (!items?.length) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
     }
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
@@ -285,33 +335,6 @@ export function ReviewWorkspace({
     }
   }
 
-  async function viewSource(sourceVersionId: number) {
-    if (sourceContent[sourceVersionId]) {
-      setSourceContent((current) => {
-        const next = { ...current };
-        delete next[sourceVersionId];
-        return next;
-      });
-      return;
-    }
-    try {
-      const body = await api.sourceVersion(sourceVersionId);
-      if (
-        !isRecord(body) ||
-        typeof body.source_text !== "string" ||
-        typeof body.version_number !== "number"
-      ) {
-        throw new Error("Unexpected source response.");
-      }
-      setSourceContent((current) => ({
-        ...current,
-        [sourceVersionId]: body as SourceVersionContent,
-      }));
-    } catch {
-      setActionError("The source version could not be opened. Please retry.");
-    }
-  }
-
   async function checkSiblingConsistency() {
     if (artifacts.length < 2) {
       setMessage("Add at least two artifacts to compare sibling consistency.");
@@ -516,6 +539,7 @@ export function ReviewWorkspace({
         revision={revision}
         busy={busy}
         onUpdated={handleSourceUpdated}
+        onViewSource={() => void openSourceViewer(detail.source_version.id)}
         onAffectedAction={(action, artifactRunId) => {
           if (action === "targeted") void targetUpdateArtifact(artifactRunId);
           else void regenerateArtifact(artifactRunId);
@@ -525,6 +549,7 @@ export function ReviewWorkspace({
         artifacts={artifacts}
         activeArtifactId={activeArtifact?.artifact_run_id ?? null}
         sourceVersion={detail.source_version.version_number}
+        onSourceSelect={() => void openSourceViewer(detail.source_version.id)}
         onSelect={(artifactRunId) => {
           setActiveArtifactId(artifactRunId);
           setActiveTab("evidence");
@@ -579,7 +604,10 @@ export function ReviewWorkspace({
               onCopy={copyArtifact}
               onDownload={downloadArtifact}
               onPowerpointExport={(content) => void downloadPowerPoint(content)}
-              onTraceability={() => setTraceabilityOpen(true)}
+              onTraceability={(trigger) => {
+                traceabilityTrigger.current = trigger;
+                setTraceabilityOpen(true);
+              }}
             />
           ) : (
             <div className="review-empty">
@@ -589,6 +617,7 @@ export function ReviewWorkspace({
           <button
             type="button"
             className="button-secondary traceability-trigger"
+            ref={traceabilityTrigger}
             onClick={() => setTraceabilityOpen(true)}
           >
             <GitBranch aria-hidden="true" /> Traceability
@@ -599,19 +628,21 @@ export function ReviewWorkspace({
               onMouseDown={() => setTraceabilityOpen(false)}
             >
               <section
-                className="traceability-drawer"
+                className="traceability-modal"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="traceability-title"
+                tabIndex={-1}
+                ref={traceabilityDialog}
                 onMouseDown={(event) => event.stopPropagation()}
               >
-                <div className="traceability-drawer__heading">
+                <div className="traceability-modal__heading">
                   <h2 id="traceability-title">Traceability</h2>
                   <button
                     type="button"
                     className="icon-button"
                     aria-label="Close traceability"
-                    onClick={() => setTraceabilityOpen(false)}
+                    onClick={closeTraceability}
                   >
                     <X aria-hidden="true" />
                   </button>
@@ -629,7 +660,6 @@ export function ReviewWorkspace({
                       ? evidenceByVersion[selectedVersion.id]
                       : undefined
                   }
-                  sourceContent={sourceContent}
                   warnings={warnings}
                   warningsChecked={warningsChecked}
                   partialWarnings={partialWarnings}
@@ -641,8 +671,8 @@ export function ReviewWorkspace({
                   onAnalyzeEvidence={() =>
                     selectedVersion && void analyzeEvidence(selectedVersion)
                   }
-                  onViewSource={(sourceVersionId) =>
-                    void viewSource(sourceVersionId)
+                  onViewSource={(sourceVersionId, quote) =>
+                    void openSourceViewer(sourceVersionId, quote)
                   }
                   onCheckWarnings={() => void checkSiblingConsistency()}
                   onDismissWarning={(finding) => void dismissWarning(finding)}
@@ -656,6 +686,18 @@ export function ReviewWorkspace({
                 />
               </section>
             </div>
+          )}
+          {sourceLoading && (
+            <div className="visually-hidden" role="status">
+              Loading source…
+            </div>
+          )}
+          {sourceViewer && (
+            <SourceViewerDialog
+              source={sourceViewer.source}
+              quote={sourceViewer.quote}
+              onClose={closeSourceViewer}
+            />
           )}
         </div>
       )}

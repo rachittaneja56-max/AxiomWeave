@@ -20,6 +20,133 @@ import type {
 import { outputLabel, parsePresentation } from "../utils";
 import { MarkdownDocument } from "../components/MarkdownDocument";
 import { StatusBadge } from "../components/StatusBadge";
+import type { PresentationDocument } from "../types";
+
+function PresentationEditor({
+  value,
+  activeIndex,
+  onActiveIndexChange,
+  onChange,
+}: {
+  value: PresentationDocument;
+  activeIndex: number;
+  onActiveIndexChange: (index: number) => void;
+  onChange: (value: PresentationDocument) => void;
+}) {
+  const slide = value.slides[activeIndex];
+  function updateSlide<K extends keyof (typeof value.slides)[number]>(
+    field: K,
+    nextValue: (typeof value.slides)[number][K],
+  ) {
+    onChange({
+      ...value,
+      slides: value.slides.map((item, index) =>
+        index === activeIndex ? { ...item, [field]: nextValue } : item,
+      ),
+    });
+  }
+  return (
+    <div className="presentation-editor">
+      <header className="presentation-editor__bar">
+        <div>
+          <strong>Editing presentation</strong>
+          <label htmlFor="presentation-title">Deck title</label>
+          <input
+            id="presentation-title"
+            value={value.title}
+            onChange={(event) =>
+              onChange({ ...value, title: event.target.value })
+            }
+          />
+        </div>
+      </header>
+      <div className="presentation-editor__workspace">
+        <nav className="slide-rail" aria-label="Edit slides">
+          <p className="eyebrow">{value.slides.length} slides</p>
+          {value.slides.map((item, index) => (
+            <button
+              type="button"
+              key={index}
+              className={index === activeIndex ? "is-active" : ""}
+              aria-current={index === activeIndex ? "page" : undefined}
+              onClick={() => onActiveIndexChange(index)}
+            >
+              <span className="slide-thumbnail">
+                <small>{index + 1}</small>
+                <strong>{item.title}</strong>
+              </span>
+              <span>Slide {index + 1}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="presentation-editor__content">
+          <div className="slide-canvas slide-canvas--16x9">
+            <div className="slide-canvas__eyebrow">{value.title}</div>
+            <span className="slide-canvas__number">
+              {String(activeIndex + 1).padStart(2, "0")}
+            </span>
+            <h3>{slide.title || "Slide title"}</h3>
+            <p className="slide-canvas__message">{slide.key_message}</p>
+            <ul>
+              {slide.bullets.filter(Boolean).map((bullet, index) => (
+                <li key={index}>{bullet}</li>
+              ))}
+            </ul>
+            <div className="slide-visual-note">
+              <span>Visual direction</span>
+              <p>{slide.visual_recommendation}</p>
+            </div>
+          </div>
+          <fieldset className="presentation-editor__slide">
+            <legend>Edit slide {activeIndex + 1}</legend>
+            <label htmlFor="slide-title">Title</label>
+            <input
+              id="slide-title"
+              value={slide.title}
+              onChange={(event) => updateSlide("title", event.target.value)}
+            />
+            <label htmlFor="slide-message">Key message</label>
+            <textarea
+              id="slide-message"
+              rows={2}
+              value={slide.key_message}
+              onChange={(event) =>
+                updateSlide("key_message", event.target.value)
+              }
+            />
+            <label htmlFor="slide-bullets">Bullets (one per line)</label>
+            <textarea
+              id="slide-bullets"
+              rows={4}
+              value={slide.bullets.join("\n")}
+              onChange={(event) =>
+                updateSlide("bullets", event.target.value.split("\n"))
+              }
+            />
+            <label htmlFor="slide-visual">Visual recommendation</label>
+            <textarea
+              id="slide-visual"
+              rows={2}
+              value={slide.visual_recommendation}
+              onChange={(event) =>
+                updateSlide("visual_recommendation", event.target.value)
+              }
+            />
+            <label htmlFor="slide-notes">Speaker notes</label>
+            <textarea
+              id="slide-notes"
+              rows={4}
+              value={slide.speaker_notes}
+              onChange={(event) =>
+                updateSlide("speaker_notes", event.target.value)
+              }
+            />
+          </fieldset>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function PresentationViewer({ content }: { content: string }) {
   const presentation = parsePresentation(content);
@@ -46,7 +173,10 @@ function PresentationViewer({ content }: { content: string }) {
             aria-current={index === activeSlide ? "page" : undefined}
             onClick={() => setActiveSlide(index)}
           >
-            <span className="slide-thumbnail">
+            <span
+              className="slide-thumbnail"
+              aria-label={`Slide ${index + 1}: ${item.title}`}
+            >
               <small>{index + 1}</small>
               <strong>{item.title}</strong>
             </span>
@@ -55,7 +185,7 @@ function PresentationViewer({ content }: { content: string }) {
         ))}
       </nav>
       <div className="slide-review">
-        <div className="slide-canvas">
+        <div className="slide-canvas slide-canvas--16x9">
           <div className="slide-canvas__eyebrow">{presentation.title}</div>
           <span className="slide-canvas__number">
             {String(activeSlide + 1).padStart(2, "0")}
@@ -147,13 +277,14 @@ export function ArtifactViewer({
   onCopy: (outputType: OutputType, content: string) => void;
   onDownload: (outputType: OutputType, content: string) => void;
   onPowerpointExport: (content: string) => void;
-  onTraceability: () => void;
+  onTraceability: (trigger: HTMLButtonElement) => void;
 }) {
   const [editContent, setEditContent] = useState(version?.content ?? "");
   const [presentationDraft, setPresentationDraft] = useState(() =>
     parsePresentation(version?.content ?? ""),
   );
   const [editing, setEditing] = useState(false);
+  const [activeEditSlideIndex, setActiveEditSlideIndex] = useState(0);
   const label = outputLabel(artifact.output_type);
 
   useEffect(() => {
@@ -166,6 +297,7 @@ export function ArtifactViewer({
     setEditContent(version?.content ?? "");
     setPresentationDraft(parsePresentation(version?.content ?? ""));
     setEditing(true);
+    setActiveEditSlideIndex(0);
     onEdit();
   }
 
@@ -220,7 +352,7 @@ export function ArtifactViewer({
             <button
               type="button"
               className="button-secondary traceability-action"
-              onClick={onTraceability}
+              onClick={(event) => onTraceability(event.currentTarget)}
             >
               <GitBranch aria-hidden="true" />
               Traceability
@@ -310,118 +442,20 @@ export function ArtifactViewer({
       {version ? (
         editing ? (
           <div className="artifact-editor">
-            {artifact.output_type === "presentation" && presentationDraft ? (
-              <div className="presentation-editor">
-                <label htmlFor="presentation-title">Presentation title</label>
-                <input
-                  id="presentation-title"
-                  value={presentationDraft.title}
-                  onChange={(event) =>
-                    setPresentationDraft({
-                      ...presentationDraft,
-                      title: event.target.value,
-                    })
-                  }
+            {artifact.output_type === "presentation" ? (
+              presentationDraft ? (
+                <PresentationEditor
+                  value={presentationDraft}
+                  activeIndex={activeEditSlideIndex}
+                  onActiveIndexChange={setActiveEditSlideIndex}
+                  onChange={setPresentationDraft}
                 />
-                {presentationDraft.slides.map((slide, index) => (
-                  <fieldset className="presentation-editor__slide" key={index}>
-                    <legend>Slide {index + 1}</legend>
-                    <label htmlFor={`slide-title-${index}`}>Title</label>
-                    <input
-                      id={`slide-title-${index}`}
-                      value={slide.title}
-                      onChange={(event) =>
-                        setPresentationDraft({
-                          ...presentationDraft,
-                          slides: presentationDraft.slides.map((item, i) =>
-                            i === index
-                              ? { ...item, title: event.target.value }
-                              : item,
-                          ),
-                        })
-                      }
-                    />
-                    <label htmlFor={`slide-message-${index}`}>
-                      Key message
-                    </label>
-                    <textarea
-                      id={`slide-message-${index}`}
-                      rows={2}
-                      value={slide.key_message}
-                      onChange={(event) =>
-                        setPresentationDraft({
-                          ...presentationDraft,
-                          slides: presentationDraft.slides.map((item, i) =>
-                            i === index
-                              ? { ...item, key_message: event.target.value }
-                              : item,
-                          ),
-                        })
-                      }
-                    />
-                    <label htmlFor={`slide-bullets-${index}`}>
-                      Bullets (one per line)
-                    </label>
-                    <textarea
-                      id={`slide-bullets-${index}`}
-                      rows={4}
-                      value={slide.bullets.join("\n")}
-                      onChange={(event) =>
-                        setPresentationDraft({
-                          ...presentationDraft,
-                          slides: presentationDraft.slides.map((item, i) =>
-                            i === index
-                              ? {
-                                  ...item,
-                                  bullets: event.target.value.split("\n"),
-                                }
-                              : item,
-                          ),
-                        })
-                      }
-                    />
-                    <label htmlFor={`slide-visual-${index}`}>
-                      Visual recommendation
-                    </label>
-                    <textarea
-                      id={`slide-visual-${index}`}
-                      rows={2}
-                      value={slide.visual_recommendation}
-                      onChange={(event) =>
-                        setPresentationDraft({
-                          ...presentationDraft,
-                          slides: presentationDraft.slides.map((item, i) =>
-                            i === index
-                              ? {
-                                  ...item,
-                                  visual_recommendation: event.target.value,
-                                }
-                              : item,
-                          ),
-                        })
-                      }
-                    />
-                    <label htmlFor={`slide-notes-${index}`}>
-                      Speaker notes
-                    </label>
-                    <textarea
-                      id={`slide-notes-${index}`}
-                      rows={4}
-                      value={slide.speaker_notes}
-                      onChange={(event) =>
-                        setPresentationDraft({
-                          ...presentationDraft,
-                          slides: presentationDraft.slides.map((item, i) =>
-                            i === index
-                              ? { ...item, speaker_notes: event.target.value }
-                              : item,
-                          ),
-                        })
-                      }
-                    />
-                  </fieldset>
-                ))}
-              </div>
+              ) : (
+                <p className="notice notice--error" role="alert">
+                  This presentation could not be opened in the structured
+                  editor.
+                </p>
+              )
             ) : (
               <>
                 <label htmlFor="artifact-editor">Edit {label}</label>
@@ -433,30 +467,37 @@ export function ArtifactViewer({
                 />
               </>
             )}
-            <p className="field-hint">Saving creates a new version.</p>
-            <div className="review-actions">
-              <button
-                type="button"
-                className="button-primary"
-                onClick={() =>
-                  onSave(
-                    presentationDraft && artifact.output_type === "presentation"
-                      ? JSON.stringify(presentationDraft)
-                      : editContent,
-                  )
-                }
-                disabled={busy}
-              >
-                Save version
-              </button>
-              <button
-                type="button"
-                className="button-secondary"
-                onClick={cancelEdit}
-                disabled={busy}
-              >
-                Cancel
-              </button>
+            <div className="presentation-editor__actions">
+              <p className="field-hint">Saving creates a new version.</p>
+              <div className="review-actions">
+                <button
+                  type="button"
+                  className="button-primary"
+                  onClick={() =>
+                    onSave(
+                      presentationDraft &&
+                        artifact.output_type === "presentation"
+                        ? JSON.stringify(presentationDraft)
+                        : editContent,
+                    )
+                  }
+                  disabled={
+                    busy ||
+                    (artifact.output_type === "presentation" &&
+                      !presentationDraft)
+                  }
+                >
+                  Save version
+                </button>
+                <button
+                  type="button"
+                  className="button-secondary"
+                  onClick={cancelEdit}
+                  disabled={busy}
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           </div>
         ) : artifact.output_type === "presentation" ? (

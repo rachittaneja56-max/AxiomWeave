@@ -21,11 +21,13 @@ export function ArtifactRail({
   artifacts,
   activeArtifactId,
   sourceVersion,
+  onSourceSelect,
   onSelect,
 }: {
   artifacts: ReviewArtifactRun[];
   activeArtifactId: number | null;
   sourceVersion: number;
+  onSourceSelect: () => void;
   onSelect: (artifactRunId: number) => void;
 }) {
   const target = document.getElementById("review-context-navigation");
@@ -33,15 +35,7 @@ export function ArtifactRail({
   return createPortal(
     <nav className="review-sidebar-context" aria-label="Review navigation">
       <p className="sidebar-section-label">Source</p>
-      <button
-        type="button"
-        className="sidebar-link"
-        onClick={() =>
-          document
-            .querySelector(".source-revision")
-            ?.scrollIntoView({ behavior: "smooth" })
-        }
-      >
+      <button type="button" className="sidebar-link" onClick={onSourceSelect}>
         <FileText aria-hidden="true" />
         <span>Source V{sourceVersion}</span>
       </button>

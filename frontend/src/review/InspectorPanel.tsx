@@ -2,7 +2,6 @@ import {
   AlertTriangle,
   BookOpenCheck,
   Clock3,
-  FileText,
   Info,
   LoaderCircle,
   ShieldCheck,
@@ -14,7 +13,6 @@ import type {
   ReviewArtifactRun,
   ReviewArtifactVersion,
   SourceVersion,
-  SourceVersionContent,
   TransformationDetail,
 } from "../types";
 type WarningItem = {
@@ -26,7 +24,6 @@ type WarningItem = {
 function EvidencePanel({
   version,
   evidence,
-  sourceContent,
   busy,
   onLoad,
   onAnalyze,
@@ -34,11 +31,10 @@ function EvidencePanel({
 }: {
   version: ReviewArtifactVersion | null;
   evidence: EvidenceLink[] | undefined;
-  sourceContent: Record<number, SourceVersionContent>;
   busy: boolean;
   onLoad: () => void;
   onAnalyze: () => void;
-  onViewSource: (sourceVersionId: number) => void;
+  onViewSource: (sourceVersionId: number, quote: string | null) => void;
 }) {
   if (!version) {
     return (
@@ -91,12 +87,7 @@ function EvidencePanel({
       ) : (
         <ul className="evidence-list">
           {evidence.map((link) => {
-            const source = sourceContent[link.source_version_id];
             const quote = link.source_quote ?? "";
-            const quoteIndex =
-              link.status === "linked" && source && quote
-                ? source.source_text.indexOf(quote)
-                : -1;
             return (
               <li key={link.id} className="evidence-item">
                 <strong className="evidence-item__claim">
@@ -118,36 +109,12 @@ function EvidencePanel({
                     <button
                       type="button"
                       className="text-button evidence-view-source"
-                      onClick={() => onViewSource(link.source_version_id)}
+                      onClick={() =>
+                        onViewSource(link.source_version_id, link.source_quote)
+                      }
                     >
-                      {source ? "Hide source passage" : "View in source"}
+                      View in source
                     </button>
-                    {source && (
-                      <div className="source-excerpt">
-                        <div className="source-excerpt__heading">
-                          <FileText aria-hidden="true" />
-                          Source V{source.version_number}
-                        </div>
-                        <p>
-                          {quoteIndex >= 0 ? (
-                            <>
-                              {source.source_text.slice(0, quoteIndex)}
-                              <mark>
-                                {source.source_text.slice(
-                                  quoteIndex,
-                                  quoteIndex + quote.length,
-                                )}
-                              </mark>
-                              {source.source_text.slice(
-                                quoteIndex + quote.length,
-                              )}
-                            </>
-                          ) : (
-                            source.source_text
-                          )}
-                        </p>
-                      </div>
-                    )}
                   </>
                 ) : (
                   <div className="evidence-status evidence-status--unlocated">
@@ -459,7 +426,6 @@ export function InspectorPanel({
   version,
   selectedVersionId,
   evidence,
-  sourceContent,
   warnings,
   warningsChecked,
   partialWarnings,
@@ -480,7 +446,6 @@ export function InspectorPanel({
   version: ReviewArtifactVersion | null;
   selectedVersionId: number | null;
   evidence: EvidenceLink[] | undefined;
-  sourceContent: Record<number, SourceVersionContent>;
   warnings: WarningItem[];
   warningsChecked: boolean;
   partialWarnings: boolean;
@@ -488,7 +453,7 @@ export function InspectorPanel({
   busy: boolean;
   onLoadEvidence: () => void;
   onAnalyzeEvidence: () => void;
-  onViewSource: (sourceVersionId: number) => void;
+  onViewSource: (sourceVersionId: number, quote: string | null) => void;
   onCheckWarnings: () => void;
   onDismissWarning: (finding: DiscrepancyFinding) => void;
   onSelectVersion: (versionId: number) => void;
@@ -555,7 +520,6 @@ export function InspectorPanel({
           <EvidencePanel
             version={version}
             evidence={evidence}
-            sourceContent={sourceContent}
             busy={busy}
             onLoad={onLoadEvidence}
             onAnalyze={onAnalyzeEvidence}

@@ -22,6 +22,7 @@ export function SourceRevisionPanel({
   revision,
   busy,
   onUpdated,
+  onViewSource,
   onAffectedAction,
 }: {
   transformationId: number;
@@ -29,6 +30,7 @@ export function SourceRevisionPanel({
   revision: SourceRevisionStatus | null;
   busy: boolean;
   onUpdated: (sourceText: string) => void;
+  onViewSource: () => void;
   onAffectedAction: (
     action: "targeted" | "full",
     artifactRunId: number,
@@ -124,6 +126,13 @@ export function SourceRevisionPanel({
             {changesOpen ? "Hide changes" : "View changes"}
           </button>
         )}
+        <button
+          type="button"
+          className="text-button source-revision__view"
+          onClick={onViewSource}
+        >
+          <FileText aria-hidden="true" /> View source
+        </button>
         <button
           type="button"
           className="button-secondary source-revision__update"

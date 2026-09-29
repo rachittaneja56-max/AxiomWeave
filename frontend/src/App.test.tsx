@@ -422,6 +422,27 @@ describe("transformation request form", () => {
         name: "The center opened on Saturday.",
       }),
     ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Source V1" }));
+    expect(
+      await screen.findByRole("dialog", { name: "Source V1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("The center opened on Saturday.", {
+        selector: ".source-viewer__body",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("a".repeat(64))).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(
+      screen.queryByRole("dialog", { name: "Source V1" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "View source" }));
+    expect(
+      await screen.findByRole("dialog", { name: "Source V1" }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close source viewer" }),
+    );
     expect(screen.getByText("The garden opens Saturday.")).toBeInTheDocument();
     expect(screen.queryByText("openai")).not.toBeInTheDocument();
     expect(screen.queryByText("gpt-6-luna")).not.toBeInTheDocument();
@@ -475,7 +496,41 @@ describe("transformation request form", () => {
     expect(markdown).toContain("**Speaker notes**");
     expect(markdown).toContain("Welcome the neighbors.");
 
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByLabelText("Title")).toHaveValue("Opening");
+    expect(document.querySelector(".slide-canvas--16x9")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Slide 2/ }));
+    expect(screen.getByLabelText("Title")).toHaveValue("Visit");
+    fireEvent.change(screen.getByLabelText("Key message"), {
+      target: { value: "New live preview" },
+    });
+    expect(
+      screen.getByText("New live preview", {
+        selector: ".slide-canvas__message",
+      }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(
+      await screen.findByText("The garden opens Saturday."),
+    ).toBeInTheDocument();
+
     fireEvent.click(screen.getAllByRole("button", { name: "Accept" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "Traceability" })[0]);
+    expect(
+      screen.getByRole("dialog", { name: "Traceability" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("navigation", { name: "Traceability" }),
+    ).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(
+      screen.queryByRole("dialog", { name: "Traceability" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Traceability" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Close traceability" }));
+    expect(
+      screen.queryByRole("dialog", { name: "Traceability" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: "Traceability" })[0]);
     fireEvent.click(screen.getByRole("tab", { name: "Versions" }));
     expect(await screen.findByText(/Source V1.*Accepted/)).toBeInTheDocument();
@@ -505,10 +560,16 @@ describe("transformation request form", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "View in source" }));
     expect(
+      await screen.findByRole("dialog", { name: "Source V1" }),
+    ).toBeInTheDocument();
+    expect(
       await screen.findByText("The center opened on Saturday.", {
         selector: "mark",
       }),
     ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close source viewer" }),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Update source" }));
     expect(await screen.findByLabelText("Source text")).toHaveValue(
