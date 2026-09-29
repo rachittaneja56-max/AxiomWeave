@@ -194,7 +194,8 @@ def test_password_cutover_revokes_existing_sessions_without_deleting_owned_data(
             connection.execute(
                 text(
                     "INSERT INTO users (id, username, password_hash, created_at) "
-                    "VALUES (52, 'legacy-migrated-52', '!disabled-legacy-google!', CURRENT_TIMESTAMP)"
+                    "VALUES (52, 'legacy-migrated-52', "
+                    "'!disabled-legacy-google!', CURRENT_TIMESTAMP)"
                 )
             )
             connection.execute(
@@ -250,9 +251,10 @@ def test_password_cutover_revokes_existing_sessions_without_deleting_owned_data(
                 connection.scalar(text("SELECT owner_id FROM transformation_runs WHERE id = 11"))
                 == 52
             )
-            assert connection.scalar(text("SELECT source_text FROM source_versions WHERE id = 9")) == (
-                "preserved text"
+            source_text = connection.scalar(
+                text("SELECT source_text FROM source_versions WHERE id = 9")
             )
+            assert source_text == "preserved text"
     finally:
         engine.dispose()
 
