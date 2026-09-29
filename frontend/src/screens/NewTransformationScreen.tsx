@@ -201,6 +201,40 @@ export function NewTransformationScreen({
         throw new Error("unexpected generation result");
       }
       setArtifacts(body.artifacts);
+      const successful = body.artifacts.filter(
+        (artifact: GeneratedArtifact) => artifact.status === "succeeded",
+      );
+      const failed = body.artifacts.some(
+        (artifact: GeneratedArtifact) => artifact.status === "failed",
+      );
+      if (
+        successful.length > 0 &&
+        !failed &&
+        body.artifacts.length === transformation.output_types.length
+      ) {
+        const preference: OutputType[] = [
+          "executive_summary",
+          "linkedin_post",
+          "x_post",
+          "advisory",
+          "presentation",
+        ];
+        const initial = preference
+          .map((type) =>
+            successful.find(
+              (artifact: GeneratedArtifact) => artifact.output_type === type,
+            ),
+          )
+          .find(Boolean);
+        queueMicrotask(() =>
+          onOpenReview(
+            transformation.transformation_run_id,
+            deriveTransformationTitle(request.source_text),
+            transformation.source_version.version_number,
+            initial?.output_type,
+          ),
+        );
+      }
     } catch (requestError) {
       if (
         requestError instanceof ApiError &&
@@ -265,11 +299,34 @@ export function NewTransformationScreen({
       const body = await api.retryArtifact(artifactRunId);
       if (!isGeneratedArtifact(body))
         throw new Error("unexpected retry result");
-      setArtifacts((current) =>
-        current.map((artifact) =>
-          artifact.artifact_run_id === artifactRunId ? body : artifact,
-        ),
+      const next = artifacts.map((artifact) =>
+        artifact.artifact_run_id === artifactRunId ? body : artifact,
       );
+      setArtifacts(next);
+      if (
+        next.length === saved?.output_types.length &&
+        next.every((artifact) => artifact.status === "succeeded") &&
+        saved
+      ) {
+        const preference: OutputType[] = [
+          "executive_summary",
+          "linkedin_post",
+          "x_post",
+          "advisory",
+          "presentation",
+        ];
+        const initial = preference
+          .map((type) => next.find((artifact) => artifact.output_type === type))
+          .find(Boolean);
+        queueMicrotask(() =>
+          onOpenReview(
+            saved.transformation_run_id,
+            deriveTransformationTitle(request.source_text),
+            saved.source_version.version_number,
+            initial?.output_type,
+          ),
+        );
+      }
     } catch {
       setGenerationError(
         "This artifact could not be retried. Please try again.",
@@ -735,7 +792,7 @@ export function NewTransformationScreen({
                 <p className="eyebrow">
                   Source V{saved.source_version.version_number}
                 </p>
-                <h2 id="results-heading">Your artifacts</h2>
+                <h2 id="results-heading">Generation results</h2>
               </div>
               <button
                 type="button"
@@ -745,11 +802,13 @@ export function NewTransformationScreen({
                     saved.transformation_run_id,
                     deriveTransformationTitle(request.source_text),
                     saved.source_version.version_number,
-                    artifacts[0]?.output_type,
+                    artifacts.find(
+                      (artifact) => artifact.status === "succeeded",
+                    )?.output_type,
                   )
                 }
               >
-                Open review workspace
+                Review successful artifacts
               </button>
             </div>
             {generationError && (
@@ -830,14 +889,6 @@ export function NewTransformationScreen({
                         </button>
                       )}
                     </div>
-                    {artifact.artifact_version && (
-                      <p className="generated-artifact-row__preview">
-                        {artifact.artifact_version.content.slice(0, 180)}
-                        {artifact.artifact_version.content.length > 180
-                          ? "…"
-                          : ""}
-                      </p>
-                    )}
                   </article>
                 );
               })}

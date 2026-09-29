@@ -475,8 +475,8 @@ describe("transformation request form", () => {
     expect(markdown).toContain("**Speaker notes**");
     expect(markdown).toContain("Welcome the neighbors.");
 
-    fireEvent.click(screen.getByLabelText("More artifact actions"));
-    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Accept" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "Traceability" })[0]);
     fireEvent.click(screen.getByRole("tab", { name: "Versions" }));
     expect(await screen.findByText(/Source V1.*Accepted/)).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
@@ -760,6 +760,7 @@ describe("transformation request form", () => {
       screen.getByRole("heading", { name: "Opening" }),
     ).toBeInTheDocument();
 
+    fireEvent.click(screen.getAllByRole("button", { name: "Traceability" })[0]);
     fireEvent.click(screen.getByRole("tab", { name: "Warnings" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Check sibling consistency" }),
@@ -857,7 +858,7 @@ describe("transformation request form", () => {
 
     selectMultipleOutputs();
     fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
-    await screen.findByRole("heading", { name: "Your artifacts" });
+    await screen.findByRole("heading", { name: "Generation results" });
     expect(
       JSON.parse(fetchMock.mock.calls[1][1].body as string).source_text,
     ).toBe(extractedSource);
@@ -905,7 +906,7 @@ describe("transformation request form", () => {
     );
     selectMultipleOutputs();
     fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
-    await screen.findByRole("heading", { name: "Your artifacts" });
+    await screen.findByRole("heading", { name: "Generation results" });
     expect(
       JSON.parse(fetchMock.mock.calls[1][1].body as string).source_text,
     ).toBe(extractedSource);
@@ -1048,8 +1049,14 @@ describe("transformation request form", () => {
     fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
 
     expect(
-      await screen.findByText("A short generated summary."),
+      await screen.findByRole("heading", { name: "New transformation" }),
     ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Generation results" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("A short generated summary."),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(/openai \/ gpt-6-luna/i)).not.toBeInTheDocument();
     expect(screen.queryByText("gpt-6-luna")).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -1166,14 +1173,16 @@ describe("transformation request form", () => {
 
     expect(await screen.findByText("Needs attention")).toBeInTheDocument();
     expect(
+      screen.getByRole("heading", { name: "Generation results" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(
       screen.queryByText("Welcome the community."),
     ).not.toBeInTheDocument();
     expect(screen.queryByText(presentationContent)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-
     expect(
-      await screen.findByText("The advisory is ready."),
-    ).toBeInTheDocument();
+      screen.queryByText("The advisory is ready."),
+    ).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
       "/api/artifact-runs/41/retry",

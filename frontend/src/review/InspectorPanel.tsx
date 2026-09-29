@@ -513,7 +513,7 @@ export function InspectorPanel({
       <div className="inspector-heading">
         <div>
           <p className="eyebrow">Traceability</p>
-          <h2>Inspector</h2>
+          <h2>Traceability</h2>
         </div>
         <span className="inspector-source-mark" aria-hidden="true">
           <span />

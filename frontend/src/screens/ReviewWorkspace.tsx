@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { LoaderCircle, RefreshCw } from "lucide-react";
+import { LoaderCircle, RefreshCw, GitBranch, X } from "lucide-react";
 import { api } from "../api";
 import { StatusBadge } from "../components/StatusBadge";
 import { ArtifactRail } from "../review/ArtifactRail";
@@ -70,6 +70,16 @@ export function ReviewWorkspace({
   const [message, setMessage] = useState<string | null>(null);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  const [traceabilityOpen, setTraceabilityOpen] = useState(false);
+
+  useEffect(() => {
+    if (!traceabilityOpen) return;
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setTraceabilityOpen(false);
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [traceabilityOpen]);
 
   useEffect(() => {
     let active = true;
@@ -192,6 +202,15 @@ export function ReviewWorkspace({
 
   async function saveVersion(content: string) {
     if (!activeArtifact) return;
+    if (
+      activeArtifact.output_type === "presentation" &&
+      !parsePresentation(content)
+    ) {
+      setActionError(
+        "This presentation could not be saved. Review its slide fields and try again.",
+      );
+      return;
+    }
     await runAction(
       () => api.saveArtifactVersion(activeArtifact.artifact_run_id, content),
       "This version could not be saved. Please retry.",
@@ -227,6 +246,7 @@ export function ReviewWorkspace({
       () => api.reviewArtifact(artifactVersionId, status),
       "The review decision could not be saved. Please retry.",
     );
+    if (status === "accepted" && !error) setMessage("Artifact accepted.");
   }
 
   async function loadEvidence(versionId: number) {
@@ -559,48 +579,84 @@ export function ReviewWorkspace({
               onCopy={copyArtifact}
               onDownload={downloadArtifact}
               onPowerpointExport={(content) => void downloadPowerPoint(content)}
+              onTraceability={() => setTraceabilityOpen(true)}
             />
           ) : (
             <div className="review-empty">
               <p>No artifact is available to review yet.</p>
             </div>
           )}
-          <InspectorPanel
-            activeTab={activeTab}
-            onTabChange={setActiveTab}
-            detail={detail}
-            sourceVersion={detail.source_version}
-            artifact={activeArtifact}
-            version={selectedVersion}
-            selectedVersionId={selectedVersion?.id ?? null}
-            evidence={
-              selectedVersion
-                ? evidenceByVersion[selectedVersion.id]
-                : undefined
-            }
-            sourceContent={sourceContent}
-            warnings={warnings}
-            warningsChecked={warningsChecked}
-            partialWarnings={partialWarnings}
-            checkingWarnings={checkingWarnings}
-            busy={busy}
-            onLoadEvidence={() =>
-              selectedVersion && void loadEvidence(selectedVersion.id)
-            }
-            onAnalyzeEvidence={() =>
-              selectedVersion && void analyzeEvidence(selectedVersion)
-            }
-            onViewSource={(sourceVersionId) => void viewSource(sourceVersionId)}
-            onCheckWarnings={() => void checkSiblingConsistency()}
-            onDismissWarning={(finding) => void dismissWarning(finding)}
-            onSelectVersion={(versionId) => {
-              if (!activeArtifact) return;
-              setSelectedVersions((current) => ({
-                ...current,
-                [activeArtifact.artifact_run_id]: versionId,
-              }));
-            }}
-          />
+          <button
+            type="button"
+            className="button-secondary traceability-trigger"
+            onClick={() => setTraceabilityOpen(true)}
+          >
+            <GitBranch aria-hidden="true" /> Traceability
+          </button>
+          {traceabilityOpen && (
+            <div
+              className="traceability-scrim"
+              onMouseDown={() => setTraceabilityOpen(false)}
+            >
+              <section
+                className="traceability-drawer"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="traceability-title"
+                onMouseDown={(event) => event.stopPropagation()}
+              >
+                <div className="traceability-drawer__heading">
+                  <h2 id="traceability-title">Traceability</h2>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Close traceability"
+                    onClick={() => setTraceabilityOpen(false)}
+                  >
+                    <X aria-hidden="true" />
+                  </button>
+                </div>
+                <InspectorPanel
+                  activeTab={activeTab}
+                  onTabChange={setActiveTab}
+                  detail={detail}
+                  sourceVersion={detail.source_version}
+                  artifact={activeArtifact}
+                  version={selectedVersion}
+                  selectedVersionId={selectedVersion?.id ?? null}
+                  evidence={
+                    selectedVersion
+                      ? evidenceByVersion[selectedVersion.id]
+                      : undefined
+                  }
+                  sourceContent={sourceContent}
+                  warnings={warnings}
+                  warningsChecked={warningsChecked}
+                  partialWarnings={partialWarnings}
+                  checkingWarnings={checkingWarnings}
+                  busy={busy}
+                  onLoadEvidence={() =>
+                    selectedVersion && void loadEvidence(selectedVersion.id)
+                  }
+                  onAnalyzeEvidence={() =>
+                    selectedVersion && void analyzeEvidence(selectedVersion)
+                  }
+                  onViewSource={(sourceVersionId) =>
+                    void viewSource(sourceVersionId)
+                  }
+                  onCheckWarnings={() => void checkSiblingConsistency()}
+                  onDismissWarning={(finding) => void dismissWarning(finding)}
+                  onSelectVersion={(versionId) => {
+                    if (!activeArtifact) return;
+                    setSelectedVersions((current) => ({
+                      ...current,
+                      [activeArtifact.artifact_run_id]: versionId,
+                    }));
+                  }}
+                />
+              </section>
+            </div>
+          )}
         </div>
       )}
       <p className="review-footer-note">

@@ -10,6 +10,7 @@ import {
   Pencil,
   RefreshCw,
   X,
+  GitBranch,
 } from "lucide-react";
 import type {
   OutputType,
@@ -130,6 +131,7 @@ export function ArtifactViewer({
   onCopy,
   onDownload,
   onPowerpointExport,
+  onTraceability,
 }: {
   artifact: ReviewArtifactRun;
   version: ReviewArtifactVersion | null;
@@ -145,18 +147,24 @@ export function ArtifactViewer({
   onCopy: (outputType: OutputType, content: string) => void;
   onDownload: (outputType: OutputType, content: string) => void;
   onPowerpointExport: (content: string) => void;
+  onTraceability: () => void;
 }) {
   const [editContent, setEditContent] = useState(version?.content ?? "");
+  const [presentationDraft, setPresentationDraft] = useState(() =>
+    parsePresentation(version?.content ?? ""),
+  );
   const [editing, setEditing] = useState(false);
   const label = outputLabel(artifact.output_type);
 
   useEffect(() => {
     setEditContent(version?.content ?? "");
+    setPresentationDraft(parsePresentation(version?.content ?? ""));
     setEditing(false);
   }, [artifact.artifact_run_id, version?.id, version?.content]);
 
   function beginEdit() {
     setEditContent(version?.content ?? "");
+    setPresentationDraft(parsePresentation(version?.content ?? ""));
     setEditing(true);
     onEdit();
   }
@@ -211,6 +219,14 @@ export function ArtifactViewer({
             </button>
             <button
               type="button"
+              className="button-secondary traceability-action"
+              onClick={onTraceability}
+            >
+              <GitBranch aria-hidden="true" />
+              Traceability
+            </button>
+            <button
+              type="button"
               className="button-secondary"
               onClick={onRegenerate}
               disabled={busy}
@@ -218,6 +234,22 @@ export function ArtifactViewer({
               <RefreshCw aria-hidden="true" />
               Regenerate
             </button>
+            {version.review_status === "draft" ? (
+              <button
+                type="button"
+                className="button-secondary artifact-accept"
+                onClick={() => onReviewStatus("accepted")}
+                disabled={busy}
+              >
+                <Check aria-hidden="true" />
+                Accept
+              </button>
+            ) : version.review_status === "accepted" ? (
+              <span className="artifact-accepted">
+                <Check aria-hidden="true" />
+                Accepted
+              </span>
+            ) : null}
             <button
               type="button"
               className="icon-button"
@@ -243,14 +275,6 @@ export function ArtifactViewer({
                 </button>
                 {version.review_status === "draft" && (
                   <>
-                    <button
-                      type="button"
-                      onClick={() => onReviewStatus("accepted")}
-                      disabled={busy}
-                    >
-                      <Check aria-hidden="true" />
-                      Accept
-                    </button>
                     <button
                       type="button"
                       onClick={() => onReviewStatus("rejected")}
@@ -286,19 +310,141 @@ export function ArtifactViewer({
       {version ? (
         editing ? (
           <div className="artifact-editor">
-            <label htmlFor="artifact-editor">Edit {label}</label>
-            <textarea
-              id="artifact-editor"
-              rows={18}
-              value={editContent}
-              onChange={(event) => setEditContent(event.target.value)}
-            />
+            {artifact.output_type === "presentation" && presentationDraft ? (
+              <div className="presentation-editor">
+                <label htmlFor="presentation-title">Presentation title</label>
+                <input
+                  id="presentation-title"
+                  value={presentationDraft.title}
+                  onChange={(event) =>
+                    setPresentationDraft({
+                      ...presentationDraft,
+                      title: event.target.value,
+                    })
+                  }
+                />
+                {presentationDraft.slides.map((slide, index) => (
+                  <fieldset className="presentation-editor__slide" key={index}>
+                    <legend>Slide {index + 1}</legend>
+                    <label htmlFor={`slide-title-${index}`}>Title</label>
+                    <input
+                      id={`slide-title-${index}`}
+                      value={slide.title}
+                      onChange={(event) =>
+                        setPresentationDraft({
+                          ...presentationDraft,
+                          slides: presentationDraft.slides.map((item, i) =>
+                            i === index
+                              ? { ...item, title: event.target.value }
+                              : item,
+                          ),
+                        })
+                      }
+                    />
+                    <label htmlFor={`slide-message-${index}`}>
+                      Key message
+                    </label>
+                    <textarea
+                      id={`slide-message-${index}`}
+                      rows={2}
+                      value={slide.key_message}
+                      onChange={(event) =>
+                        setPresentationDraft({
+                          ...presentationDraft,
+                          slides: presentationDraft.slides.map((item, i) =>
+                            i === index
+                              ? { ...item, key_message: event.target.value }
+                              : item,
+                          ),
+                        })
+                      }
+                    />
+                    <label htmlFor={`slide-bullets-${index}`}>
+                      Bullets (one per line)
+                    </label>
+                    <textarea
+                      id={`slide-bullets-${index}`}
+                      rows={4}
+                      value={slide.bullets.join("\n")}
+                      onChange={(event) =>
+                        setPresentationDraft({
+                          ...presentationDraft,
+                          slides: presentationDraft.slides.map((item, i) =>
+                            i === index
+                              ? {
+                                  ...item,
+                                  bullets: event.target.value.split("\n"),
+                                }
+                              : item,
+                          ),
+                        })
+                      }
+                    />
+                    <label htmlFor={`slide-visual-${index}`}>
+                      Visual recommendation
+                    </label>
+                    <textarea
+                      id={`slide-visual-${index}`}
+                      rows={2}
+                      value={slide.visual_recommendation}
+                      onChange={(event) =>
+                        setPresentationDraft({
+                          ...presentationDraft,
+                          slides: presentationDraft.slides.map((item, i) =>
+                            i === index
+                              ? {
+                                  ...item,
+                                  visual_recommendation: event.target.value,
+                                }
+                              : item,
+                          ),
+                        })
+                      }
+                    />
+                    <label htmlFor={`slide-notes-${index}`}>
+                      Speaker notes
+                    </label>
+                    <textarea
+                      id={`slide-notes-${index}`}
+                      rows={4}
+                      value={slide.speaker_notes}
+                      onChange={(event) =>
+                        setPresentationDraft({
+                          ...presentationDraft,
+                          slides: presentationDraft.slides.map((item, i) =>
+                            i === index
+                              ? { ...item, speaker_notes: event.target.value }
+                              : item,
+                          ),
+                        })
+                      }
+                    />
+                  </fieldset>
+                ))}
+              </div>
+            ) : (
+              <>
+                <label htmlFor="artifact-editor">Edit {label}</label>
+                <textarea
+                  id="artifact-editor"
+                  rows={18}
+                  value={editContent}
+                  onChange={(event) => setEditContent(event.target.value)}
+                />
+              </>
+            )}
             <p className="field-hint">Saving creates a new version.</p>
             <div className="review-actions">
               <button
                 type="button"
                 className="button-primary"
-                onClick={() => onSave(editContent)}
+                onClick={() =>
+                  onSave(
+                    presentationDraft && artifact.output_type === "presentation"
+                      ? JSON.stringify(presentationDraft)
+                      : editContent,
+                  )
+                }
                 disabled={busy}
               >
                 Save version
@@ -332,13 +478,6 @@ export function ArtifactViewer({
                 {Array.from(version.content.trim()).length} / 280 characters
               </p>
             )}
-            <div className="artifact-document__lineage">
-              <span>Source</span>
-              <span />
-              <strong>{label}</strong>
-              <span />
-              <span>Evidence</span>
-            </div>
             <MarkdownDocument content={version.content} />
           </article>
         )
