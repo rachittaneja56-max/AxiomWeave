@@ -1,54 +1,163 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth import (
     SESSION_COOKIE_NAME,
+    as_utc,
     auth_error,
     clear_session_cookie,
-    create_local_session,
+    issue_local_session,
     require_current_user,
     set_session_cookie,
-    verify_credential_or_raise,
 )
 from app.database import get_db_session
-from app.models import AuthSession, User
+from app.models import AuthSession, LoginThrottle, User, utc_now
+from app.passwords import (
+    hash_password,
+    normalize_username,
+    password_hasher,
+    password_needs_rehash,
+    validate_password,
+    verify_dummy_password,
+    verify_password,
+)
 from app.settings import get_settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+THROTTLE_WINDOW = timedelta(minutes=15)
+THROTTLE_DURATION = timedelta(minutes=15)
+THROTTLE_THRESHOLD = 8
+INVALID_LOGIN = "Invalid username or password."
 
 
-class GoogleCredentialRequest(BaseModel):
-    credential: str = Field(min_length=1, max_length=8192)
+class Credentials(BaseModel):
+    username: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=1, max_length=1024)
 
 
-class SessionResponse(BaseModel):
+class AuthResponse(BaseModel):
     authenticated: bool
+    username: str
 
 
-@router.post("/google", response_model=SessionResponse)
-def google_login(
-    body: GoogleCredentialRequest,
+class AuthConfig(BaseModel):
+    registration_enabled: bool
+
+
+def _credentials(body: Credentials) -> tuple[str, str]:
+    try:
+        username = normalize_username(body.username)
+        validate_password(body.password)
+    except ValueError as exc:
+        raise auth_error(422, "invalid_credentials", str(exc)) from None
+    return username, body.password
+
+
+@router.get("/config", response_model=AuthConfig)
+def auth_config() -> AuthConfig:
+    return AuthConfig(registration_enabled=get_settings().allow_registration)
+
+
+@router.post("/register", response_model=AuthResponse)
+def register(
+    body: Credentials,
     response: Response,
     session: Annotated[Session, Depends(get_db_session)],
-) -> SessionResponse:
-    client_id = get_settings().google_client_id
-    if not client_id:
-        raise auth_error(503, "google_auth_not_configured", "Google sign-in is not configured.")
-    subject = verify_credential_or_raise(body.credential, client_id)
-    _user, raw_token, expires_at = create_local_session(session, subject)
+) -> AuthResponse:
+    if not get_settings().allow_registration:
+        raise auth_error(403, "registration_disabled", "Account creation is currently closed.")
+    username, password = _credentials(body)
+    user = User(username=username, password_hash=hash_password(password))
+    try:
+        session.add(user)
+        session.flush()
+        raw_token, expires_at = issue_local_session(session, user)
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise auth_error(409, "username_unavailable", "That username is unavailable.") from None
     set_session_cookie(response, raw_token, expires_at)
-    return SessionResponse(authenticated=True)
+    return AuthResponse(authenticated=True, username=user.username)
 
 
-@router.get("/session", response_model=SessionResponse)
-def current_session(_user: Annotated[User, Depends(require_current_user)]) -> SessionResponse:
-    return SessionResponse(authenticated=True)
+@router.post("/login", response_model=AuthResponse)
+def login(
+    body: Credentials,
+    response: Response,
+    session: Annotated[Session, Depends(get_db_session)],
+) -> AuthResponse:
+    try:
+        username = normalize_username(body.username)
+    except ValueError:
+        username = body.username.strip().lower()[:64]
+    throttle_key = sha256(username.encode("utf-8")).hexdigest()
+    now = utc_now()
+    throttle = session.get(LoginThrottle, throttle_key)
+    if throttle and throttle.blocked_until and as_utc(throttle.blocked_until) > now:
+        retry = max(1, int((as_utc(throttle.blocked_until) - now).total_seconds()))
+        raise auth_error(
+            429,
+            "too_many_login_attempts",
+            "Too many sign-in attempts. Please try again later.",
+            {"Retry-After": str(retry)},
+        )
+
+    user = session.scalar(select(User).where(User.username == username))
+    if user is None:
+        verify_dummy_password(body.password)
+        valid = False
+    else:
+        valid = verify_password(body.password, user.password_hash)
+
+    if not valid:
+        if throttle is None:
+            throttle = LoginThrottle(
+                login_key_digest=throttle_key,
+                failed_attempts=0,
+                window_started_at=now,
+                updated_at=now,
+            )
+            session.add(throttle)
+        elif now - as_utc(throttle.window_started_at) >= THROTTLE_WINDOW:
+            throttle.failed_attempts = 0
+            throttle.window_started_at = now
+            throttle.blocked_until = None
+        throttle.failed_attempts += 1
+        if throttle.failed_attempts >= THROTTLE_THRESHOLD:
+            throttle.blocked_until = now + THROTTLE_DURATION
+        throttle.updated_at = now
+        session.commit()
+        if throttle.blocked_until:
+            retry = max(1, int((as_utc(throttle.blocked_until) - now).total_seconds()))
+            raise auth_error(
+                429,
+                "too_many_login_attempts",
+                "Too many sign-in attempts. Please try again later.",
+                {"Retry-After": str(retry)},
+            ) from None
+        raise auth_error(401, "invalid_credentials", INVALID_LOGIN)
+
+    assert user is not None
+    if throttle:
+        session.delete(throttle)
+    if password_needs_rehash(user.password_hash):
+        user.password_hash = password_hasher.hash(body.password)
+    raw_token, expires_at = issue_local_session(session, user)
+    session.commit()
+    set_session_cookie(response, raw_token, expires_at)
+    return AuthResponse(authenticated=True, username=user.username)
+
+
+@router.get("/session", response_model=AuthResponse)
+def current_session(user: Annotated[User, Depends(require_current_user)]) -> AuthResponse:
+    return AuthResponse(authenticated=True, username=user.username)
 
 
 @router.post("/logout", status_code=204)

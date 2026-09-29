@@ -36,6 +36,7 @@ EXPECTED_TABLES = {
     "artifact_versions",
     "evidence_links",
     "discrepancy_findings",
+    "login_throttles",
 }
 
 
@@ -104,14 +105,80 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert set(inspector.get_table_names()) == EXPECTED_TABLES | {"alembic_version"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "f0ba32d0f7a1"
+        assert revision == "b745f01c6d52"
+    finally:
+        engine.dispose()
+
+
+def test_auth_migration_preserves_legacy_user_and_owned_rows(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'legacy.sqlite3').as_posix()}"
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "f0ba32d0f7a1")
+    engine = create_database_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, google_subject, created_at) "
+                    "VALUES (41, 'legacy-subject', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO auth_sessions "
+                    "(user_id, session_token_digest, expires_at, created_at) "
+                    "VALUES (41, :digest, :expiry, CURRENT_TIMESTAMP)"
+                ),
+                {"digest": "d" * 64, "expiry": "2099-01-01"},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO sources (owner_id, title, created_at) "
+                    "VALUES (41, 'saved source', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_versions "
+                    "(source_id, version_number, source_text, content_hash, created_at) "
+                    "VALUES (1, 1, 'saved text', :hash, CURRENT_TIMESTAMP)"
+                ),
+                {"hash": "e" * 64},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO transformation_runs "
+                    "(owner_id, source_version_id, supporting_context, audience, tone, language, "
+                    "detail_level, objective, style, selected_output_types, created_at) "
+                    "VALUES (41, 1, '', 'Public', 'Clear', 'English', 'standard', 'Inform', "
+                    "'Plain', '[]', CURRENT_TIMESTAMP)"
+                )
+            )
+        command.upgrade(config, "head")
+        inspector = inspect(engine)
+        assert "google_subject" not in {column["name"] for column in inspector.get_columns("users")}
+        with engine.connect() as connection:
+            user = connection.execute(
+                text("SELECT id, username, password_hash FROM users WHERE id = 41")
+            ).one()
+            assert user.id == 41
+            assert user.username == "legacy-migrated-41"
+            assert user.password_hash == "!disabled-legacy-google!"
+            assert connection.scalar(text("SELECT owner_id FROM sources WHERE id = 1")) == 41
+            assert (
+                connection.scalar(text("SELECT owner_id FROM transformation_runs WHERE id = 1"))
+                == 41
+            )
+            assert connection.scalar(text("SELECT user_id FROM auth_sessions WHERE id = 1")) == 41
     finally:
         engine.dispose()
 
 
 def test_owner_session_and_foreign_key_invariants(database: Engine) -> None:
     session = _session(database)
-    user = User(google_subject="google-subject-1")
+    user = User(username="test_user1", password_hash="!disabled-test!")
     session.add(user)
     session.commit()
 
@@ -133,7 +200,7 @@ def test_owner_session_and_foreign_key_invariants(database: Engine) -> None:
     assert "token" not in AuthSession.__table__.columns
     assert "raw_token" not in AuthSession.__table__.columns
 
-    session.add(User(google_subject="google-subject-1"))
+    session.add(User(username="test_user1", password_hash="!disabled-test!"))
     with pytest.raises(IntegrityError):
         session.commit()
     session.rollback()
@@ -152,7 +219,7 @@ def test_owner_session_and_foreign_key_invariants(database: Engine) -> None:
 
 def test_source_versions_and_segments_preserve_history_and_locators(database: Engine) -> None:
     session = _session(database)
-    user = User(google_subject="google-subject-2")
+    user = User(username="test_user3", password_hash="!disabled-test!")
     session.add(user)
     session.flush()
     source, version_one = _make_source(session, user, "Same content")
@@ -211,7 +278,7 @@ def test_source_versions_and_segments_preserve_history_and_locators(database: En
 
 def test_transformation_and_artifact_history_keep_context_and_provenance(database: Engine) -> None:
     session = _session(database)
-    user = User(google_subject="google-subject-3")
+    user = User(username="test_user4", password_hash="!disabled-test!")
     session.add(user)
     session.flush()
     _source, source_version = _make_source(session, user, "Authoritative source text")

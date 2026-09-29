@@ -15,19 +15,11 @@ from app.models import Base
 def auth_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[tuple[TestClient, Engine, sessionmaker[Session]]]:
-    monkeypatch.setenv("SIH_GOOGLE_CLIENT_ID", "test-web-client")
+    monkeypatch.setenv("SIH_ALLOW_REGISTRATION", "true")
     monkeypatch.setenv("SIH_ENVIRONMENT", "development")
     from app.settings import get_settings
 
     get_settings.cache_clear()
-    from app import auth
-
-    def fake_google_verifier(credential: str, client_id: str) -> dict[str, object]:
-        if client_id != "test-web-client" or not credential.startswith("verified:"):
-            raise ValueError("invalid test credential")
-        return {"sub": credential.removeprefix("verified:"), "aud": client_id}
-
-    monkeypatch.setattr(auth, "verify_google_credential", fake_google_verifier)
     engine = create_database_engine(f"sqlite:///{(tmp_path / 'auth.sqlite3').as_posix()}")
     Base.metadata.create_all(engine)
     factory = create_session_factory(engine)
@@ -49,7 +41,11 @@ def auth_database(
 
 
 def login(client: TestClient, subject: str = "subject-1") -> str:
-    response = client.post("/api/auth/google", json={"credential": f"verified:{subject}"})
+    username = subject.replace("-", "_")
+    response = client.post(
+        "/api/auth/register",
+        json={"username": username, "password": "fictional test passphrase"},
+    )
     assert response.status_code == 200
     return response.cookies["axiomweave_session"]
 

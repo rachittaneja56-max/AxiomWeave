@@ -3,11 +3,11 @@
 ## Identity and request boundary
 
 ```text
-Google Identity Services -> POST /api/auth/google -> verified Google subject
-  -> local user + HttpOnly session cookie -> owner-scoped React workspace
+Username + password -> Argon2id verification -> local user
+  -> HttpOnly session cookie -> owner-scoped React workspace
 ```
 
-The backend verifies the Google ID token audience against `SIH_GOOGLE_CLIENT_ID`, maps the stable subject to a local user, and issues a separate eight-hour application session. Only a digest of the session token is stored. Logout revokes that session. User IDs come from the authenticated session, never request JSON. Source text and supporting context are treated as untrusted data.
+The backend verifies passwords with Argon2id, maps the normalized username to a local user, and issues a separate eight-hour application session. Only a SHA-256 digest of the random session token is stored. The cookie is HttpOnly, SameSite=Lax, and Secure outside development. Login failures use a generic response and a persistent username-keyed throttle. Logout revokes the session. User IDs come from the authenticated session, never request JSON. Password authentication is not phishing-resistant and is the selected Tier-A demo method. Source text and supporting context are treated as untrusted data.
 
 ## Source, brief, and generated artifacts
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 const OUTPUT_TYPES = [
   { value: "executive_summary", label: "Executive Summary" },
@@ -2272,104 +2272,77 @@ function Workspace({ onLogout }: { onLogout: () => Promise<boolean> }) {
 
 type AuthState = "loading" | "signed_out" | "signed_in";
 
-const initializedGoogleApis = new WeakMap<object, string>();
-
 function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
-  const buttonContainer = useRef<HTMLDivElement>(null);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [message, setMessage] = useState<string | null>(null);
-  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+  const [registrationEnabled, setRegistrationEnabled] = useState(false);
+  const [registering, setRegistering] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    if (!clientId) return;
-    let mounted = true;
-    let script: HTMLScriptElement | null = null;
-
-    const initialize = () => {
-      if (!mounted || !window.google || !buttonContainer.current) return;
-      const googleId = window.google.accounts.id;
-      if (initializedGoogleApis.get(googleId) !== clientId) {
-        googleId.initialize({
-          client_id: clientId,
-          callback: async (response) => {
-            const credential = response.credential;
-            if (!credential) {
-              setMessage(
-                "Google sign-in did not return a credential. Please try again.",
-              );
-              return;
-            }
-            setMessage(null);
-            try {
-              const result = await fetch("/api/auth/google", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                credentials: "include",
-                body: JSON.stringify({ credential }),
-              });
-              if (!result.ok) {
-                setMessage("Sign-in could not be completed. Please try again.");
-                return;
-              }
-              const body: unknown = await result.json();
-              if (!isRecord(body) || body.authenticated !== true) {
-                setMessage(
-                  "Sign-in returned an unexpected response. Please try again.",
-                );
-                return;
-              }
-              onSignedIn();
-            } catch {
-              setMessage(
-                "Could not reach AxiomWeave. Check the connection and try again.",
-              );
-            }
-          },
-        });
-        initializedGoogleApis.set(googleId, clientId);
-      }
-      buttonContainer.current.replaceChildren();
-      googleId.renderButton(buttonContainer.current, {
-        theme: "outline",
-        size: "large",
-        text: "continue_with",
-        width: 280,
-      });
-    };
-
-    if (window.google) {
-      initialize();
-    } else {
-      script = document.querySelector<HTMLScriptElement>(
-        "#google-identity-services",
-      );
-      if (!script) {
-        script = document.createElement("script");
-        script.id = "google-identity-services";
-        script.src = "https://accounts.google.com/gsi/client";
-        script.async = true;
-        script.defer = true;
-        script.addEventListener("load", initialize, { once: true });
-        script.addEventListener(
-          "error",
-          () => {
-            if (mounted)
-              setMessage(
-                "Google sign-in could not load. Check your connection and configuration, then refresh to retry.",
-              );
-          },
-          { once: true },
-        );
-        document.head.append(script);
-      } else {
-        script.addEventListener("load", initialize, { once: true });
-      }
-    }
-
+    let active = true;
+    void fetch("/api/auth/config")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body: unknown) => {
+        if (active && isRecord(body)) {
+          setRegistrationEnabled(body.registration_enabled === true);
+        }
+      })
+      .catch(() => undefined);
     return () => {
-      mounted = false;
-      script?.removeEventListener("load", initialize);
+      active = false;
     };
-  }, [clientId, onSignedIn]);
+  }, []);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSubmitting(true);
+    setMessage(null);
+    try {
+      const response = await fetch(
+        `/api/auth/${registering ? "register" : "login"}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ username, password }),
+        },
+      );
+      const body: unknown =
+        response.status === 204 ? null : await response.json();
+      if (response.ok && isRecord(body) && body.authenticated === true) {
+        setPassword("");
+        onSignedIn();
+        return;
+      }
+      const error = isRecord(body) && isRecord(body.error) ? body.error : null;
+      const code = error && typeof error.code === "string" ? error.code : "";
+      const serverMessage =
+        error && typeof error.message === "string" ? error.message : "";
+      if (response.status === 401 || code === "invalid_credentials") {
+        setMessage(
+          registering ? serverMessage : "Invalid username or password.",
+        );
+      } else if (response.status === 429) {
+        setMessage("Too many sign-in attempts. Please try again later.");
+      } else if (response.status === 409) {
+        setMessage("That username is unavailable.");
+      } else if (response.status === 403) {
+        setMessage("Account creation is currently closed.");
+      } else {
+        setMessage(
+          serverMessage || "Sign-in could not be completed. Please try again.",
+        );
+      }
+    } catch {
+      setMessage(
+        "Could not reach AxiomWeave. Check the connection and try again.",
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
 
   return (
     <main className="signin-shell">
@@ -2394,18 +2367,54 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       </section>
       <section className="signin-card" aria-labelledby="signin-heading">
         <p className="eyebrow">AxiomWeave</p>
-        <h2 id="signin-heading">Sign in to AxiomWeave</h2>
-        {clientId ? (
-          <div
-            ref={buttonContainer}
-            className="google-button"
-            aria-label="Continue with Google"
+        <h2 id="signin-heading">
+          {registering ? "Create account" : "Sign in to AxiomWeave"}
+        </h2>
+        <form onSubmit={(event) => void submit(event)}>
+          <label htmlFor="auth-username">Username</label>
+          <input
+            id="auth-username"
+            type="text"
+            autoComplete="username"
+            spellCheck={false}
+            autoCapitalize="none"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            required
           />
-        ) : (
-          <p className="signin-message" role="status">
-            Google sign-in is not configured. Set SIH_GOOGLE_CLIENT_ID for local
-            development.
-          </p>
+          <label htmlFor="auth-password">Password</label>
+          <input
+            id="auth-password"
+            type="password"
+            autoComplete={registering ? "new-password" : "current-password"}
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            required
+          />
+          {registering && (
+            <p>
+              Password must be at least 15 characters. Passphrases and spaces
+              are allowed.
+            </p>
+          )}
+          <button type="submit" disabled={isSubmitting}>
+            {isSubmitting
+              ? "Please wait…"
+              : registering
+                ? "Create account"
+                : "Sign in"}
+          </button>
+        </form>
+        {registrationEnabled && (
+          <button
+            type="button"
+            onClick={() => {
+              setRegistering(!registering);
+              setMessage(null);
+            }}
+          >
+            {registering ? "Sign in" : "Create account"}
+          </button>
         )}
         {message && (
           <p className="signin-message" role="alert">

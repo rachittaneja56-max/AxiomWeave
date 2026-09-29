@@ -5,7 +5,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
 const healthResponse = {
@@ -100,18 +100,6 @@ function selectMultipleOutputs() {
 }
 
 describe("transformation request form", () => {
-  beforeEach(() => {
-    vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "test-web-client");
-    vi.stubGlobal("google", {
-      accounts: {
-        id: {
-          initialize: vi.fn(),
-          renderButton: vi.fn(),
-        },
-      },
-    });
-  });
-
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
@@ -945,10 +933,6 @@ describe("AxiomWeave sign-in", () => {
     vi.unstubAllEnvs();
   });
 
-  beforeEach(() => {
-    vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "configured-web-client");
-  });
-
   it("keeps the workspace hidden while session state is unresolved", () => {
     let resolveSession:
       ((response: ReturnType<typeof jsonResponse>) => void) | undefined;
@@ -966,130 +950,164 @@ describe("AxiomWeave sign-in", () => {
       "Checking your AxiomWeave session",
     );
     expect(screen.queryByLabelText("Text source")).not.toBeInTheDocument();
-    resolveSession?.(jsonResponse({ authenticated: false }, 401));
+    resolveSession?.(jsonResponse({}, 401));
   });
 
-  it("shows the product sign-in screen without password fields", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({}, 401)));
+  it("shows username and password login without social sign-in", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockImplementation((url: string) =>
+          Promise.resolve(
+            url === "/api/auth/config"
+              ? jsonResponse({ registration_enabled: false })
+              : jsonResponse({}, 401),
+          ),
+        ),
+    );
     render(<App />);
-
     expect(
       await screen.findByRole("heading", { name: "Sign in to AxiomWeave" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("AXIOMWEAVE")).toBeInTheDocument();
+    expect(screen.getByLabelText("Username")).toHaveAttribute(
+      "autocomplete",
+      "username",
+    );
+    expect(screen.getByLabelText("Password")).toHaveAttribute(
+      "autocomplete",
+      "current-password",
+    );
     expect(
-      screen.getByText("One source. Many artifacts. Every claim traceable."),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Multi-output transformation")).toBeInTheDocument();
-    expect(
-      screen.getByText("Audience and communication controls"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Authenticated workspace")).toBeInTheDocument();
-    expect(
-      screen.queryByText("Source-linked evidence"),
+      screen.queryByRole("button", { name: /google/i }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText("Version-aware review")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/email|password/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/forgot password/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/forgot password/i)).not.toBeInTheDocument();
   });
 
-  it("explains when the Google client ID is not configured", async () => {
-    vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({}, 401)));
-    render(<App />);
-
-    expect(
-      await screen.findByText(/Set SIH_GOOGLE_CLIENT_ID for local development/),
-    ).toBeInTheDocument();
-  });
-
-  it("initializes GIS with the configured client ID and sends the callback credential", async () => {
-    const initialize = vi.fn();
-    const renderButton = vi.fn();
-    vi.stubGlobal("google", { accounts: { id: { initialize, renderButton } } });
+  it("sends username/password and opens the workspace on success", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({}, 401))
-      .mockResolvedValueOnce(jsonResponse({ authenticated: true }));
+      .mockResolvedValueOnce(jsonResponse({ registration_enabled: false }))
+      .mockResolvedValueOnce(
+        jsonResponse({ authenticated: true, username: "judge_demo" }),
+      )
+      .mockResolvedValueOnce(jsonResponse([]));
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
-
     await screen.findByRole("heading", { name: "Sign in to AxiomWeave" });
-    await waitFor(() =>
-      expect(initialize).toHaveBeenCalledWith(
-        expect.objectContaining({ client_id: "configured-web-client" }),
-      ),
-    );
-    expect(renderButton).toHaveBeenCalledWith(
-      expect.any(HTMLElement),
-      expect.objectContaining({ text: "continue_with" }),
-    );
-    const callback = initialize.mock.calls[0][0].callback as (response: {
-      credential: string;
-    }) => Promise<void>;
-    await callback({ credential: "opaque-google-token" });
-
+    fireEvent.change(screen.getByLabelText("Username"), {
+      target: { value: "judge_demo" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "fictional test passphrase" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await screen.findByRole("heading", { name: "Transformations Dashboard" });
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/auth/google",
+      "/api/auth/login",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
-        body: JSON.stringify({ credential: "opaque-google-token" }),
+        body: JSON.stringify({
+          username: "judge_demo",
+          password: "fictional test passphrase",
+        }),
       }),
     );
-    expect(
-      await screen.findByRole("heading", { name: "Transformations Dashboard" }),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "New transformation" }));
-    expect(
-      await screen.findByRole("heading", { name: "Content transformation" }),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("opaque-google-token")).not.toBeInTheDocument();
   });
 
-  it("shows a safe login error and returns to sign-in after logout", async () => {
-    const initialize = vi.fn();
-    vi.stubGlobal("google", {
-      accounts: { id: { initialize, renderButton: vi.fn() } },
-    });
+  it("uses a generic login failure and never displays the password", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({}, 401))
+      .mockResolvedValueOnce(jsonResponse({ registration_enabled: false }))
       .mockResolvedValueOnce(
-        jsonResponse({ error: "private token detail" }, 401),
-      )
-      .mockResolvedValueOnce(jsonResponse({ authenticated: true }))
-      .mockResolvedValueOnce(jsonResponse({ status: "ok" }))
-      .mockResolvedValueOnce(jsonResponse({}, 204));
+        jsonResponse(
+          {
+            error: {
+              code: "invalid_credentials",
+              message: "Invalid username or password.",
+            },
+          },
+          401,
+        ),
+      );
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
-    await screen.findByRole("heading", { name: "Sign in to AxiomWeave" });
-    const callback = initialize.mock.calls[0][0].callback as (response: {
-      credential: string;
-    }) => Promise<void>;
-    await callback({ credential: "sensitive-token-value" });
+    await screen.findByLabelText("Username");
+    fireEvent.change(screen.getByLabelText("Username"), {
+      target: { value: "nobody" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "private fictional phrase" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Sign-in could not be completed",
+      "Invalid username or password.",
     );
-    expect(screen.queryByText("sensitive-token-value")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("private fictional phrase"),
+    ).not.toBeInTheDocument();
+  });
 
-    fetchMock.mockResolvedValueOnce(jsonResponse({ authenticated: true }));
-    await callback({ credential: "valid-token" });
+  it("shows registration only when enabled and submits new credentials", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({}, 401))
+      .mockResolvedValueOnce(jsonResponse({ registration_enabled: true }))
+      .mockResolvedValueOnce(
+        jsonResponse({ authenticated: true, username: "judge_demo" }),
+      )
+      .mockResolvedValueOnce(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Create account" }),
+    );
     expect(
-      await screen.findByRole("heading", { name: "Transformations Dashboard" }),
+      screen.getByText(
+        "Password must be at least 15 characters. Passphrases and spaces are allowed.",
+      ),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "New transformation" }));
-    expect(
-      await screen.findByRole("heading", { name: "Content transformation" }),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
-    expect(
-      await screen.findByRole("heading", { name: "Sign in to AxiomWeave" }),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toHaveAttribute(
+      "autocomplete",
+      "new-password",
+    );
+    fireEvent.change(screen.getByLabelText("Username"), {
+      target: { value: "judge_demo" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "fictional test passphrase" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    await screen.findByRole("heading", { name: "Transformations Dashboard" });
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/auth/logout",
+      "/api/auth/register",
       expect.objectContaining({ method: "POST" }),
     );
-    expect(screen.queryByLabelText("Text source")).not.toBeInTheDocument();
+  });
+
+  it("shows the throttle response safely", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({}, 401))
+      .mockResolvedValueOnce(jsonResponse({ registration_enabled: false }))
+      .mockResolvedValueOnce(
+        jsonResponse({ error: { code: "too_many_login_attempts" } }, 429),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    await screen.findByLabelText("Username");
+    fireEvent.change(screen.getByLabelText("Username"), {
+      target: { value: "judge_demo" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "fictional test passphrase" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Too many sign-in attempts",
+    );
   });
 });

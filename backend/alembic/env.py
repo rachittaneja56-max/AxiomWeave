@@ -25,9 +25,16 @@ def run_migrations_online() -> None:
     url = config.get_main_option("sqlalchemy.url") or get_settings().database_url
     engine = create_database_engine(url)
     with engine.connect() as connection:
+        sqlite = connection.dialect.name == "sqlite"
+        if sqlite:
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.commit()
         context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
         with context.begin_transaction():
             context.run_migrations()
+        if sqlite:
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+            connection.commit()
     engine.dispose()
 
 

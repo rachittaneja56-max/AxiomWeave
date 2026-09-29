@@ -10,7 +10,7 @@ Teams often rewrite the same authoritative material for several audiences and fo
 
 ## Tier-A workflow
 
-- Google sign-in and an owner-scoped transformation dashboard.
+- Username/password sign-in and an owner-scoped transformation dashboard.
 - Paste or upload UTF-8 `.txt` / `.md` source material; keep supporting context separate.
 - Set audience, tone, language, detail, objective, and style.
 - Generate an Executive Summary, Professional / LinkedIn Post, Formal Advisory, and Presentation with speaker notes. A failed output can be retried independently.
@@ -21,7 +21,7 @@ Teams often rewrite the same authoritative material for several audiences and fo
 
 ## Architecture
 
-The application is a React/Vite frontend and a FastAPI/SQLAlchemy modular monolith backed by SQLite for local use. Google Identity Services provides the ID token; the backend verifies it and issues an HttpOnly local session cookie. Source versions are immutable and hashed. Generation uses the OpenAI Responses API through a provider boundary, with structured output for presentations, evidence proposals, discrepancy analysis, and targeted updates. `docs/architecture.md` gives the data and request flow.
+The application is a React/Vite frontend and a FastAPI/SQLAlchemy modular monolith backed by SQLite for local use. AxiomWeave uses first-party username/password authentication for the Tier-A MVP. Password authentication is not phishing-resistant; it is the selected demo authentication method. Source versions are immutable and hashed. Generation uses the OpenAI Responses API through a provider boundary, with structured output for presentations, evidence proposals, discrepancy analysis, and targeted updates. `docs/architecture.md` gives the data and request flow.
 
 The pinned generation model is `gpt-6-luna`, with low reasoning effort and Responses API storage disabled. Only `OPENAI_API_KEY` configures model access. The provider cannot be selected by request data.
 
@@ -29,7 +29,7 @@ The pinned generation model is `gpt-6-luna`, with low reasoning effort and Respo
 
 Prerequisites: Python 3.13, [uv](https://docs.astral.sh/uv/), Node.js 22 or newer, and npm.
 
-Create a local `.env` from `.env.example`, configure Google sign-in and the OpenAI key as described below, then run the backend:
+Create a local `.env` from `.env.example`, configure registration and the OpenAI key as described below, then run the backend:
 
 ```powershell
 cd backend
@@ -50,7 +50,9 @@ Open the Vite URL (usually `http://localhost:5173`). Its `/api` proxy targets th
 
 ## Sign-in and model setup
 
-Create a Google OAuth Web application client ID and allow the local Vite origin as an authorized JavaScript origin. Put the ID in `SIH_GOOGLE_CLIENT_ID` in the root `.env`; Vite reads that value as its public GIS client ID. The callback flow does not require a Google client secret, redirect URI, or Drive scope.
+Passwords are never stored in plaintext. They are hashed with Argon2id using a unique library-generated salt (19,456 KiB memory, 2 iterations, parallelism 1). Passwords must be 15–128 characters; Unicode, spaces, and passphrases are allowed without composition rules. Usernames are trimmed, lowercased, and unique; they use 3–64 ASCII letters, numbers, dots, underscores, or hyphens.
+
+Registration is disabled by default with `SIH_ALLOW_REGISTRATION=false`. For a Railway demo, temporarily set it to `true`, redeploy, register the required demo account(s), set it back to `false`, and redeploy. No password belongs in environment configuration or this repository. Local application sessions remain random, HttpOnly, Secure outside development, SameSite=Lax, eight hours long, and stored as a digest at rest.
 
 Put the OpenAI API key in `OPENAI_API_KEY` in the root `.env`. Keep `.env` private and never commit credentials. `SIH_DATABASE_URL` defaults to `sqlite:///./axiomweave.db`, relative to the backend working directory. `SIH_HOST` and `SIH_PORT` control the local server; use the same backend port for Vite's proxy.
 

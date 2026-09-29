@@ -16,8 +16,6 @@ export default defineConfig(({ mode }) => {
   const runtimeEnv = runtimeEnvironment();
 
   const port = runtimeEnv.SIH_PORT ?? fileEnv.SIH_PORT ?? "8000";
-  const googleClientId =
-    runtimeEnv.SIH_GOOGLE_CLIENT_ID ?? fileEnv.SIH_GOOGLE_CLIENT_ID ?? "";
   const apiProxyTarget =
     runtimeEnv.SIH_API_PROXY_TARGET ??
     fileEnv.SIH_API_PROXY_TARGET ??
@@ -29,9 +27,6 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
-    define: {
-      "import.meta.env.VITE_GOOGLE_CLIENT_ID": JSON.stringify(googleClientId),
-    },
     server: {
       proxy,
     },
