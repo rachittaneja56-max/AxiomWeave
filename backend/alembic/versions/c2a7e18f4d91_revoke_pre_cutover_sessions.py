@@ -15,11 +15,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.execute(
-        "UPDATE auth_sessions "
-        "SET revoked_at = CURRENT_TIMESTAMP "
-        "WHERE revoked_at IS NULL"
-    )
+    op.execute("UPDATE auth_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE revoked_at IS NULL")
 
 
 def downgrade() -> None:
