@@ -3,16 +3,11 @@ import {
   fireEvent,
   render,
   screen,
+  within,
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-
-const healthResponse = {
-  ok: true,
-  status: 200,
-  json: async () => ({ status: "ok" }),
-};
 
 const preparedRequest = {
   source_text: "The team will open a community garden on Saturday.",
@@ -66,9 +61,20 @@ function installWorkspaceFetch(fetchMock: ReturnType<typeof vi.fn>) {
 
 async function renderAuthenticatedWorkspace() {
   render(<App />);
-  await screen.findByRole("heading", { name: "Transformations Dashboard" });
-  fireEvent.click(screen.getByRole("button", { name: "New transformation" }));
-  await screen.findByRole("heading", { name: "Content transformation" });
+  await screen.findByRole("heading", { name: "Transformations" });
+  fireEvent.click(screen.getByRole("button", { name: "Open navigation menu" }));
+  expect(
+    screen.getByRole("button", { name: "Close navigation menu" }),
+  ).toHaveAttribute("aria-expanded", "true");
+  fireEvent.click(
+    within(
+      screen.getByRole("navigation", { name: "Main navigation" }),
+    ).getByRole("button", { name: "New transformation" }),
+  );
+  expect(
+    screen.getByRole("button", { name: "Open navigation menu" }),
+  ).toHaveAttribute("aria-expanded", "false");
+  await screen.findByRole("heading", { name: "New transformation" });
 }
 
 function fillRequiredControls() {
@@ -81,10 +87,10 @@ function fillRequiredControls() {
   fireEvent.change(screen.getByLabelText("Tone"), {
     target: { value: preparedRequest.tone },
   });
-  fireEvent.change(screen.getByLabelText("Communication objective"), {
+  fireEvent.change(screen.getByLabelText("Objective"), {
     target: { value: preparedRequest.objective },
   });
-  fireEvent.change(screen.getByLabelText("Content style"), {
+  fireEvent.change(screen.getByLabelText("Style"), {
     target: { value: preparedRequest.style },
   });
 }
@@ -92,8 +98,8 @@ function fillRequiredControls() {
 function selectMultipleOutputs() {
   for (const output of [
     "Executive Summary",
-    "Professional / LinkedIn Post",
-    "Presentation + Speaker Notes",
+    "Professional Post",
+    "Presentation",
   ]) {
     fireEvent.click(screen.getByRole("checkbox", { name: output }));
   }
@@ -107,51 +113,51 @@ describe("transformation request form", () => {
   });
 
   it("renders the request controls and permits selecting multiple outputs", async () => {
-    installWorkspaceFetch(vi.fn().mockResolvedValue(healthResponse));
+    installWorkspaceFetch(vi.fn());
 
     await renderAuthenticatedWorkspace();
+    fireEvent.click(screen.getByText("Supporting context", { exact: true }));
 
     expect(
-      screen.getByRole("heading", { name: "Content transformation" }),
+      screen.getByRole("heading", { name: "New transformation" }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Text source")).toBeInTheDocument();
-    expect(
-      screen.getByLabelText("Supporting context (optional)"),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Additional guidance")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Context can guide the transformation but is not treated as source evidence.",
+        "Context can guide the writing, but it is not treated as source evidence.",
       ),
     ).toBeInTheDocument();
     expect(screen.getAllByRole("checkbox")).toHaveLength(4);
     expect(
       screen.queryByLabelText(/X post|Infographic|Video package/i),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "Paste text" })).toBeChecked();
+    expect(screen.getByRole("tab", { name: "Paste text" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     expect(
-      screen.getByRole("radio", { name: "Upload text file" }),
+      screen.getByRole("tab", { name: "Upload a file" }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Audience")).toBeInTheDocument();
     expect(screen.getByLabelText("Tone")).toBeInTheDocument();
     expect(screen.getByLabelText("Language")).toHaveValue("English");
-    expect(screen.getByLabelText("Detail level")).toHaveValue("standard");
-    expect(
-      screen.getByLabelText("Communication objective"),
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText("Content style")).toBeInTheDocument();
+    expect(screen.getByLabelText("Detail")).toHaveValue("standard");
+    expect(screen.getByLabelText("Objective")).toBeInTheDocument();
+    expect(screen.getByLabelText("Style")).toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole("checkbox", { name: "Executive Summary" }),
     );
     fireEvent.click(
-      screen.getByRole("checkbox", { name: "Professional / LinkedIn Post" }),
+      screen.getByRole("checkbox", { name: "Professional Post" }),
     );
 
     expect(
       screen.getByRole("checkbox", { name: "Executive Summary" }),
     ).toBeChecked();
     expect(
-      screen.getByRole("checkbox", { name: "Professional / LinkedIn Post" }),
+      screen.getByRole("checkbox", { name: "Professional Post" }),
     ).toBeChecked();
   });
 
@@ -216,9 +222,6 @@ describe("transformation request form", () => {
       if (input === "/api/auth/session") {
         return Promise.resolve(jsonResponse({ authenticated: true }));
       }
-      if (input === "/api/health") {
-        return Promise.resolve(healthResponse);
-      }
       if (input === "/api/transformations" && init?.method !== "POST") {
         return Promise.resolve(
           jsonResponse([
@@ -274,8 +277,8 @@ describe("transformation request form", () => {
                   {
                     change_type: "changed",
                     locator: "paragraph:1",
-                    old_text: "The center opens Saturday.",
-                    new_text: "The center opens Sunday.",
+                    old_text: "The center opened on Saturday.",
+                    new_text: "The center opened on Sunday.",
                   },
                 ]
               : [],
@@ -373,13 +376,40 @@ describe("transformation request form", () => {
 
     render(<App />);
     expect(
-      await screen.findByRole("heading", { name: "Transformation 10" }),
+      await screen.findByRole("heading", { name: "Transformations" }),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Open review" }));
     expect(
-      await screen.findByRole("heading", { name: "Review Workspace" }),
+      await screen.findByRole("button", {
+        name: "The center opened on Saturday.",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("AxiomWeave")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/SIH|NTRO|SHA-256|Backend connected/i),
+    ).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Open review" }));
+    expect(
+      await screen.findByRole("heading", {
+        name: "The center opened on Saturday.",
+      }),
     ).toBeInTheDocument();
     expect(screen.getByText("The garden opens Saturday.")).toBeInTheDocument();
+    expect(screen.queryByText("openai")).not.toBeInTheDocument();
+    expect(screen.queryByText("gpt-6-luna")).not.toBeInTheDocument();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal(
+      "navigator",
+      Object.assign(Object.create(navigator), {
+        clipboard: { writeText },
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Copy artifact" }));
+    expect(
+      await screen.findByText("Artifact copied to clipboard."),
+    ).toBeInTheDocument();
+    expect(writeText).toHaveBeenCalledWith(
+      expect.stringContaining("The garden opens Saturday."),
+    );
     const downloadedBlobs: Blob[] = [];
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     vi.stubGlobal("URL", {
@@ -389,11 +419,10 @@ describe("transformation request form", () => {
       },
       revokeObjectURL: vi.fn(),
     });
+    fireEvent.click(screen.getByLabelText("More artifact actions"));
     fireEvent.click(screen.getByRole("button", { name: "Download Markdown" }));
     expect(
-      await screen.findByText(
-        "Presentation + Speaker Notes Markdown downloaded.",
-      ),
+      await screen.findByText("Presentation Markdown downloaded."),
     ).toBeInTheDocument();
     const markdown = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
@@ -407,41 +436,53 @@ describe("transformation request form", () => {
     expect(markdown).toContain("**Speaker notes**");
     expect(markdown).toContain("Welcome the neighbors.");
 
+    fireEvent.click(screen.getByLabelText("More artifact actions"));
     fireEvent.click(screen.getByRole("button", { name: "Accept" }));
-    expect(
-      await screen.findByRole("button", { name: "V1 · accepted" }),
-    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Versions" }));
+    expect(await screen.findByText(/Source V1.*Accepted/)).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/artifact-versions/101/review",
       expect.objectContaining({ method: "PATCH", credentials: "include" }),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Analyze evidence" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Details" }));
+    const provenance = screen.getByText("Technical provenance");
+    expect(provenance.closest("details")).not.toHaveAttribute("open");
+    fireEvent.click(provenance);
+    expect(screen.getByText("openai")).toBeInTheDocument();
+    expect(screen.getByText("gpt-6-luna")).toBeInTheDocument();
+    expect(screen.getByText("b".repeat(64))).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Evidence" }));
+    fireEvent.click(screen.getByRole("button", { name: "Analyze claims" }));
     expect(
       await screen.findByText("The center opened on Saturday.", {
         selector: "blockquote",
       }),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "View source" }));
+    fireEvent.click(screen.getByRole("button", { name: "View in source" }));
     expect(
       await screen.findByText("The center opened on Saturday.", {
-        selector: "pre",
+        selector: "mark",
       }),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Update source" }));
-    expect(await screen.findByLabelText("New source version")).toHaveValue(
+    expect(await screen.findByLabelText("Source text")).toHaveValue(
       "The center opened on Saturday.",
     );
-    fireEvent.change(screen.getByLabelText("New source version"), {
+    fireEvent.change(screen.getByLabelText("Source text"), {
       target: { value: "The center opened on Sunday." },
     });
+    fireEvent.click(screen.getByRole("button", { name: "Save new version" }));
     fireEvent.click(
-      screen.getByRole("button", { name: "Save new source version" }),
+      await screen.findByRole("button", { name: "View changes" }),
     );
-    expect(await screen.findByText("SOURCE UPDATED")).toBeInTheDocument();
-    expect(screen.getByText("V1 → V2")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Targeted Update" }));
+    expect(await screen.findByText("1 change from V1")).toBeInTheDocument();
+    expect(
+      screen.getByText("The center opened on Sunday.", { selector: "ins" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Targeted update" }));
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/artifact-runs/41/targeted-update",
@@ -449,15 +490,193 @@ describe("transformation request form", () => {
       ),
     );
     expect(
-      screen.getByRole("button", { name: "Full regeneration from V2" }),
+      screen.getByRole("button", { name: "Full regeneration" }),
     ).toBeInTheDocument();
+  });
+
+  it("navigates artifacts, checks sibling warnings, and renders Markdown safely", async () => {
+    const sourceVersion = {
+      id: 30,
+      version_number: 1,
+      content_hash: "a".repeat(64),
+      created_at: "2026-09-29T00:00:00Z",
+    };
+    const summaryVersion = {
+      id: 51,
+      artifact_run_id: 50,
+      version_number: 1,
+      source_version_id: 30,
+      source_version_number: 1,
+      content:
+        "## Update\n\nThe center opens Saturday.\n\n<script>alert('x')</script>",
+      provider: "openai",
+      model: "gpt-6-luna",
+      prompt_version: "summary_v1",
+      prompt_hash: "c".repeat(64),
+      review_status: "draft",
+      created_at: "2026-09-29T00:00:00Z",
+    };
+    const presentationVersion = {
+      ...summaryVersion,
+      id: 52,
+      artifact_run_id: 53,
+      content: JSON.stringify({
+        title: "Next steps",
+        slides: [
+          {
+            title: "Opening",
+            key_message: "The center opens Sunday.",
+            bullets: ["Doors open at 9 am."],
+            visual_recommendation: "A calendar card.",
+            speaker_notes: "Explain the updated schedule.",
+          },
+        ],
+      }),
+    };
+    const detail = {
+      transformation_run_id: 10,
+      source_version: sourceVersion,
+      controls: { audience: "Residents" },
+      output_types: ["executive_summary", "presentation"],
+      status: "Review Required",
+      created_at: "2026-09-29T00:00:00Z",
+      updated_at: "2026-09-29T00:00:00Z",
+      artifact_runs: [
+        {
+          artifact_run_id: 50,
+          output_type: "executive_summary",
+          status: "succeeded",
+          versions: [summaryVersion],
+        },
+        {
+          artifact_run_id: 53,
+          output_type: "presentation",
+          status: "succeeded",
+          versions: [presentationVersion],
+        },
+      ],
+    };
+    const finding = {
+      id: 201,
+      source_version_id: 30,
+      artifact_version_a_id: 51,
+      artifact_version_b_id: 52,
+      statement_a: "The center opens Saturday.",
+      statement_b: "The center opens Sunday.",
+      discrepancy_type: "schedule_difference",
+      explanation: "The drafts give different opening days.",
+      review_status: "open",
+      created_at: "2026-09-29T00:00:00Z",
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (input === "/api/auth/session") {
+        return Promise.resolve(jsonResponse({ authenticated: true }));
+      }
+      if (input === "/api/transformations") {
+        return Promise.resolve(
+          jsonResponse([
+            {
+              transformation_run_id: 10,
+              source_version: sourceVersion,
+              output_types: ["executive_summary", "presentation"],
+              artifact_states: [],
+              status: "Review Required",
+              created_at: "2026-09-29T00:00:00Z",
+              updated_at: "2026-09-29T00:00:00Z",
+            },
+          ]),
+        );
+      }
+      if (input === "/api/source-versions/30") {
+        return Promise.resolve(
+          jsonResponse({
+            ...sourceVersion,
+            source_text:
+              "# Community center updates\n\nThe community center opens Saturday.",
+          }),
+        );
+      }
+      if (input === "/api/transformations/10") {
+        return Promise.resolve(jsonResponse(detail));
+      }
+      if (input === "/api/transformations/10/revision-impact") {
+        return Promise.resolve(
+          jsonResponse({
+            transformation_run_id: 10,
+            parent_source_version: null,
+            source_version: sourceVersion,
+            changes: [],
+            potentially_affected_artifacts: [],
+          }),
+        );
+      }
+      if (input === "/api/discrepancies/analyze") {
+        return Promise.resolve(jsonResponse({ finding }));
+      }
+      if (
+        input === "/api/artifact-versions/51/review" &&
+        init?.method === "PATCH"
+      ) {
+        const reviewStatus = JSON.parse(String(init.body)).review_status;
+        summaryVersion.review_status = reviewStatus;
+        return Promise.resolve(jsonResponse(summaryVersion));
+      }
+      throw new Error(`Unexpected request: ${String(input)}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("button", { name: "Community center updates" });
+    fireEvent.click(await screen.findByRole("button", { name: "Open review" }));
+    expect(
+      await screen.findByRole("heading", { name: "Executive Summary" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Update" })).toBeInTheDocument();
+    expect(document.querySelector("script")).toBeNull();
+    expect(
+      screen.queryByText(/SIH|NTRO|Backend connected|SHA-256/i),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("More artifact actions"));
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/artifact-versions/51/review",
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ review_status: "rejected" }),
+        }),
+      ),
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Presentation Version 1/ }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Presentation" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Opening" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Warnings" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Check sibling consistency" }),
+    );
+    expect(
+      await screen.findByText("The drafts give different opening days."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Possible discrepancy")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/discrepancies/analyze",
+      expect.objectContaining({ method: "POST", credentials: "include" }),
+    );
   });
 
   it("extracts a selected file and submits its canonical source text", async () => {
     const extractedSource = "A fictional report about a community garden.";
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(healthResponse)
       .mockResolvedValueOnce(
         jsonResponse({
           filename: "garden.md",
@@ -466,15 +685,18 @@ describe("transformation request form", () => {
           source_text: extractedSource,
         }),
       )
-      .mockResolvedValueOnce(jsonResponse(savedResponse));
+      .mockResolvedValueOnce(jsonResponse(savedResponse))
+      .mockResolvedValueOnce(
+        jsonResponse({ status: "succeeded", artifacts: [] }),
+      );
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
-    fireEvent.click(screen.getByRole("radio", { name: "Upload text file" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Upload a file" }));
     const file = new File([extractedSource], "garden.md", {
       type: "text/markdown",
     });
-    fireEvent.change(screen.getByLabelText("Text file (.txt or .md)"), {
+    fireEvent.change(screen.getByLabelText("Upload source file"), {
       target: { files: [file] },
     });
 
@@ -492,28 +714,25 @@ describe("transformation request form", () => {
         ?.textContent,
     ).toContain("44 characters");
     expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
+      1,
       "/api/sources/text-file",
       expect.objectContaining({ method: "POST", body: expect.any(FormData) }),
     );
 
     selectMultipleOutputs();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save transformation" }),
-    );
-    expect(await screen.findByText("Transformation saved")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
+    await screen.findByRole("heading", { name: "Your artifacts" });
     expect(
-      JSON.parse(fetchMock.mock.calls[2][1].body as string).source_text,
+      JSON.parse(fetchMock.mock.calls[1][1].body as string).source_text,
     ).toBe(extractedSource);
     expect(
-      JSON.parse(fetchMock.mock.calls[2][1].body as string),
+      JSON.parse(fetchMock.mock.calls[1][1].body as string),
     ).toHaveProperty("supporting_context", "");
   });
 
   it("shows extraction errors and rejects malformed successful responses", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(healthResponse)
       .mockResolvedValueOnce(
         jsonResponse(
           {
@@ -531,37 +750,36 @@ describe("transformation request form", () => {
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
-    fireEvent.click(screen.getByRole("radio", { name: "Upload text file" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Upload a file" }));
     const file = new File(["plain text"], "source.txt", { type: "text/plain" });
-    fireEvent.change(screen.getByLabelText("Text file (.txt or .md)"), {
+    fireEvent.change(screen.getByLabelText("Upload source file"), {
       target: { files: [file] },
     });
     expect(await screen.findByRole("alert")).toHaveTextContent("valid UTF-8");
 
-    fireEvent.change(screen.getByLabelText("Text file (.txt or .md)"), {
+    fireEvent.change(screen.getByLabelText("Upload source file"), {
       target: { files: [file] },
     });
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "unexpected file extraction response",
+      "expected format",
     );
   });
 
   it("shows a safe message when file extraction cannot reach the backend", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(healthResponse)
       .mockRejectedValueOnce(new Error("private network detail"));
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
-    fireEvent.click(screen.getByRole("radio", { name: "Upload text file" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Upload a file" }));
     const file = new File(["plain text"], "source.txt", { type: "text/plain" });
-    fireEvent.change(screen.getByLabelText("Text file (.txt or .md)"), {
+    fireEvent.change(screen.getByLabelText("Upload source file"), {
       target: { files: [file] },
     });
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Could not reach the backend",
+      "Could not reach the service",
     );
     expect(
       screen.queryByText("private network detail"),
@@ -572,7 +790,6 @@ describe("transformation request form", () => {
     const extractedSource = "Uploaded source content";
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(healthResponse)
       .mockResolvedValueOnce(
         jsonResponse({
           filename: "source.txt",
@@ -585,11 +802,11 @@ describe("transformation request form", () => {
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
-    fireEvent.click(screen.getByRole("radio", { name: "Upload text file" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Upload a file" }));
     const file = new File([extractedSource], "source.txt", {
       type: "text/plain",
     });
-    fireEvent.change(screen.getByLabelText("Text file (.txt or .md)"), {
+    fireEvent.change(screen.getByLabelText("Upload source file"), {
       target: { files: [file] },
     });
     await waitFor(() =>
@@ -599,23 +816,20 @@ describe("transformation request form", () => {
           .some((status) => status.textContent?.includes("source.txt")),
       ).toBe(true),
     );
-    fireEvent.click(screen.getByRole("radio", { name: "Paste text" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Paste text" }));
     expect(screen.getByLabelText("Text source")).toHaveValue("");
 
     selectMultipleOutputs();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save transformation" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Enter source text",
+      "Add source text",
     );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("submits the canonical multi-output request and shows the ready state", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(healthResponse)
       .mockResolvedValueOnce(jsonResponse(savedResponse))
       .mockResolvedValueOnce(
         jsonResponse({
@@ -644,31 +858,25 @@ describe("transformation request form", () => {
 
     await renderAuthenticatedWorkspace();
     fillRequiredControls();
-    fireEvent.change(screen.getByLabelText("Supporting context (optional)"), {
+    fireEvent.click(screen.getByText("Supporting context", { exact: true }));
+    fireEvent.change(screen.getByLabelText("Additional guidance"), {
       target: { value: "For local administrators." },
     });
     selectMultipleOutputs();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save transformation" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent(
-      "Transformation saved",
-    );
-    fireEvent.click(
-      screen.getByRole("button", { name: "Generate selected outputs" }),
-    );
     expect(
       await screen.findByText("A short generated summary."),
     ).toBeInTheDocument();
-    expect(screen.getByText(/openai \/ gpt-6-luna/)).toBeInTheDocument();
+    expect(screen.queryByText(/openai \/ gpt-6-luna/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("gpt-6-luna")).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
+      2,
       "/api/transformations/10/generate",
       expect.objectContaining({ method: "POST", credentials: "include" }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
+      1,
       "/api/transformations",
       expect.objectContaining({
         method: "POST",
@@ -714,7 +922,6 @@ describe("transformation request form", () => {
     };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(healthResponse)
       .mockResolvedValueOnce(
         jsonResponse({
           ...savedResponse,
@@ -769,84 +976,69 @@ describe("transformation request form", () => {
     for (const output of [
       "Executive Summary",
       "Formal Advisory",
-      "Presentation + Speaker Notes",
+      "Presentation",
     ]) {
       fireEvent.click(screen.getByRole("checkbox", { name: output }));
     }
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save transformation" }),
-    );
-    await screen.findByText("Transformation saved");
-    fireEvent.click(
-      screen.getByRole("button", { name: "Generate selected outputs" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
 
-    expect(await screen.findByText("Failed")).toBeInTheDocument();
-    expect(screen.getByText("Welcome the community.")).toBeInTheDocument();
+    expect(await screen.findByText("Needs attention")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Welcome the community."),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(presentationContent)).not.toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Retry Formal Advisory" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
     expect(
       await screen.findByText("The advisory is ready."),
     ).toBeInTheDocument();
     expect(fetchMock).toHaveBeenNthCalledWith(
-      4,
+      3,
       "/api/artifact-runs/41/retry",
       expect.objectContaining({ method: "POST", credentials: "include" }),
     );
   });
 
   it("gives local feedback for missing source and output selection", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(healthResponse);
+    const fetchMock = vi.fn();
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save transformation" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Enter source text",
+      "Add source text",
     );
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(0);
 
     fireEvent.change(screen.getByLabelText("Text source"), {
       target: { value: "A fictional team announcement." },
     });
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save transformation" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Choose at least one output type",
+      "Choose at least one artifact",
     );
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(0);
   });
 
   it("shows safe field feedback for backend validation failures", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(healthResponse)
-      .mockResolvedValueOnce(
-        jsonResponse(
-          {
-            error: {
-              code: "invalid_request",
-              message: "Request is invalid",
-              fields: [{ field: "audience", message: "Value is too long" }],
-            },
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      jsonResponse(
+        {
+          error: {
+            code: "invalid_request",
+            message: "Request is invalid",
+            fields: [{ field: "audience", message: "Value is too long" }],
           },
-          422,
-        ),
-      );
+        },
+        422,
+      ),
+    );
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
     fillRequiredControls();
     selectMultipleOutputs();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save transformation" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Please review: Audience",
@@ -857,19 +1049,16 @@ describe("transformation request form", () => {
   it("handles a network failure without displaying backend details", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(healthResponse)
       .mockRejectedValueOnce(new Error("private network detail"));
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
     fillRequiredControls();
     selectMultipleOutputs();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save transformation" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Could not reach the backend",
+      "Your source could not be saved",
     );
     expect(
       screen.queryByText("private network detail"),
@@ -879,16 +1068,13 @@ describe("transformation request form", () => {
   it("rejects an unexpected successful response shape", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(healthResponse)
       .mockResolvedValueOnce(jsonResponse({ status: "saved" }));
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
     fillRequiredControls();
     selectMultipleOutputs();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Save transformation" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "unexpected save response",
@@ -899,7 +1085,6 @@ describe("transformation request form", () => {
   it("keeps the authenticated workspace visible when logout fails", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(healthResponse)
       .mockRejectedValueOnce(new Error("private detail"));
     installWorkspaceFetch(fetchMock);
     await renderAuthenticatedWorkspace();
@@ -912,10 +1097,7 @@ describe("transformation request form", () => {
   });
 
   it("keeps the workspace visible when logout returns a failure status", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(healthResponse)
-      .mockResolvedValueOnce(jsonResponse({}, 503));
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({}, 503));
     installWorkspaceFetch(fetchMock);
     await renderAuthenticatedWorkspace();
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
@@ -947,7 +1129,7 @@ describe("AxiomWeave sign-in", () => {
     );
     render(<App />);
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Checking your AxiomWeave session",
+      "Opening your AxiomWeave workspace",
     );
     expect(screen.queryByLabelText("Text source")).not.toBeInTheDocument();
     resolveSession?.(jsonResponse({}, 401));
@@ -968,7 +1150,7 @@ describe("AxiomWeave sign-in", () => {
     );
     render(<App />);
     expect(
-      await screen.findByRole("heading", { name: "Sign in to AxiomWeave" }),
+      await screen.findByRole("heading", { name: "Welcome back" }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Username")).toHaveAttribute(
       "autocomplete",
@@ -995,7 +1177,7 @@ describe("AxiomWeave sign-in", () => {
       .mockResolvedValueOnce(jsonResponse([]));
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
-    await screen.findByRole("heading", { name: "Sign in to AxiomWeave" });
+    await screen.findByRole("heading", { name: "Welcome back" });
     fireEvent.change(screen.getByLabelText("Username"), {
       target: { value: "judge_demo" },
     });
@@ -1003,7 +1185,7 @@ describe("AxiomWeave sign-in", () => {
       target: { value: "fictional test passphrase" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
-    await screen.findByRole("heading", { name: "Transformations Dashboard" });
+    await screen.findByRole("heading", { name: "Transformations" });
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/auth/login",
       expect.objectContaining({
@@ -1063,11 +1245,13 @@ describe("AxiomWeave sign-in", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
     fireEvent.click(
-      await screen.findByRole("button", { name: "Create account" }),
+      await screen.findByRole("button", {
+        name: "Need an account? Create one",
+      }),
     );
     expect(
       screen.getByText(
-        "Password must be at least 15 characters. Passphrases and spaces are allowed.",
+        "Use at least 15 characters. Passphrases and spaces are allowed.",
       ),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Password")).toHaveAttribute(
@@ -1081,7 +1265,7 @@ describe("AxiomWeave sign-in", () => {
       target: { value: "fictional test passphrase" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Create account" }));
-    await screen.findByRole("heading", { name: "Transformations Dashboard" });
+    await screen.findByRole("heading", { name: "Transformations" });
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/auth/register",
       expect.objectContaining({ method: "POST" }),

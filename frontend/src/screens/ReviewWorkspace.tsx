@@ -1,0 +1,563 @@
+import { useEffect, useMemo, useState } from "react";
+import { LoaderCircle, RefreshCw } from "lucide-react";
+import { api } from "../api";
+import { StatusBadge } from "../components/StatusBadge";
+import { ArtifactRail } from "../review/ArtifactRail";
+import { ArtifactViewer } from "../review/ArtifactViewer";
+import { InspectorPanel } from "../review/InspectorPanel";
+import { SourceRevisionPanel } from "../review/SourceRevisionPanel";
+import type {
+  DiscrepancyFinding,
+  EvidenceLink,
+  InspectorTab,
+  OutputType,
+  ReviewArtifactRun,
+  ReviewArtifactVersion,
+  SourceRevisionStatus,
+  SourceVersionContent,
+  TransformationDetail,
+} from "../types";
+import {
+  deriveTransformationTitle,
+  artifactExportText,
+  isRecord,
+  isSourceRevisionStatus,
+  isTransformationDetail,
+  outputLabel,
+} from "../utils";
+
+function pairKey(left: number, right: number): string {
+  return [left, right].sort((a, b) => a - b).join(":");
+}
+
+export function ReviewWorkspace({
+  transformationId,
+  initialOutputType,
+  onBack,
+  onTitleChange,
+  onSourceVersionChange,
+}: {
+  transformationId: number;
+  initialOutputType?: OutputType;
+  onBack: () => void;
+  onTitleChange: (title: string) => void;
+  onSourceVersionChange: (version: number) => void;
+}) {
+  const [detail, setDetail] = useState<TransformationDetail | null>(null);
+  const [revision, setRevision] = useState<SourceRevisionStatus | null>(null);
+  const [activeArtifactId, setActiveArtifactId] = useState<number | null>(null);
+  const [selectedVersions, setSelectedVersions] = useState<
+    Record<number, number>
+  >({});
+  const [activeTab, setActiveTab] = useState<InspectorTab>("evidence");
+  const [evidenceByVersion, setEvidenceByVersion] = useState<
+    Record<number, EvidenceLink[]>
+  >({});
+  const [sourceContent, setSourceContent] = useState<
+    Record<number, SourceVersionContent>
+  >({});
+  const [findingsByPair, setFindingsByPair] = useState<
+    Record<string, DiscrepancyFinding | null>
+  >({});
+  const [warningsChecked, setWarningsChecked] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [checkingWarnings, setCheckingWarnings] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      setLoading(true);
+      setError(null);
+      try {
+        const detailBody = await api.transformation(transformationId);
+        if (!isTransformationDetail(detailBody)) {
+          throw new Error("Unexpected review response.");
+        }
+        let revisionBody: unknown = null;
+        try {
+          revisionBody = await api.revisionImpact(transformationId);
+        } catch {
+          revisionBody = null;
+        }
+        if (!active) return;
+        setDetail(detailBody);
+        onSourceVersionChange(detailBody.source_version.version_number);
+        setRevision(isSourceRevisionStatus(revisionBody) ? revisionBody : null);
+        setActiveArtifactId((current) => {
+          if (
+            current !== null &&
+            detailBody.artifact_runs.some(
+              (artifact) => artifact.artifact_run_id === current,
+            )
+          ) {
+            return current;
+          }
+          return (
+            detailBody.artifact_runs.find(
+              (artifact) => artifact.output_type === initialOutputType,
+            )?.artifact_run_id ??
+            detailBody.artifact_runs[0]?.artifact_run_id ??
+            null
+          );
+        });
+        setSelectedVersions((current) => {
+          const retained: Record<number, number> = {};
+          for (const artifact of detailBody.artifact_runs) {
+            const selected = current[artifact.artifact_run_id];
+            if (artifact.versions.some((version) => version.id === selected)) {
+              retained[artifact.artifact_run_id] = selected;
+            }
+          }
+          return retained;
+        });
+      } catch {
+        if (active)
+          setError("Could not open this review workspace. Please retry.");
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+    void load();
+    return () => {
+      active = false;
+    };
+  }, [transformationId, reload, initialOutputType, onSourceVersionChange]);
+
+  const artifacts = detail?.artifact_runs ?? [];
+  const activeArtifact: ReviewArtifactRun | null =
+    artifacts.find(
+      (artifact) => artifact.artifact_run_id === activeArtifactId,
+    ) ?? null;
+  const latestVersion = activeArtifact?.versions.at(-1) ?? null;
+  const selectedVersion: ReviewArtifactVersion | null =
+    activeArtifact?.versions.find(
+      (version) =>
+        version.id === selectedVersions[activeArtifact.artifact_run_id],
+    ) ??
+    latestVersion ??
+    null;
+  const isLatest = Boolean(
+    selectedVersion && selectedVersion.id === latestVersion?.id,
+  );
+
+  const warnings = useMemo(() => {
+    if (!detail) return [];
+    const versions = new Map<number, { label: string }>();
+    for (const artifact of detail.artifact_runs) {
+      const latest = artifact.versions.at(-1);
+      if (latest)
+        versions.set(latest.id, { label: outputLabel(artifact.output_type) });
+    }
+    return Object.values(findingsByPair)
+      .filter((finding): finding is DiscrepancyFinding => finding !== null)
+      .map((finding) => ({
+        finding,
+        labelA:
+          versions.get(finding.artifact_version_a_id)?.label ?? "Artifact",
+        labelB:
+          versions.get(finding.artifact_version_b_id)?.label ?? "Artifact",
+      }));
+  }, [detail, findingsByPair]);
+
+  function setActionError(messageText: string) {
+    setError(messageText);
+    setMessage(null);
+  }
+
+  async function refreshReview() {
+    setReload((value) => value + 1);
+  }
+
+  async function runAction(action: () => Promise<unknown>, fallback: string) {
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      await action();
+      await refreshReview();
+    } catch {
+      setActionError(fallback);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveVersion(content: string) {
+    if (!activeArtifact) return;
+    await runAction(
+      () => api.saveArtifactVersion(activeArtifact.artifact_run_id, content),
+      "This version could not be saved. Please retry.",
+    );
+  }
+
+  async function regenerateArtifact(artifactRunId: number) {
+    await runAction(
+      () => api.regenerateArtifact(artifactRunId),
+      "This artifact could not be regenerated. Please retry.",
+    );
+  }
+
+  async function targetUpdateArtifact(artifactRunId: number) {
+    await runAction(
+      () => api.targetedUpdate(artifactRunId),
+      "The targeted update could not be completed. Please retry.",
+    );
+  }
+
+  async function retryArtifact(artifactRunId: number) {
+    await runAction(
+      () => api.retryArtifact(artifactRunId),
+      "This artifact could not be retried. Please try again.",
+    );
+  }
+
+  async function updateReviewStatus(
+    artifactVersionId: number,
+    status: "accepted" | "rejected",
+  ) {
+    await runAction(
+      () => api.reviewArtifact(artifactVersionId, status),
+      "The review decision could not be saved. Please retry.",
+    );
+  }
+
+  async function loadEvidence(versionId: number) {
+    setError(null);
+    try {
+      const body = await api.evidence(versionId);
+      if (!Array.isArray(body))
+        throw new Error("Unexpected evidence response.");
+      setEvidenceByVersion((current) => ({
+        ...current,
+        [versionId]: body as EvidenceLink[],
+      }));
+    } catch {
+      setActionError("Saved evidence could not be loaded. Please retry.");
+    }
+  }
+
+  async function analyzeEvidence(version: ReviewArtifactVersion) {
+    setBusy(true);
+    setError(null);
+    try {
+      const body = await api.analyzeEvidence(
+        version.id,
+        version.source_version_id,
+      );
+      if (!Array.isArray(body))
+        throw new Error("Unexpected evidence response.");
+      setEvidenceByVersion((current) => ({
+        ...current,
+        [version.id]: body as EvidenceLink[],
+      }));
+    } catch {
+      setActionError("Evidence analysis could not be completed. Please retry.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function viewSource(sourceVersionId: number) {
+    if (sourceContent[sourceVersionId]) {
+      setSourceContent((current) => {
+        const next = { ...current };
+        delete next[sourceVersionId];
+        return next;
+      });
+      return;
+    }
+    try {
+      const body = await api.sourceVersion(sourceVersionId);
+      if (
+        !isRecord(body) ||
+        typeof body.source_text !== "string" ||
+        typeof body.version_number !== "number"
+      ) {
+        throw new Error("Unexpected source response.");
+      }
+      setSourceContent((current) => ({
+        ...current,
+        [sourceVersionId]: body as SourceVersionContent,
+      }));
+    } catch {
+      setActionError("The source version could not be opened. Please retry.");
+    }
+  }
+
+  async function checkSiblingConsistency() {
+    if (artifacts.length < 2) {
+      setMessage("Add at least two artifacts to compare sibling consistency.");
+      return;
+    }
+    setCheckingWarnings(true);
+    setWarningsChecked(false);
+    setError(null);
+    setMessage(null);
+    const next: Record<string, DiscrepancyFinding | null> = {};
+    const withVersions = artifacts
+      .map((artifact) => ({
+        artifact,
+        version: artifact.versions.at(-1),
+      }))
+      .filter(
+        (
+          entry,
+        ): entry is {
+          artifact: ReviewArtifactRun;
+          version: ReviewArtifactVersion;
+        } => Boolean(entry.version),
+      );
+    try {
+      for (let left = 0; left < withVersions.length; left += 1) {
+        for (let right = left + 1; right < withVersions.length; right += 1) {
+          const a = withVersions[left].version;
+          const b = withVersions[right].version;
+          const key = pairKey(a.id, b.id);
+          const body = await api.analyzeDiscrepancy(a.id, b.id);
+          if (!isRecord(body)) throw new Error("Unexpected warning response.");
+          const finding =
+            isRecord(body.finding) && Number.isInteger(body.finding.id)
+              ? (body.finding as unknown as DiscrepancyFinding)
+              : null;
+          next[key] = finding;
+        }
+      }
+      setFindingsByPair(next);
+      setWarningsChecked(true);
+    } catch {
+      setFindingsByPair((current) => ({ ...current, ...next }));
+      setActionError(
+        "Sibling consistency could not be checked for every artifact. Please retry.",
+      );
+    } finally {
+      setCheckingWarnings(false);
+    }
+  }
+
+  async function dismissWarning(finding: DiscrepancyFinding) {
+    setBusy(true);
+    setError(null);
+    try {
+      const body = await api.dismissDiscrepancy(finding.id);
+      if (!isRecord(body)) throw new Error("Unexpected warning response.");
+      const updated = body as unknown as DiscrepancyFinding;
+      setFindingsByPair((current) => ({
+        ...current,
+        [pairKey(updated.artifact_version_a_id, updated.artifact_version_b_id)]:
+          updated,
+      }));
+    } catch {
+      setActionError("The warning could not be dismissed. Please retry.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyArtifact(outputType: OutputType, content: string) {
+    try {
+      await navigator.clipboard.writeText(
+        artifactExportText(outputType, content),
+      );
+      setExportStatus("Artifact copied to clipboard.");
+    } catch {
+      setExportStatus("Clipboard access is unavailable in this browser.");
+    }
+  }
+
+  function downloadArtifact(outputType: OutputType, content: string) {
+    const label = outputLabel(outputType);
+    const filename =
+      label
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "") + ".md";
+    const url = URL.createObjectURL(
+      new Blob([artifactExportText(outputType, content)], {
+        type: "text/markdown;charset=utf-8",
+      }),
+    );
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setExportStatus(label + " Markdown downloaded.");
+  }
+
+  function handleSourceUpdated(sourceText: string) {
+    onTitleChange(deriveTransformationTitle(sourceText));
+    void refreshReview();
+  }
+
+  if (loading && !detail) {
+    return (
+      <div className="review-loading" role="status">
+        <LoaderCircle className="status-spin" aria-hidden="true" />
+        <span>Opening your review workspace…</span>
+      </div>
+    );
+  }
+
+  if (!detail) {
+    return (
+      <div className="review-load-error" role="alert">
+        <p>{error ?? "This review workspace could not be opened."}</p>
+        <button
+          type="button"
+          className="button-secondary"
+          onClick={() => setReload((value) => value + 1)}
+        >
+          <RefreshCw aria-hidden="true" />
+          Retry
+        </button>
+        <button type="button" className="text-button" onClick={onBack}>
+          Back to transformations
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <section className="review-screen" aria-label="Artifact review workspace">
+      <div className="review-context">
+        <div className="review-context__source">
+          <span className="source-kind__dot" />
+          <strong>Source V{detail.source_version.version_number}</strong>
+          <span>
+            One source, {detail.artifact_runs.length} artifact
+            {detail.artifact_runs.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        <StatusBadge
+          status={
+            detail.status === "Partial Failure"
+              ? "Needs attention"
+              : detail.status === "Review Required"
+                ? "Ready for review"
+                : detail.status
+          }
+          compact
+        />
+      </div>
+      <SourceRevisionPanel
+        transformationId={detail.transformation_run_id}
+        sourceVersion={detail.source_version}
+        revision={revision}
+        busy={busy}
+        onUpdated={handleSourceUpdated}
+        onAffectedAction={(action, artifactRunId) => {
+          if (action === "targeted") void targetUpdateArtifact(artifactRunId);
+          else void regenerateArtifact(artifactRunId);
+        }}
+      />
+      {(error || message) && (
+        <p
+          className={error ? "notice notice--error" : "notice"}
+          role={error ? "alert" : "status"}
+        >
+          {error ?? message}
+        </p>
+      )}
+      {artifacts.length === 0 ? (
+        <div className="review-empty">
+          <div className="review-empty__icon">A</div>
+          <div>
+            <p className="eyebrow">Review workspace</p>
+            <h2>No artifacts yet</h2>
+            <p>
+              Return to your transformations to generate the selected materials.
+            </p>
+            <button type="button" className="button-secondary" onClick={onBack}>
+              Back to transformations
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="review-layout">
+          <ArtifactRail
+            artifacts={artifacts}
+            activeArtifactId={activeArtifact?.artifact_run_id ?? null}
+            onSelect={(artifactRunId) => {
+              setActiveArtifactId(artifactRunId);
+              setActiveTab("evidence");
+              setExportStatus(null);
+            }}
+          />
+          {activeArtifact ? (
+            <ArtifactViewer
+              artifact={activeArtifact}
+              version={selectedVersion}
+              isLatest={isLatest}
+              busy={busy}
+              exportStatus={exportStatus}
+              onEdit={() => {
+                setError(null);
+                setExportStatus(null);
+              }}
+              onSave={(content) => void saveVersion(content)}
+              onCancelEdit={() => setError(null)}
+              onRegenerate={() =>
+                void regenerateArtifact(activeArtifact.artifact_run_id)
+              }
+              onRetry={() => void retryArtifact(activeArtifact.artifact_run_id)}
+              onReviewStatus={(status) =>
+                selectedVersion &&
+                void updateReviewStatus(selectedVersion.id, status)
+              }
+              onCopy={copyArtifact}
+              onDownload={downloadArtifact}
+            />
+          ) : (
+            <div className="review-empty">
+              <p>No artifact is available to review yet.</p>
+            </div>
+          )}
+          <InspectorPanel
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            detail={detail}
+            sourceVersion={detail.source_version}
+            artifact={activeArtifact}
+            version={selectedVersion}
+            selectedVersionId={selectedVersion?.id ?? null}
+            evidence={
+              selectedVersion
+                ? evidenceByVersion[selectedVersion.id]
+                : undefined
+            }
+            sourceContent={sourceContent}
+            warnings={warnings}
+            warningsChecked={warningsChecked}
+            checkingWarnings={checkingWarnings}
+            busy={busy}
+            onLoadEvidence={() =>
+              selectedVersion && void loadEvidence(selectedVersion.id)
+            }
+            onAnalyzeEvidence={() =>
+              selectedVersion && void analyzeEvidence(selectedVersion)
+            }
+            onViewSource={(sourceVersionId) => void viewSource(sourceVersionId)}
+            onCheckWarnings={() => void checkSiblingConsistency()}
+            onDismissWarning={(finding) => void dismissWarning(finding)}
+            onSelectVersion={(versionId) => {
+              if (!activeArtifact) return;
+              setSelectedVersions((current) => ({
+                ...current,
+                [activeArtifact.artifact_run_id]: versionId,
+              }));
+            }}
+          />
+        </div>
+      )}
+      <p className="review-footer-note">
+        A review decision records your workflow choice. It does not certify
+        factual accuracy.
+      </p>
+    </section>
+  );
+}

@@ -6,7 +6,7 @@ One source. Many artifacts. Every claim traceable.
 
 ## Problem and solution
 
-Teams often rewrite the same authoritative material for several audiences and formats. Manual reuse can introduce drift, hide unsupported claims, and make later source corrections hard to apply. AxiomWeave is a local-first workspace for saving a source and communication brief once, generating four related deliverables, and reviewing each version with its source provenance visible.
+Teams often rewrite the same authoritative material for several audiences and formats. Manual reuse can introduce drift, hide unsupported claims, and make later source corrections hard to apply. AxiomWeave is a source-grounded content transformation workspace for saving a source and communication brief once, generating four related deliverables, and reviewing each version with its source provenance visible.
 
 ## Tier-A workflow
 

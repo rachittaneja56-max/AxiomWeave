@@ -13,8 +13,10 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "lucide-react": "^1.48.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "react-markdown": "^10.1.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.0",
