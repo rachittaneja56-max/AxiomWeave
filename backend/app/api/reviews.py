@@ -112,7 +112,6 @@ def create_edited_artifact_version(
         review_status="draft",
     )
     session.add(version)
-    artifact_run.status = "succeeded"
     session.commit()
     session.refresh(version)
     return _version_response(version)

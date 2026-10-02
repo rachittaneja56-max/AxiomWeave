@@ -1,19 +1,27 @@
 from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.artifact_generators import generate_artifact
 from app.auth import require_current_user
 from app.database import get_db_session
-from app.domain.transformation import OutputType, TransformationRequest
-from app.generation import GenerationProvider
-from app.models import ArtifactRun, ArtifactVersion, Source, SourceVersion, TransformationRun, User
-from app.openai_provider import OpenAIGenerationProvider
-from app.settings import get_settings
+from app.domain.transformation import OutputType
+from app.job_queue import enqueue_artifact_job
+from app.models import (
+    ArtifactRun,
+    ArtifactVersion,
+    Job,
+    Source,
+    SourceVersion,
+    TransformationRun,
+    User,
+)
+from app.provider_factory import get_generation_provider as get_generation_provider
+
+__all__ = ["get_generation_provider", "router"]
 
 router = APIRouter()
 SUPPORTED_OUTPUTS = (
@@ -23,13 +31,6 @@ SUPPORTED_OUTPUTS = (
     OutputType.ADVISORY,
     OutputType.PRESENTATION,
 )
-
-
-def get_generation_provider() -> GenerationProvider | None:
-    settings = get_settings()
-    if not settings.openai_api_key:
-        return None
-    return OpenAIGenerationProvider(settings.openai_api_key, settings.openai_model)
 
 
 class GeneratedArtifactVersion(BaseModel):
@@ -70,21 +71,6 @@ def _owned_source_version(
     if source_version is None:
         raise HTTPException(status_code=404, detail="Source version not found")
     return source_version
-
-
-def _transformation_request(
-    transformation: TransformationRun, source_version: SourceVersion, output_type: OutputType
-) -> TransformationRequest:
-    return TransformationRequest(
-        source_text=source_version.source_text,
-        output_types=[output_type],
-        audience=transformation.audience,
-        tone=transformation.tone,
-        language=transformation.language,
-        detail_level=cast(Literal["brief", "standard", "detailed"], transformation.detail_level),
-        objective=transformation.objective,
-        style=transformation.style,
-    )
 
 
 def _latest_version(session: Session, artifact_run: ArtifactRun) -> ArtifactVersion | None:
@@ -131,46 +117,6 @@ def _run_detail(session: Session, user: User, artifact_run: ArtifactRun) -> Arti
     )
 
 
-async def _generate_one(
-    session: Session,
-    transformation: TransformationRun,
-    source_version: SourceVersion,
-    artifact_run: ArtifactRun,
-    provider: GenerationProvider,
-) -> None:
-    artifact_run.status = "running"
-    session.commit()
-    try:
-        output_type = OutputType(artifact_run.output_type)
-        request = _transformation_request(transformation, source_version, output_type)
-        draft = await generate_artifact(
-            provider,
-            request,
-            transformation.supporting_context,
-            output_type,
-        )
-    except Exception:
-        artifact_run.status = "failed"
-        session.commit()
-        return
-
-    latest = _latest_version(session, artifact_run)
-    version = ArtifactVersion(
-        artifact_run_id=artifact_run.id,
-        version_number=1 if latest is None else latest.version_number + 1,
-        source_version_id=source_version.id,
-        content=draft.content,
-        provider=draft.provider,
-        model=draft.model,
-        prompt_version=draft.prompt_version,
-        prompt_hash=draft.prompt_hash,
-    )
-    session.add(version)
-    artifact_run.status = "succeeded"
-    session.commit()
-    session.refresh(artifact_run)
-
-
 def _batch_status(
     artifacts: list[ArtifactRunDetail],
 ) -> Literal["succeeded", "partial_failure", "running"]:
@@ -184,12 +130,12 @@ def _batch_status(
 @router.post(
     "/transformations/{transformation_run_id}/generate",
     response_model=GenerationBatchResponse,
+    status_code=status.HTTP_202_ACCEPTED,
 )
-async def generate_selected_artifacts(
+def generate_selected_artifacts(
     transformation_run_id: int,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
-    provider: Annotated[GenerationProvider | None, Depends(get_generation_provider)],
 ) -> GenerationBatchResponse:
     transformation = session.scalar(
         select(TransformationRun).where(
@@ -211,7 +157,6 @@ async def generate_selected_artifacts(
         ).all()
     )
     runs_by_output = {item.output_type: item for item in existing_runs}
-    new_runs: list[ArtifactRun] = []
     for output_type in selected_outputs:
         if output_type.value not in runs_by_output:
             artifact_run = ArtifactRun(
@@ -220,33 +165,41 @@ async def generate_selected_artifacts(
                 status="pending",
             )
             session.add(artifact_run)
-            new_runs.append(artifact_run)
             runs_by_output[output_type.value] = artifact_run
 
     try:
+        session.flush()
+        for output_type in selected_outputs:
+            artifact_run = runs_by_output[output_type.value]
+            active_job = session.scalar(
+                select(Job.id).where(
+                    Job.artifact_run_id == artifact_run.id,
+                    Job.status.in_(("queued", "running")),
+                )
+            )
+            if active_job is not None or artifact_run.status == "succeeded":
+                continue
+            if artifact_run.status == "failed":
+                continue
+            artifact_run.status = "pending"
+            enqueue_artifact_job(session, artifact_run, source_version)
         session.commit()
     except IntegrityError:
         session.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "artifact_run_exists", "message": "Generation runs already exist."},
-        ) from None
-
-    if provider is None:
-        for artifact_run in new_runs:
-            artifact_run.status = "failed"
-        session.commit()
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "generation_not_configured",
-                "message": "Generation is not configured on this server.",
-            },
+        existing_runs = list(
+            session.scalars(
+                select(ArtifactRun).where(ArtifactRun.transformation_run_id == transformation.id)
+            ).all()
         )
-
-    session.commit()
-    for artifact_run in new_runs:
-        await _generate_one(session, transformation, source_version, artifact_run, provider)
+        runs_by_output = {item.output_type: item for item in existing_runs}
+        if any(output.value not in runs_by_output for output in selected_outputs):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "artifact_run_exists",
+                    "message": "Generation could not be queued. Please retry.",
+                },
+            ) from None
 
     artifacts = [
         _run_detail(session, user, runs_by_output[output_type.value])
@@ -255,12 +208,15 @@ async def generate_selected_artifacts(
     return GenerationBatchResponse(status=_batch_status(artifacts), artifacts=artifacts)
 
 
-@router.post("/artifact-runs/{artifact_run_id}/retry", response_model=ArtifactRunDetail)
-async def retry_failed_artifact(
+@router.post(
+    "/artifact-runs/{artifact_run_id}/retry",
+    response_model=ArtifactRunDetail,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_failed_artifact(
     artifact_run_id: int,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
-    provider: Annotated[GenerationProvider | None, Depends(get_generation_provider)],
 ) -> ArtifactRunDetail:
     row = session.execute(
         select(ArtifactRun, TransformationRun)
@@ -270,6 +226,14 @@ async def retry_failed_artifact(
     if row is None:
         raise HTTPException(status_code=404, detail="Artifact run not found")
     artifact_run, transformation = row
+    active_job = session.scalar(
+        select(Job).where(
+            Job.artifact_run_id == artifact_run.id,
+            Job.status.in_(("queued", "running")),
+        )
+    )
+    if active_job is not None:
+        return _run_detail(session, user, artifact_run)
     if artifact_run.status != "failed":
         raise HTTPException(
             status_code=409,
@@ -278,26 +242,49 @@ async def retry_failed_artifact(
                 "message": "Only failed outputs can be retried.",
             },
         )
-    if provider is None:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "generation_not_configured",
-                "message": "Generation is not configured on this server.",
-            },
+    previous_job = session.scalar(
+        select(Job)
+        .where(Job.artifact_run_id == artifact_run.id)
+        .order_by(Job.created_at.desc(), Job.id.desc())
+    )
+    artifact_run.status = "pending"
+    if previous_job is not None and previous_job.status == "failed":
+        previous_job.status = "queued"
+        previous_job.failure_code = None
+        previous_job.terminal_at = None
+    else:
+        source_version = _owned_source_version(session, user, transformation)
+        enqueue_artifact_job(session, artifact_run, source_version)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        active_job = session.scalar(
+            select(Job).where(
+                Job.artifact_run_id == artifact_run_id,
+                Job.status.in_(("queued", "running")),
+            )
         )
-
-    source_version = _owned_source_version(session, user, transformation)
-    await _generate_one(session, transformation, source_version, artifact_run, provider)
+        if active_job is None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "retry_conflict", "message": "Retry could not be queued."},
+            ) from None
+        artifact_run = session.get(ArtifactRun, artifact_run_id)
+        if artifact_run is None:
+            raise HTTPException(status_code=404, detail="Artifact run not found") from None
     return _run_detail(session, user, artifact_run)
 
 
-@router.post("/artifact-runs/{artifact_run_id}/regenerate", response_model=ArtifactRunDetail)
-async def regenerate_artifact(
+@router.post(
+    "/artifact-runs/{artifact_run_id}/regenerate",
+    response_model=ArtifactRunDetail,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def regenerate_artifact(
     artifact_run_id: int,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
-    provider: Annotated[GenerationProvider | None, Depends(get_generation_provider)],
 ) -> ArtifactRunDetail:
     row = session.execute(
         select(ArtifactRun, TransformationRun)
@@ -307,6 +294,14 @@ async def regenerate_artifact(
     if row is None:
         raise HTTPException(status_code=404, detail="Artifact run not found")
     artifact_run, transformation = row
+    active_job = session.scalar(
+        select(Job).where(
+            Job.artifact_run_id == artifact_run.id,
+            Job.status.in_(("queued", "running")),
+        )
+    )
+    if active_job is not None:
+        return _run_detail(session, user, artifact_run)
     if artifact_run.status != "succeeded":
         raise HTTPException(
             status_code=409,
@@ -315,15 +310,28 @@ async def regenerate_artifact(
                 "message": "Only successful artifacts can be regenerated.",
             },
         )
-    if provider is None:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "generation_not_configured",
-                "message": "Generation is not configured on this server.",
-            },
-        )
-
     source_version = _owned_source_version(session, user, transformation)
-    await _generate_one(session, transformation, source_version, artifact_run, provider)
+    artifact_run.status = "pending"
+    enqueue_artifact_job(session, artifact_run, source_version)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        active_job = session.scalar(
+            select(Job).where(
+                Job.artifact_run_id == artifact_run_id,
+                Job.status.in_(("queued", "running")),
+            )
+        )
+        if active_job is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "regeneration_conflict",
+                    "message": "Regeneration could not be queued.",
+                },
+            ) from None
+        artifact_run = session.get(ArtifactRun, artifact_run_id)
+        if artifact_run is None:
+            raise HTTPException(status_code=404, detail="Artifact run not found") from None
     return _run_detail(session, user, artifact_run)

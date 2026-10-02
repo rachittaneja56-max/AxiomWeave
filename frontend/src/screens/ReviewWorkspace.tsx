@@ -191,6 +191,47 @@ export function ReviewWorkspace({
     };
   }, [transformationId, reload, initialOutputType, onSourceVersionChange]);
 
+  const hasActiveGeneration = Boolean(
+    detail?.artifact_runs.some(
+      (artifact) =>
+        artifact.status === "pending" || artifact.status === "running",
+    ),
+  );
+
+  useEffect(() => {
+    if (!hasActiveGeneration) return;
+    let active = true;
+    let pollCount = 0;
+    let timeoutId: number | undefined;
+
+    async function poll() {
+      if (!active || pollCount >= 150) return;
+      pollCount += 1;
+      try {
+        const body = await api.transformation(transformationId);
+        if (!active || !isTransformationDetail(body)) return;
+        setDetail(body);
+        const stillActive = body.artifact_runs.some(
+          (artifact) =>
+            artifact.status === "pending" || artifact.status === "running",
+        );
+        if (stillActive && pollCount < 150) {
+          timeoutId = window.setTimeout(() => void poll(), 2000);
+        }
+      } catch {
+        if (active && pollCount < 150) {
+          timeoutId = window.setTimeout(() => void poll(), 5000);
+        }
+      }
+    }
+
+    timeoutId = window.setTimeout(() => void poll(), 1500);
+    return () => {
+      active = false;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
+  }, [transformationId, hasActiveGeneration]);
+
   const artifacts = detail?.artifact_runs ?? [];
   const activeArtifact: ReviewArtifactRun | null =
     artifacts.find(

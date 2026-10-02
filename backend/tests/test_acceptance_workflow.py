@@ -3,13 +3,14 @@ from typing import cast
 
 from auth_support import login
 from fastapi.testclient import TestClient
+from generation_support import drain_jobs, run_artifact_action, run_generation
 from pydantic import BaseModel
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.evidence import get_analysis_provider
 from app.api.generation import get_generation_provider
-from app.api.revisions import get_revision_provider
+from app.artifact_generators import TargetedArtifactContent
 from app.generation import (
     GenerationProviderError,
     GenerationRequest,
@@ -37,7 +38,6 @@ class AcceptanceProvider:
         self, request: GenerationRequest, response_model: type[T]
     ) -> StructuredGenerationResult[T]:
         from app.api.evidence import ClaimEvidenceProposal, DiscrepancyAnalysis, EvidenceAnalysis
-        from app.api.revisions import TargetedArtifactContent
 
         if response_model is PresentationSpec:
             self.presentation_attempts += 1
@@ -101,7 +101,6 @@ def test_tier_a_acceptance_workflow(
     from app.main import app
 
     app.dependency_overrides[get_generation_provider] = lambda: provider
-    app.dependency_overrides[get_revision_provider] = lambda: provider
     app.dependency_overrides[get_analysis_provider] = lambda: provider
 
     saved = client.post(
@@ -124,7 +123,7 @@ def test_tier_a_acceptance_workflow(
     transformation_id = saved.json()["transformation_run_id"]
     source_v1_id = saved.json()["source_version"]["id"]
 
-    generated = client.post(f"/api/transformations/{transformation_id}/generate")
+    generated = run_generation(client, transformation_id, factory, provider)
     assert generated.status_code == 200
     assert generated.json()["status"] == "partial_failure"
     artifacts = {item["output_type"]: item for item in generated.json()["artifacts"]}
@@ -134,8 +133,12 @@ def test_tier_a_acceptance_workflow(
         "advisory",
     }
     assert artifacts["presentation"]["status"] == "failed"
-    retried = client.post(
-        f"/api/artifact-runs/{artifacts['presentation']['artifact_run_id']}/retry"
+    retried = run_artifact_action(
+        client,
+        artifacts["presentation"]["artifact_run_id"],
+        "retry",
+        factory,
+        provider,
     )
     assert retried.status_code == 200
     assert retried.json()["status"] == "succeeded"
@@ -223,11 +226,22 @@ def test_tier_a_acceptance_workflow(
         assert original.content == "The center opened Saturday."
 
     targeted = client.post(f"/api/artifact-runs/{summary_run}/targeted-update")
-    assert targeted.status_code == 200
-    assert targeted.json()["artifact_version"]["version_number"] == 3
-    assert targeted.json()["artifact_version"]["source_version_id"] == source_v2_id
-    regenerated = client.post(
-        f"/api/artifact-runs/{artifacts['linkedin_post']['artifact_run_id']}/regenerate"
+    assert targeted.status_code == 202
+    drain_jobs(factory, provider)
+    targeted_detail = client.get(f"/api/transformations/{transformation_id}").json()
+    summary_versions = next(
+        item["versions"]
+        for item in targeted_detail["artifact_runs"]
+        if item["artifact_run_id"] == summary_run
+    )
+    assert summary_versions[-1]["version_number"] == 3
+    assert summary_versions[-1]["source_version_id"] == source_v2_id
+    regenerated = run_artifact_action(
+        client,
+        artifacts["linkedin_post"]["artifact_run_id"],
+        "regenerate",
+        factory,
+        provider,
     )
     assert regenerated.status_code == 200
     assert regenerated.json()["artifact_version"]["source_version_id"] == source_v2_id

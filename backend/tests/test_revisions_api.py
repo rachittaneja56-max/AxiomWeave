@@ -2,17 +2,17 @@ from typing import TypeVar, cast
 
 from auth_support import login
 from fastapi.testclient import TestClient
+from generation_support import drain_jobs, run_artifact_action, run_generation
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.api.generation import get_generation_provider
-from app.api.revisions import get_revision_provider
 from app.generation import GenerationRequest, GenerationResult, StructuredGenerationResult
 from app.models import (
     ArtifactVersion,
     EvidenceLink,
+    Job,
     SourcePackVersion,
     SourceSegment,
     SourceVersion,
@@ -67,13 +67,6 @@ class RevisionProvider:
         )
 
 
-def install_revision_provider(provider: RevisionProvider) -> None:
-    from app.main import app
-
-    app.dependency_overrides[get_generation_provider] = lambda: provider
-    app.dependency_overrides[get_revision_provider] = lambda: provider
-
-
 def create_transformation(client: TestClient) -> int:
     response = client.post(
         "/api/transformations",
@@ -101,9 +94,8 @@ def test_source_v2_diff_impact_targeted_update_and_full_regeneration(
     client, _engine, factory = auth_database
     login(client)
     provider = RevisionProvider()
-    install_revision_provider(provider)
     transformation_id = create_transformation(client)
-    generated = client.post(f"/api/transformations/{transformation_id}/generate").json()
+    generated = run_generation(client, transformation_id, factory, provider).json()
     first_run, second_run = generated["artifacts"]
     first_version_id = first_run["artifact_version"]["id"]
     second_version_id = second_run["artifact_version"]["id"]
@@ -204,8 +196,33 @@ def test_source_v2_diff_impact_targeted_update_and_full_regeneration(
         assert transformation.source_version_id == v2.id
 
     targeted = client.post(f"/api/artifact-runs/{first_run['artifact_run_id']}/targeted-update")
-    assert targeted.status_code == 200
-    targeted_version = targeted.json()["artifact_version"]
+    assert targeted.status_code == 202
+    assert targeted.json()["status"] == "pending"
+    duplicate = client.post(f"/api/artifact-runs/{first_run['artifact_run_id']}/targeted-update")
+    assert duplicate.status_code == 202
+    pending_detail = client.get(f"/api/transformations/{transformation_id}").json()
+    pending_run = next(
+        item
+        for item in pending_detail["artifact_runs"]
+        if item["artifact_run_id"] == first_run["artifact_run_id"]
+    )
+    assert pending_run["status"] == "pending"
+    assert [version["id"] for version in pending_run["versions"]] == [first_version_id]
+    with factory() as session:
+        jobs = list(
+            session.scalars(
+                select(Job)
+                .where(Job.artifact_run_id == first_run["artifact_run_id"])
+                .order_by(Job.id)
+            )
+        )
+        assert len(jobs) == 2
+        assert sum(job.status in {"queued", "running"} for job in jobs) == 1
+        assert jobs[-1].source_version_id == source_v2_id
+        assert jobs[-1].base_artifact_version_id == first_version_id
+    drain_jobs(factory, provider)
+    detail_after_target = client.get(f"/api/transformations/{transformation_id}").json()
+    targeted_version = detail_after_target["artifact_runs"][0]["versions"][-1]
     assert targeted_version["version_number"] == 2
     assert targeted_version["source_version_id"] == source_v2_id
     assert targeted_version["content"] == "Targeted update: the center opened Sunday."
@@ -230,7 +247,9 @@ def test_source_v2_diff_impact_targeted_update_and_full_regeneration(
     assert comparison.status_code == 409
     assert comparison.json()["error"]["code"] == "incompatible_artifacts"
 
-    regenerated = client.post(f"/api/artifact-runs/{first_run['artifact_run_id']}/regenerate")
+    regenerated = run_artifact_action(
+        client, first_run["artifact_run_id"], "regenerate", factory, provider
+    )
     assert regenerated.status_code == 200
     assert regenerated.json()["artifact_version"]["version_number"] == 3
     assert regenerated.json()["artifact_version"]["source_version_id"] == source_v2_id
@@ -248,10 +267,9 @@ def test_source_v2_diff_impact_targeted_update_and_full_regeneration(
 def test_x_post_targeted_update_from_source_v2_keeps_output_contract(
     auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
 ) -> None:
-    client, _engine, _factory = auth_database
+    client, _engine, factory = auth_database
     login(client)
     provider = RevisionProvider()
-    install_revision_provider(provider)
     response = client.post(
         "/api/transformations",
         json={
@@ -266,7 +284,7 @@ def test_x_post_targeted_update_from_source_v2_keeps_output_contract(
         },
     )
     transformation_id = response.json()["transformation_run_id"]
-    generated = client.post(f"/api/transformations/{transformation_id}/generate").json()
+    generated = run_generation(client, transformation_id, factory, provider).json()
     artifact = generated["artifacts"][0]
 
     revised = client.post(
@@ -276,8 +294,10 @@ def test_x_post_targeted_update_from_source_v2_keeps_output_contract(
     assert revised.status_code == 200
     source_v2_id = revised.json()["source_version"]["id"]
     targeted = client.post(f"/api/artifact-runs/{artifact['artifact_run_id']}/targeted-update")
-    assert targeted.status_code == 200
-    version = targeted.json()["artifact_version"]
+    assert targeted.status_code == 202
+    drain_jobs(factory, provider)
+    detail = client.get(f"/api/transformations/{transformation_id}").json()
+    version = detail["artifact_runs"][0]["versions"][-1]
     assert version["source_version_id"] == source_v2_id
     assert version["version_number"] == 2
     assert len(version["content"]) <= 280
@@ -285,7 +305,6 @@ def test_x_post_targeted_update_from_source_v2_keeps_output_contract(
     assert request.max_output_tokens == 220
     assert "maximum of 280 Unicode code points" in request.transformation_instructions
 
-    detail = client.get(f"/api/transformations/{transformation_id}").json()
     versions = detail["artifact_runs"][0]["versions"]
     assert [item["version_number"] for item in versions] == [1, 2]
     assert [item["source_version_id"] for item in versions] == [
@@ -299,8 +318,6 @@ def test_revision_impact_is_owner_scoped(
 ) -> None:
     client, _engine, _factory = auth_database
     login(client, "first-owner")
-    provider = RevisionProvider()
-    install_revision_provider(provider)
     transformation_id = create_transformation(client)
     assert (
         client.get(f"/api/transformations/{transformation_id}/revision-impact").status_code == 200

@@ -2,6 +2,7 @@ from typing import TypeVar
 
 from auth_support import login
 from fastapi.testclient import TestClient
+from generation_support import run_generation
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
@@ -59,7 +60,9 @@ def set_providers(generation: FakeGenerationProvider, analysis: FakeAnalysisProv
     app.dependency_overrides[get_analysis_provider] = lambda: analysis
 
 
-def create_sibling_artifacts(client: TestClient) -> tuple[int, int, int, int]:
+def create_sibling_artifacts(
+    client: TestClient, factory: sessionmaker[Session]
+) -> tuple[int, int, int, int]:
     response = client.post(
         "/api/transformations",
         json={
@@ -78,7 +81,7 @@ def create_sibling_artifacts(client: TestClient) -> tuple[int, int, int, int]:
     )
     assert response.status_code == 200
     transformation_id = response.json()["transformation_run_id"]
-    generated = client.post(f"/api/transformations/{transformation_id}/generate")
+    generated = run_generation(client, transformation_id, factory)
     assert generated.status_code == 200
     artifacts = generated.json()["artifacts"]
     return (
@@ -120,7 +123,7 @@ def test_evidence_quotes_are_verified_against_the_exact_source_version(
         ),
     )
     _transformation_id, source_version_id, artifact_version_id, _sibling_id = (
-        create_sibling_artifacts(client)
+        create_sibling_artifacts(client, factory)
     )
 
     response = client.post(
@@ -155,7 +158,7 @@ def test_wrong_source_is_rejected_and_analysis_failure_leaves_artifact_unchanged
     login(client)
     set_providers(FakeGenerationProvider(), FakeAnalysisProvider([EvidenceAnalysis(proposals=[])]))
     transformation_id, source_version_id, artifact_version_id, _sibling_id = (
-        create_sibling_artifacts(client)
+        create_sibling_artifacts(client, factory)
     )
     other = client.post(
         "/api/transformations",
@@ -172,7 +175,7 @@ def test_wrong_source_is_rejected_and_analysis_failure_leaves_artifact_unchanged
     )
     other_source_version_id = other.json()["source_version"]["id"]
     other_transformation_id = other.json()["transformation_run_id"]
-    other_generated = client.post(f"/api/transformations/{other_transformation_id}/generate").json()
+    other_generated = run_generation(client, other_transformation_id, factory).json()
     other_artifact_version_id = other_generated["artifacts"][0]["artifact_version"]["id"]
     mismatch = client.post(
         f"/api/artifact-versions/{artifact_version_id}/evidence/analyze",
@@ -237,7 +240,7 @@ def test_sibling_discrepancy_is_advisory_and_dismissal_only_changes_review_state
         ),
     )
     _transformation_id, _source_version_id, version_a_id, version_b_id = create_sibling_artifacts(
-        client
+        client, factory
     )
     response = client.post(
         "/api/discrepancies/analyze",
@@ -279,11 +282,11 @@ def test_sibling_discrepancy_is_advisory_and_dismissal_only_changes_review_state
 def test_sibling_discrepancy_provider_failure_is_safe_502(
     auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
 ) -> None:
-    client, _engine, _factory = auth_database
+    client, _engine, factory = auth_database
     login(client)
     set_providers(FakeGenerationProvider(), FakeAnalysisProvider(fail=True))
     _transformation_id, _source_version_id, version_a_id, version_b_id = create_sibling_artifacts(
-        client
+        client, factory
     )
 
     response = client.post(
@@ -304,7 +307,7 @@ def test_equivalent_paraphrases_create_no_discrepancy_and_cross_user_access_is_d
 ) -> None:
     from app.api.evidence import DiscrepancyAnalysis, EvidenceAnalysis
 
-    client, _engine, _factory = auth_database
+    client, _engine, factory = auth_database
     login(client, "first-owner")
     set_providers(
         FakeGenerationProvider(),
@@ -313,7 +316,7 @@ def test_equivalent_paraphrases_create_no_discrepancy_and_cross_user_access_is_d
         ),
     )
     _transformation_id, source_version_id, version_a_id, version_b_id = create_sibling_artifacts(
-        client
+        client, factory
     )
     equivalent = client.post(
         "/api/discrepancies/analyze",

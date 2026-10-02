@@ -334,6 +334,106 @@ class ArtifactVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class Job(Base):
+    __tablename__ = "jobs"
+    __table_args__ = (
+        CheckConstraint("job_type IN ('artifact_generation')", name="ck_jobs_type"),
+        CheckConstraint("resource_class IN ('model_io')", name="ck_jobs_resource_class"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed')", name="ck_jobs_status"
+        ),
+        CheckConstraint(
+            "failure_code IS NULL OR status = 'failed'", name="ck_jobs_failure_code_status"
+        ),
+        CheckConstraint(
+            "(status = 'running' AND worker_id IS NOT NULL AND lease_expires_at IS NOT NULL) "
+            "OR (status != 'running' AND worker_id IS NULL AND lease_expires_at IS NULL)",
+            name="ck_jobs_lease_state",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded', 'failed') AND terminal_at IS NOT NULL) "
+            "OR (status IN ('queued', 'running') AND terminal_at IS NULL)",
+            name="ck_jobs_terminal_state",
+        ),
+        Index("ix_jobs_claim", "resource_class", "status", "created_at", "id"),
+        Index(
+            "uq_jobs_active_artifact_run",
+            "artifact_run_id",
+            unique=True,
+            sqlite_where=text("status IN ('queued', 'running')"),
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    artifact_run_id: Mapped[int] = mapped_column(
+        ForeignKey("artifact_runs.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_version_id: Mapped[int] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    base_artifact_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("artifact_versions.id", ondelete="RESTRICT")
+    )
+    job_type: Mapped[str] = mapped_column(String(40), nullable=False, default="artifact_generation")
+    resource_class: Mapped[str] = mapped_column(String(40), nullable=False, default="model_io")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_id: Mapped[str | None] = mapped_column(String(160))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_code: Mapped[str | None] = mapped_column(String(64))
+
+
+class JobDependency(Base):
+    __tablename__ = "job_dependencies"
+    __table_args__ = (
+        UniqueConstraint("job_id", "depends_on_job_id", name="uq_job_dependencies_edge"),
+        CheckConstraint("job_id != depends_on_job_id", name="ck_job_dependencies_not_self"),
+        Index("ix_job_dependencies_dependency", "depends_on_job_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    depends_on_job_id: Mapped[int] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False
+    )
+
+
+class JobAttempt(Base):
+    __tablename__ = "job_attempts"
+    __table_args__ = (
+        UniqueConstraint("job_id", "attempt_number", name="uq_job_attempts_job_number"),
+        CheckConstraint("attempt_number > 0", name="ck_job_attempts_positive_number"),
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'failed')", name="ck_job_attempts_status"
+        ),
+        CheckConstraint(
+            "failure_code IS NULL OR status = 'failed'",
+            name="ck_job_attempts_failure_code_status",
+        ),
+        CheckConstraint(
+            "(status = 'running' AND finished_at IS NULL) "
+            "OR (status IN ('succeeded', 'failed') AND finished_at IS NOT NULL)",
+            name="ck_job_attempts_finished_state",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_code: Mapped[str | None] = mapped_column(String(64))
+
+
 class EvidenceLink(Base):
     __tablename__ = "evidence_links"
     __table_args__ = (

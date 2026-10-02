@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -16,7 +16,10 @@ from app.models import (
     ArtifactVersion,
     AuthSession,
     Base,
+    Job,
+    JobAttempt,
     Source,
+    SourcePack,
     SourceSegment,
     SourceVersion,
     TransformationRun,
@@ -40,6 +43,9 @@ EXPECTED_TABLES = {
     "transformation_runs",
     "artifact_runs",
     "artifact_versions",
+    "jobs",
+    "job_dependencies",
+    "job_attempts",
     "evidence_links",
     "discrepancy_findings",
     "login_throttles",
@@ -104,7 +110,7 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert set(inspector.get_table_names()) == EXPECTED_TABLES | {"alembic_version"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "a17c0f5e2d91"
+        assert revision == "d9a32ce14f60"
         asset_columns = {
             column["name"]: column for column in inspector.get_columns("source_assets")
         }
@@ -118,6 +124,66 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert region_columns["text"]["nullable"] is True
     finally:
         engine.dispose()
+
+
+def test_durable_jobs_migration_preserves_populated_current_sqlite_data(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'populated-current.sqlite3').as_posix()}"
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "a17c0f5e2d91")
+
+    engine = create_database_engine(database_url)
+    factory = create_session_factory(engine)
+    with factory() as session:
+        owner = User(username="durable_migration_owner", password_hash="!disabled!")
+        session.add(owner)
+        session.flush()
+        source = Source(owner_id=owner.id, title="Existing source")
+        session.add(source)
+        session.flush()
+        source_version = create_source_version(session, source, "Existing source text")
+        source_pack = session.scalar(select(SourcePack).where(SourcePack.source_id == source.id))
+        assert source_pack is not None
+        transformation = _make_transformation(session, owner, source_version)
+        artifact_run = ArtifactRun(
+            transformation_run_id=transformation.id,
+            output_type="advisory",
+            status="succeeded",
+        )
+        session.add(artifact_run)
+        session.flush()
+        artifact_version = ArtifactVersion(
+            artifact_run_id=artifact_run.id,
+            version_number=1,
+            source_version_id=source_version.id,
+            content="Existing immutable artifact.",
+        )
+        session.add(artifact_version)
+        session.commit()
+        source_version_id = source_version.id
+        source_pack_id = source_pack.id
+        artifact_run_id = artifact_run.id
+        artifact_version_id = artifact_version.id
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    upgraded_engine = create_database_engine(database_url)
+    upgraded_factory = create_session_factory(upgraded_engine)
+    try:
+        with upgraded_factory() as session:
+            assert session.get(SourceVersion, source_version_id) is not None
+            assert session.get(SourcePack, source_pack_id) is not None
+            assert session.get(ArtifactRun, artifact_run_id) is not None
+            preserved_version = session.get(ArtifactVersion, artifact_version_id)
+            assert preserved_version is not None
+            assert preserved_version.content == "Existing immutable artifact."
+            assert list(session.scalars(select(Job))) == []
+            assert list(session.scalars(select(JobAttempt))) == []
+    finally:
+        upgraded_engine.dispose()
 
 
 def test_extraction_contract_backfill_marks_only_known_methods_complete(tmp_path: Path) -> None:

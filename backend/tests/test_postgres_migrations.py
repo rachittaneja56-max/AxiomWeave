@@ -1,7 +1,9 @@
 import os
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
@@ -13,10 +15,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
 from app.database import create_database_engine, create_session_factory
+from app.job_queue import MODEL_IO, add_job_dependency, claim_next_job, enqueue_artifact_job
 from app.models import (
     ArtifactRun,
     ArtifactVersion,
     AuthSession,
+    Job,
+    JobAttempt,
     Source,
     SourceAsset,
     SourcePack,
@@ -129,6 +134,15 @@ def _add_transformation(
     return transformation
 
 
+def _claim_postgres_job(
+    sessions: sessionmaker[Session], barrier: Barrier, worker_id: str
+) -> int | None:
+    with sessions() as session:
+        barrier.wait()
+        claim = claim_next_job(session, MODEL_IO, worker_id)
+        return claim.job_id if claim is not None else None
+
+
 def test_postgres_populated_legacy_auth_upgrade_preserves_data(
     postgres_test_database_url: URL,
 ) -> None:
@@ -217,7 +231,7 @@ def test_postgres_populated_legacy_auth_upgrade_preserves_data(
                 text("SELECT owner_id FROM sources WHERE title = 'Legacy source'")
             )
 
-        assert revision == "a17c0f5e2d91"
+        assert revision == "d9a32ce14f60"
         assert user["id"] == 42
         assert user["username"] == "legacy-migrated-42"
         assert user["password_hash"] == "!disabled-legacy-google!"
@@ -256,6 +270,9 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
             "source_regions",
             "artifact_runs",
             "artifact_versions",
+            "jobs",
+            "job_dependencies",
+            "job_attempts",
             "evidence_links",
             "discrepancy_findings",
             "login_throttles",
@@ -263,7 +280,7 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
         } <= set(inspector.get_table_names())
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "a17c0f5e2d91"
+        assert revision == "d9a32ce14f60"
         asset_columns = {
             column["name"]: column for column in inspector.get_columns("source_assets")
         }
@@ -292,6 +309,162 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
         )
     finally:
         engine.dispose()
+
+
+def test_postgres_durable_jobs_migration_preserves_populated_current_data(
+    postgres_test_database_url: URL,
+) -> None:
+    _upgrade(postgres_test_database_url, "a17c0f5e2d91")
+    rendered_url = postgres_test_database_url.render_as_string(hide_password=False)
+    engine = create_database_engine(rendered_url)
+    with create_session_factory(engine)() as session:
+        owner = _add_user(session, "pg_jobs_migration_owner")
+        source, source_version = _add_source_version(session, owner, "Existing PG source")
+        source_pack = session.scalar(select(SourcePack).where(SourcePack.source_id == source.id))
+        assert source_pack is not None
+        transformation = _add_transformation(session, owner, source_version)
+        artifact_run = ArtifactRun(
+            transformation_run_id=transformation.id,
+            output_type="advisory",
+            status="succeeded",
+        )
+        session.add(artifact_run)
+        session.flush()
+        artifact_version = ArtifactVersion(
+            artifact_run_id=artifact_run.id,
+            version_number=1,
+            source_version_id=source_version.id,
+            content="Existing PG artifact.",
+        )
+        session.add(artifact_version)
+        session.commit()
+        source_version_id = source_version.id
+        source_pack_id = source_pack.id
+        artifact_run_id = artifact_run.id
+        artifact_version_id = artifact_version.id
+    engine.dispose()
+
+    _upgrade(postgres_test_database_url, "head")
+    upgraded_engine = create_database_engine(rendered_url)
+    try:
+        with create_session_factory(upgraded_engine)() as session:
+            assert session.get(SourceVersion, source_version_id) is not None
+            assert session.get(SourcePack, source_pack_id) is not None
+            assert session.get(ArtifactRun, artifact_run_id) is not None
+            persisted_version = session.get(ArtifactVersion, artifact_version_id)
+            assert persisted_version is not None
+            assert persisted_version.content == "Existing PG artifact."
+            assert list(session.scalars(select(Job))) == []
+            assert list(session.scalars(select(JobAttempt))) == []
+    finally:
+        upgraded_engine.dispose()
+
+
+def test_postgres_job_claim_is_atomic_and_dependencies_reconcile(
+    postgres_runtime_sessions: sessionmaker[Session],
+) -> None:
+    with postgres_runtime_sessions() as session:
+        owner = _add_user(session, "pg_job_claim_owner")
+        _source, source_version = _add_source_version(session, owner)
+        transformation = _add_transformation(session, owner, source_version)
+        parent_run = ArtifactRun(
+            transformation_run_id=transformation.id,
+            output_type="advisory",
+            status="pending",
+        )
+        child_run = ArtifactRun(
+            transformation_run_id=transformation.id,
+            output_type="linkedin_post",
+            status="pending",
+        )
+        session.add_all((parent_run, child_run))
+        session.flush()
+        parent_job = enqueue_artifact_job(session, parent_run, source_version)
+        child_job = enqueue_artifact_job(session, child_run, source_version)
+        add_job_dependency(session, child_job.id, parent_job.id)
+        parent_job_id = parent_job.id
+        child_job_id = child_job.id
+        parent_run_id = parent_run.id
+        child_run_id = child_run.id
+        source_version_id = source_version.id
+        session.commit()
+
+    barrier = Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(_claim_postgres_job, postgres_runtime_sessions, barrier, "pg-worker-a")
+        second = pool.submit(_claim_postgres_job, postgres_runtime_sessions, barrier, "pg-worker-b")
+        claims = [first.result(), second.result()]
+    assert claims.count(parent_job_id) == 1
+    assert claims.count(None) == 1
+
+    with postgres_runtime_sessions() as session:
+        parent = session.get(Job, parent_job_id)
+        child = session.get(Job, child_job_id)
+        attempts = list(
+            session.scalars(select(JobAttempt).where(JobAttempt.job_id == parent_job_id))
+        )
+        assert parent is not None and parent.status == "running"
+        assert len(attempts) == 1 and attempts[0].status == "running"
+        assert child is not None and child.status == "queued"
+        with pytest.raises(IntegrityError):
+            with session.begin_nested():
+                session.add(
+                    Job(
+                        artifact_run_id=parent_run_id,
+                        source_version_id=source_version_id,
+                        status="queued",
+                    )
+                )
+                session.flush()
+        with pytest.raises(IntegrityError):
+            with session.begin_nested():
+                session.add(
+                    JobAttempt(
+                        job_id=parent_job_id,
+                        attempt_number=1,
+                        worker_id="duplicate-attempt",
+                        status="running",
+                        started_at=datetime.now(UTC),
+                    )
+                )
+                session.flush()
+        assert claim_next_job(session, MODEL_IO, "pg-blocked-worker") is None
+
+        parent = session.get(Job, parent_job_id)
+        parent_run = session.get(ArtifactRun, parent_run_id)
+        parent_attempt = session.scalar(
+            select(JobAttempt).where(JobAttempt.job_id == parent_job_id)
+        )
+        assert parent is not None
+        assert parent_run is not None
+        assert parent_attempt is not None
+        now = datetime.now(UTC)
+        parent.status = "failed"
+        parent.failure_code = "generation_failed"
+        parent.worker_id = None
+        parent.lease_expires_at = None
+        parent.terminal_at = now
+        parent_run.status = "failed"
+        parent_attempt.status = "failed"
+        parent_attempt.failure_code = "generation_failed"
+        parent_attempt.finished_at = now
+        session.commit()
+
+    with postgres_runtime_sessions() as session:
+        assert claim_next_job(session, MODEL_IO, "pg-reconcile-worker") is None
+    with postgres_runtime_sessions() as session:
+        parent = session.get(Job, parent_job_id)
+        child = session.get(Job, child_job_id)
+        child_run = session.get(ArtifactRun, child_run_id)
+        child_attempts = list(
+            session.scalars(select(JobAttempt).where(JobAttempt.job_id == child_job_id))
+        )
+        assert parent is not None and parent.status == "failed"
+        assert child is not None and child.status == "failed"
+        assert child.failure_code == "dependency_failed"
+        assert child_run is not None and child_run.status == "failed"
+        assert child_attempts == []
+        assert parent.source_version_id == source_version_id
 
 
 def test_postgres_phase_one_a_backfill_preserves_version_parent_and_transformation_reference(

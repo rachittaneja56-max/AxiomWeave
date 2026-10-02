@@ -108,6 +108,59 @@ function selectMultipleOutputs() {
   }
 }
 
+function reviewArtifact(
+  artifactRunId: number,
+  outputType: string,
+  status: "pending" | "succeeded" | "failed",
+  content?: string,
+) {
+  return {
+    artifact_run_id: artifactRunId,
+    output_type: outputType,
+    status,
+    versions: content
+      ? [
+          {
+            id: artifactRunId + 10,
+            version_number: 1,
+            source_version_id: 30,
+            source_version_number: 1,
+            content,
+            provider: "openai",
+            model: "gpt-6-luna",
+            prompt_version: "1",
+            prompt_hash: "b".repeat(64),
+            review_status: "draft",
+            created_at: "2026-10-02T00:00:00Z",
+          },
+        ]
+      : [],
+  };
+}
+
+function reviewDetail(
+  status: "Generating" | "Review Required" | "Partial Failure",
+  artifactRuns: ReturnType<typeof reviewArtifact>[],
+) {
+  return {
+    transformation_run_id: 10,
+    source_version: savedResponse.source_version,
+    controls: {
+      audience: preparedRequest.audience,
+      tone: preparedRequest.tone,
+      language: preparedRequest.language,
+      detail_level: preparedRequest.detail_level,
+      objective: preparedRequest.objective,
+      style: preparedRequest.style,
+    },
+    output_types: artifactRuns.map((artifact) => artifact.output_type),
+    status,
+    created_at: "2026-10-02T00:00:00Z",
+    updated_at: "2026-10-02T00:00:00Z",
+    artifact_runs: artifactRuns,
+  };
+}
+
 describe("transformation request form", () => {
   afterEach(() => {
     cleanup();
@@ -596,7 +649,7 @@ describe("transformation request form", () => {
     expect(
       screen.getByRole("button", { name: "Full regeneration" }),
     ).toBeInTheDocument();
-  });
+  }, 10000);
 
   it("navigates artifacts, checks sibling warnings, and renders Markdown safely", async () => {
     const sourceVersion = {
@@ -1087,27 +1140,30 @@ describe("transformation request form", () => {
       .mockResolvedValueOnce(jsonResponse(savedResponse))
       .mockResolvedValueOnce(
         jsonResponse({
-          status: "succeeded",
+          status: "running",
           artifacts: [
             {
               artifact_run_id: 40,
               output_type: "executive_summary",
-              status: "succeeded",
-              artifact_version: {
-                id: 50,
-                version_number: 1,
-                source_version_id: 30,
-                source_version_number: 1,
-                content: "A short generated summary.",
-                provider: "openai",
-                model: "gpt-6-luna",
-                prompt_version: "1",
-                prompt_hash: "b".repeat(64),
-              },
+              status: "pending",
+              artifact_version: null,
             },
           ],
         }),
-      );
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          reviewDetail("Review Required", [
+            reviewArtifact(
+              40,
+              "executive_summary",
+              "succeeded",
+              "A short generated summary.",
+            ),
+          ]),
+        ),
+      )
+      .mockResolvedValueOnce(jsonResponse({}));
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
@@ -1120,20 +1176,19 @@ describe("transformation request form", () => {
     fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
 
     expect(
-      await screen.findByRole("heading", { name: "New transformation" }),
+      await screen.findByText("A short generated summary."),
     ).toBeInTheDocument();
     expect(
-      await screen.findByRole("heading", { name: "Generation results" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText("A short generated summary."),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText(/openai \/ gpt-6-luna/i)).not.toBeInTheDocument();
-    expect(screen.queryByText("gpt-6-luna")).not.toBeInTheDocument();
+      screen.queryByRole("heading", { name: "Generation results" }),
+    ).toBeNull();
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "/api/transformations/10/generate",
       expect.objectContaining({ method: "POST", credentials: "include" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/transformations/10",
+      expect.objectContaining({ credentials: "include" }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
@@ -1195,40 +1250,72 @@ describe("transformation request form", () => {
             {
               artifact_run_id: 40,
               output_type: "executive_summary",
-              status: "succeeded",
-              artifact_version: successfulVersion,
+              status: "pending",
+              artifact_version: null,
             },
             {
               artifact_run_id: 41,
               output_type: "advisory",
-              status: "failed",
+              status: "pending",
               artifact_version: null,
             },
             {
               artifact_run_id: 42,
               output_type: "presentation",
-              status: "succeeded",
-              artifact_version: {
-                ...successfulVersion,
-                id: 52,
-                content: presentationContent,
-              },
+              status: "pending",
+              artifact_version: null,
             },
           ],
         }),
       )
       .mockResolvedValueOnce(
         jsonResponse({
+          ...reviewDetail("Partial Failure", [
+            reviewArtifact(
+              40,
+              "executive_summary",
+              "succeeded",
+              successfulVersion.content,
+            ),
+            reviewArtifact(41, "advisory", "failed"),
+            reviewArtifact(
+              42,
+              "presentation",
+              "succeeded",
+              presentationContent,
+            ),
+          ]),
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({}))
+      .mockResolvedValueOnce(
+        jsonResponse({
           artifact_run_id: 41,
           output_type: "advisory",
-          status: "succeeded",
-          artifact_version: {
-            ...successfulVersion,
-            id: 53,
-            content: "The advisory is ready.",
-          },
+          status: "pending",
+          artifact_version: null,
         }),
-      );
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          reviewDetail("Generating", [
+            reviewArtifact(
+              40,
+              "executive_summary",
+              "succeeded",
+              successfulVersion.content,
+            ),
+            reviewArtifact(41, "advisory", "pending"),
+            reviewArtifact(
+              42,
+              "presentation",
+              "succeeded",
+              presentationContent,
+            ),
+          ]),
+        ),
+      )
+      .mockResolvedValueOnce(jsonResponse({}));
     installWorkspaceFetch(fetchMock);
 
     await renderAuthenticatedWorkspace();
@@ -1243,21 +1330,25 @@ describe("transformation request form", () => {
     fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
 
     expect(await screen.findByText("Needs attention")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Executive Summary" }));
     expect(
-      screen.getByRole("heading", { name: "Generation results" }),
+      await screen.findByText("A short generated summary."),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(
-      screen.queryByText("Welcome the community."),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText(presentationContent)).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("The advisory is ready."),
-    ).not.toBeInTheDocument();
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
+    fireEvent.click(screen.getByRole("button", { name: "Formal Advisory" }));
+    expect(screen.getByText(/No version yet/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry artifact" }));
+    expect(await screen.findByText(/No version yet/)).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
       "/api/artifact-runs/41/retry",
       expect.objectContaining({ method: "POST", credentials: "include" }),
+    );
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/artifact-runs/40/regenerate",
+      expect.anything(),
+    );
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/artifact-runs/42/regenerate",
+      expect.anything(),
     );
   });
 

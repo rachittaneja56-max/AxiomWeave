@@ -210,14 +210,7 @@ export function NewTransformationScreen({
       const successful = body.artifacts.filter(
         (artifact: GeneratedArtifact) => artifact.status === "succeeded",
       );
-      const failed = body.artifacts.some(
-        (artifact: GeneratedArtifact) => artifact.status === "failed",
-      );
-      if (
-        successful.length > 0 &&
-        !failed &&
-        body.artifacts.length === transformation.output_types.length
-      ) {
+      if (body.artifacts.length > 0) {
         const preference: OutputType[] = [
           "executive_summary",
           "linkedin_post",
@@ -225,19 +218,20 @@ export function NewTransformationScreen({
           "advisory",
           "presentation",
         ];
-        const initial = preference
-          .map((type) =>
-            successful.find(
-              (artifact: GeneratedArtifact) => artifact.output_type === type,
-            ),
-          )
-          .find(Boolean);
+        const initial =
+          preference
+            .map((type) =>
+              successful.find(
+                (artifact: GeneratedArtifact) => artifact.output_type === type,
+              ),
+            )
+            .find(Boolean) ?? body.artifacts[0];
         queueMicrotask(() =>
           onOpenReview(
             transformation.transformation_run_id,
             deriveTransformationTitle(request.source_text),
             transformation.source_version.version_number,
-            initial?.output_type,
+            initial.output_type,
           ),
         );
       }

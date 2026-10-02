@@ -3,6 +3,7 @@ from typing import TypeVar
 
 from auth_support import login
 from fastapi.testclient import TestClient
+from generation_support import run_artifact_action, run_generation
 from pydantic import BaseModel
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -111,7 +112,7 @@ def test_edit_creates_immutable_version_and_review_state_updates_only_latest(
     login(client)
     install_provider(ReviewTestProvider())
     transformation_id = save_transformation(client, ["executive_summary"])
-    generated = client.post(f"/api/transformations/{transformation_id}/generate").json()
+    generated = run_generation(client, transformation_id, factory).json()
     artifact = generated["artifacts"][0]
     original_content = artifact["artifact_version"]["content"]
 
@@ -163,14 +164,14 @@ def test_edit_creates_immutable_version_and_review_state_updates_only_latest(
 def test_regenerate_creates_next_version_without_overwriting_history(
     auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
 ) -> None:
-    client, _engine, _factory = auth_database
+    client, _engine, factory = auth_database
     login(client)
     install_provider(ReviewTestProvider())
     transformation_id = save_transformation(client, ["executive_summary"])
-    first = client.post(f"/api/transformations/{transformation_id}/generate").json()
+    first = run_generation(client, transformation_id, factory).json()
     artifact = first["artifacts"][0]
 
-    regenerated = client.post(f"/api/artifact-runs/{artifact['artifact_run_id']}/regenerate")
+    regenerated = run_artifact_action(client, artifact["artifact_run_id"], "regenerate", factory)
 
     assert regenerated.status_code == 200
     assert regenerated.json()["artifact_version"]["version_number"] == 2
@@ -183,14 +184,39 @@ def test_regenerate_creates_next_version_without_overwriting_history(
     ]
 
 
+def test_manual_edit_does_not_override_an_active_job_status(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    install_provider(ReviewTestProvider())
+    transformation_id = save_transformation(client, ["executive_summary"])
+    generated = run_generation(client, transformation_id, factory).json()
+    artifact_run_id = generated["artifacts"][0]["artifact_run_id"]
+
+    queued = client.post(f"/api/artifact-runs/{artifact_run_id}/regenerate")
+    assert queued.status_code == 202
+    assert queued.json()["status"] == "pending"
+
+    edited = client.post(
+        f"/api/artifact-runs/{artifact_run_id}/versions",
+        json={"content": "Human edited while regeneration is queued."},
+    )
+    assert edited.status_code == 200
+    assert (
+        client.get(f"/api/transformations/{transformation_id}").json()["artifact_runs"][0]["status"]
+        == "pending"
+    )
+
+
 def test_presentation_edits_are_validated_and_saved_as_new_versions(
     auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
 ) -> None:
-    client, _engine, _factory = auth_database
+    client, _engine, factory = auth_database
     login(client)
     install_provider(ReviewTestProvider())
     transformation_id = save_transformation(client, ["presentation"])
-    generated = client.post(f"/api/transformations/{transformation_id}/generate").json()
+    generated = run_generation(client, transformation_id, factory).json()
     artifact = generated["artifacts"][0]
 
     invalid = client.post(

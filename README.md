@@ -21,7 +21,7 @@ Teams often rewrite the same authoritative material for several audiences and fo
 
 ## Architecture
 
-The application is a React/Vite frontend and a FastAPI/SQLAlchemy modular monolith backed by SQLite for local use. AxiomWeave uses first-party username/password authentication for the Tier-A MVP. Password authentication is not phishing-resistant; it is the selected demo authentication method. Phase 1B adds owner-scoped Source Packs with immutable versions and role-bearing source memberships (`PRIMARY`, `SUPPORTING`, `STYLE`, `REFERENCE`, `OPERATOR_CONTEXT`), plus addressable regions. The current Tier-A client still submits one primary text source; membership snapshots can preserve additional same-owner sources while retaining the SourceVersion projection required by existing generation and review code. Uploaded bytes use a private local storage directory configured by `SIH_PRIVATE_ASSET_DIR`; production object storage, semantic conflict resolution, and multimodal processing are not implemented. Generation uses the OpenAI Responses API through a provider boundary, with structured output for presentations, evidence proposals, discrepancy analysis, and targeted updates. `docs/architecture.md` gives the data and request flow.
+The application is a React/Vite frontend and a FastAPI/SQLAlchemy modular monolith backed by SQLite for local use. Artifact generation is queued as durable database Jobs and executed by a separate, statically scoped `model_io` worker with concurrency one per process. Job attempts and terminal state are stored in the same database; a lease expiry fails uncertain in-flight work for explicit retry. SQLite supports local demo use, while production-scale queue concurrency has not been demonstrated. AxiomWeave uses first-party username/password authentication for the Tier-A MVP. Password authentication is not phishing-resistant; it is the selected demo authentication method. Phase 1B adds owner-scoped Source Packs with immutable versions and role-bearing source memberships (`PRIMARY`, `SUPPORTING`, `STYLE`, `REFERENCE`, `OPERATOR_CONTEXT`), plus addressable regions. The current Tier-A client still submits one primary text source; membership snapshots can preserve additional same-owner sources while retaining the SourceVersion projection required by existing generation and review code. Uploaded bytes use a private local storage directory configured by `SIH_PRIVATE_ASSET_DIR`; production object storage, semantic conflict resolution, and multimodal processing are not implemented. Generation uses the OpenAI Responses API through a provider boundary, with structured output for presentations, evidence proposals, discrepancy analysis, and targeted updates. `docs/architecture.md` gives the data and request flow.
 
 Primary artifact generation uses `gpt-6-luna`; evidence and discrepancy analysis plus scanned-page OCR use `gpt-5-nano` by default. The server applies code-owned output-token limits and disables Responses API storage. Set `SIH_OPENAI_UTILITY_MODEL` to override the utility model. Only `OPENAI_API_KEY` configures model access. The provider cannot be selected by request data.
 
@@ -38,7 +38,16 @@ uv run alembic -c alembic.ini upgrade head
 uv run python -m app
 ```
 
-In another terminal:
+In a second terminal, run the generation worker:
+
+```powershell
+cd backend
+uv run python -m app.job_worker
+```
+
+Use `uv run python -m app.job_worker --once` to process at most one queued job and exit.
+
+In a third terminal, run the frontend:
 
 ```powershell
 cd frontend
