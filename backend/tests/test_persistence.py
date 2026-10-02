@@ -34,6 +34,7 @@ EXPECTED_TABLES = {
     "source_segments",
     "source_packs",
     "source_pack_versions",
+    "source_pack_memberships",
     "source_assets",
     "source_regions",
     "transformation_runs",
@@ -103,7 +104,7 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert set(inspector.get_table_names()) == EXPECTED_TABLES | {"alembic_version"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "d31b8f59a202"
+        assert revision == "e8a62c0916df"
     finally:
         engine.dispose()
 
@@ -279,8 +280,19 @@ def test_phase_one_a_source_pack_backfill_preserves_versions_segments_and_run(
             assets = (
                 connection.execute(
                     text(
-                        "SELECT source_pack_version_id, authority_role, source_kind, content_hash, "
+                        "SELECT id, source_pack_version_id, authority_role, source_kind, "
+                        "content_hash, "
                         "storage_key, extraction_method FROM source_assets ORDER BY id"
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            memberships = (
+                connection.execute(
+                    text(
+                        "SELECT source_pack_version_id, source_version_id, source_asset_id, "
+                        "ordinal, role FROM source_pack_memberships ORDER BY source_pack_version_id"
                     )
                 )
                 .mappings()
@@ -314,6 +326,15 @@ def test_phase_one_a_source_pack_backfill_preserves_versions_segments_and_run(
             source_content_hash(v2_text),
         ]
         assert [item["authority_role"] for item in assets] == ["authoritative", "authoritative"]
+        assert [
+            (
+                item["source_version_id"],
+                item["source_asset_id"],
+                item["ordinal"],
+                item["role"],
+            )
+            for item in memberships
+        ] == [(21, assets[0]["id"], 1, "PRIMARY"), (22, assets[1]["id"], 1, "PRIMARY")]
         assert [item["source_kind"] for item in assets] == ["text", "text"]
         assert [item["storage_key"] for item in assets] == [None, None]
         assert [item["content_hash"] for item in assets] == [

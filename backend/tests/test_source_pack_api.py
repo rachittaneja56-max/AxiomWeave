@@ -15,6 +15,7 @@ from app.models import (
     Source,
     SourceAsset,
     SourcePack,
+    SourcePackMembership,
     SourcePackVersion,
     SourceVersion,
     User,
@@ -25,11 +26,12 @@ from app.private_asset_storage import (
     LocalPrivateAssetStore,
     StoredPrivateAsset,
 )
+from app.source_roles import source_role_policy, validate_source_role
 from app.source_versions import (
+    SourcePackMembershipInput,
     create_source_pack_version,
     safe_original_filename,
     segment_source_text,
-    validate_authority_role,
 )
 from app.url_import import URLImportResult
 
@@ -71,7 +73,8 @@ def test_pasted_transformation_creates_inspectable_pack_and_regions(
     assert version["version_number"] == 1
     assert version["source_version_id"] == saved.json()["source_version"]["id"]
     assert version["content_hash"] == saved.json()["source_version"]["content_hash"]
-    assert asset["authority_role"] == "authoritative"
+    assert version["memberships"][0]["role"] == "PRIMARY"
+    assert version["memberships"][0]["source_version_id"] == version["source_version_id"]
     assert asset["source_kind"] == "text"
     assert asset["original_filename"] is None
     assert asset["content_hash"] == sha256(source_text.encode("utf-8")).hexdigest()
@@ -129,7 +132,7 @@ def test_file_upload_retains_private_bytes_and_reuses_legacy_projection(
     pack = authorized_client.get(
         f"/api/transformations/{saved.json()['transformation_run_id']}/source-pack"
     )
-    returned_asset = pack.json()["versions"][0]["assets"][0]
+    returned_asset = pack.json()["versions"][0]["memberships"][0]["asset"]
     assert returned_asset["content_hash"] == sha256(content).hexdigest()
     assert "storage_key" not in returned_asset
 
@@ -206,7 +209,7 @@ def test_pdf_regions_keep_page_locators_and_page_numbers(authorized_client: Test
     pack = authorized_client.get(
         f"/api/transformations/{saved.json()['transformation_run_id']}/source-pack"
     )
-    regions = pack.json()["versions"][0]["assets"][0]["regions"]
+    regions = pack.json()["versions"][0]["memberships"][0]["asset"]["regions"]
     assert regions[0]["locator"] == "page:1"
     assert regions[0]["region_type"] == "page"
     assert regions[0]["page_number"] == 1
@@ -243,7 +246,7 @@ def test_url_import_persists_validated_provenance_without_fake_file(
     pack = authorized_client.get(
         f"/api/transformations/{saved.json()['transformation_run_id']}/source-pack"
     )
-    asset = pack.json()["versions"][0]["assets"][0]
+    asset = pack.json()["versions"][0]["memberships"][0]["asset"]
     assert asset["source_kind"] == "url"
     assert asset["provenance_url"] == "https://example.com/final-article"
     assert asset["original_filename"] is None
@@ -351,11 +354,155 @@ def test_storage_keys_are_opaque_and_filename_is_only_metadata(tmp_path: Path) -
         store.read("f" * 32)
 
 
-def test_authority_and_page_region_rules_are_small_and_deterministic() -> None:
-    assert validate_authority_role("authoritative") == "authoritative"
-    assert validate_authority_role("supporting") == "supporting"
-    with pytest.raises(ValueError, match="authority role"):
-        validate_authority_role("model_decides")
+def test_source_roles_are_validated_and_have_explicit_policy() -> None:
+    roles = ("PRIMARY", "SUPPORTING", "STYLE", "REFERENCE", "OPERATOR_CONTEXT")
+    assert [validate_source_role(role) for role in roles] == list(roles)
+    with pytest.raises(ValueError, match="membership role"):
+        validate_source_role("model_decides")
+
+    primary = source_role_policy("PRIMARY")
+    assert primary.may_ground_facts and primary.factual_by_default
+    supporting = source_role_policy("SUPPORTING")
+    assert supporting.may_ground_facts and supporting.may_contextualize
+    assert supporting.conflict_requires_review
+    style = source_role_policy("STYLE")
+    assert style.controls_presentation and not style.may_ground_facts
+    reference = source_role_policy("REFERENCE")
+    assert not reference.factual_by_default and not reference.may_ground_facts
+    operator_context = source_role_policy("OPERATOR_CONTEXT")
+    assert operator_context.controls_task and not operator_context.may_ground_facts
+
+
+def test_pack_version_contains_multiple_exact_role_memberships_and_revisions_inherit_them(
+    authorized_client: TestClient,
+    auth_database: tuple[TestClient, object, sessionmaker[Session]],
+) -> None:
+    _client, _engine, factory = auth_database
+    with factory() as session:
+        owner = session.scalar(select(User).order_by(User.id))
+        assert owner is not None
+        primary = create_source_pack_version(session, owner.id, "Primary source.")
+        members = [
+            create_source_pack_version(session, owner.id, f"{role} source.")
+            for role in ("SUPPORTING", "STYLE", "REFERENCE", "OPERATOR_CONTEXT")
+        ]
+        additional_memberships = [
+            SourcePackMembershipInput(
+                source_version_id=write.source_version.id,
+                source_asset_id=write.asset.id,
+                role=role,
+            )
+            for role, write in zip(
+                ("SUPPORTING", "STYLE", "REFERENCE", "OPERATOR_CONTEXT"), members, strict=True
+            )
+        ]
+        snapshot = create_source_pack_version(
+            session,
+            owner.id,
+            "Primary source, revision one.",
+            source=primary.source,
+            parent_source_version_id=primary.source_version.id,
+            memberships=additional_memberships,
+        )
+        session.commit()
+        snapshot_id = snapshot.source_pack_version.id
+        snapshot_version_id = snapshot.source_version.id
+        expected_memberships = [
+            (snapshot.source_version.id, snapshot.asset.id, "PRIMARY"),
+            *[
+                (write.source_version.id, write.asset.id, role)
+                for role, write in zip(
+                    ("SUPPORTING", "STYLE", "REFERENCE", "OPERATOR_CONTEXT"),
+                    members,
+                    strict=True,
+                )
+            ],
+        ]
+        assert [
+            (member.source_version_id, member.source_asset_id, member.role)
+            for member in session.scalars(
+                select(SourcePackMembership)
+                .where(SourcePackMembership.source_pack_version_id == snapshot_id)
+                .order_by(SourcePackMembership.ordinal)
+            ).all()
+        ] == expected_memberships
+
+    saved = authorized_client.post(
+        "/api/transformations",
+        json=_transformation_request("Primary source, revision one.", snapshot_version_id),
+    )
+    assert saved.status_code == 200
+    inspected = authorized_client.get(
+        f"/api/transformations/{saved.json()['transformation_run_id']}/source-pack"
+    )
+    version = inspected.json()["versions"][1]
+    assert [member["role"] for member in version["memberships"]] == [
+        "PRIMARY",
+        "SUPPORTING",
+        "STYLE",
+        "REFERENCE",
+        "OPERATOR_CONTEXT",
+    ]
+    assert [member["source_version_id"] for member in version["memberships"]] == [
+        snapshot_version_id,
+        *[write.source_version.id for write in members],
+    ]
+
+    with factory() as session:
+        next_revision = create_source_pack_version(
+            session,
+            primary.source.owner_id,
+            "Primary source, revision two.",
+            source=primary.source,
+            parent_source_version_id=snapshot_version_id,
+        )
+        session.commit()
+        inherited = list(
+            session.scalars(
+                select(SourcePackMembership)
+                .where(
+                    SourcePackMembership.source_pack_version_id
+                    == next_revision.source_pack_version.id
+                )
+                .order_by(SourcePackMembership.ordinal)
+            ).all()
+        )
+        assert [member.role for member in inherited] == [
+            "PRIMARY",
+            "SUPPORTING",
+            "STYLE",
+            "REFERENCE",
+            "OPERATOR_CONTEXT",
+        ]
+
+
+def test_pack_membership_rejects_a_source_owned_by_another_user(
+    auth_database: tuple[TestClient, object, sessionmaker[Session]],
+) -> None:
+    _client, _engine, factory = auth_database
+    with factory() as session:
+        owner = User(username="member_owner", password_hash="!disabled-test!")
+        other_owner = User(username="member_other", password_hash="!disabled-test!")
+        session.add_all([owner, other_owner])
+        session.flush()
+        primary = create_source_pack_version(session, owner.id, "Primary source.")
+        foreign = create_source_pack_version(session, other_owner.id, "Foreign source.")
+        with pytest.raises(ValueError, match="authenticated owner"):
+            create_source_pack_version(
+                session,
+                owner.id,
+                "Revised primary source.",
+                source=primary.source,
+                parent_source_version_id=primary.source_version.id,
+                memberships=[
+                    SourcePackMembershipInput(
+                        source_version_id=foreign.source_version.id,
+                        source_asset_id=foreign.asset.id,
+                        role="SUPPORTING",
+                    )
+                ],
+            )
+        session.rollback()
     assert segment_source_text("# Page 3\n\nEvidence text.") == [
         ("page:3", "# Page 3"),
         ("page:3:paragraph:1", "Evidence text."),

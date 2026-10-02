@@ -1,4 +1,5 @@
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Literal
@@ -11,6 +12,7 @@ from app.models import (
     Source,
     SourceAsset,
     SourcePack,
+    SourcePackMembership,
     SourcePackVersion,
     SourceRegion,
     SourceSegment,
@@ -19,8 +21,8 @@ from app.models import (
     utc_now,
 )
 from app.private_asset_storage import PrivateAssetStore, get_private_asset_store
+from app.source_roles import SourceRole, validate_source_role
 
-AuthorityRole = Literal["authoritative", "supporting"]
 SourceKind = Literal["text", "file", "url"]
 
 
@@ -32,7 +34,13 @@ class SourceAssetInput:
     raw_bytes: bytes | None = None
     provenance_url: str | None = None
     extraction_method: str = "pasted_text"
-    authority_role: AuthorityRole = "authoritative"
+
+
+@dataclass(frozen=True, slots=True)
+class SourcePackMembershipInput:
+    source_version_id: int
+    source_asset_id: int
+    role: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,12 +106,6 @@ def segment_source_text(source_text: str) -> list[tuple[str, str]]:
     return segments
 
 
-def validate_authority_role(value: str) -> AuthorityRole:
-    if value not in {"authoritative", "supporting"}:
-        raise ValueError("Source authority role is invalid")
-    return value  # type: ignore[return-value]
-
-
 def safe_original_filename(filename: str | None) -> str | None:
     if filename is None:
         return None
@@ -131,13 +133,13 @@ def create_source_pack_version(
     *,
     source: Source | None = None,
     parent_source_version_id: int | None = None,
+    memberships: Sequence[SourcePackMembershipInput] | None = None,
     asset_input: SourceAssetInput | None = None,
     storage: PrivateAssetStore | None = None,
 ) -> SourceVersionWrite:
     """Write one pack snapshot and its required legacy text projection together."""
     canonical_text = normalize_source_text(source_text)
     asset_input = asset_input or SourceAssetInput()
-    role = validate_authority_role(asset_input.authority_role)
     if len(asset_input.media_type) > 127 or len(asset_input.extraction_method) > 40:
         raise ValueError("Source asset metadata exceeds its supported length")
     if asset_input.source_kind == "file" and asset_input.raw_bytes is None:
@@ -207,6 +209,26 @@ def create_source_pack_version(
     if latest_source_version != latest_pack_version:
         raise ValueError("Source pack and legacy source version history are inconsistent")
 
+    if memberships is None and parent_pack_version is not None:
+        inherited = session.scalars(
+            select(SourcePackMembership)
+            .where(
+                SourcePackMembership.source_pack_version_id == parent_pack_version.id,
+                SourcePackMembership.role != "PRIMARY",
+            )
+            .order_by(SourcePackMembership.ordinal)
+        ).all()
+        additional_memberships = [
+            SourcePackMembershipInput(
+                source_version_id=member.source_version_id,
+                source_asset_id=member.source_asset_id,
+                role=member.role,
+            )
+            for member in inherited
+        ]
+    else:
+        additional_memberships = list(memberships or ())
+
     created_at = utc_now()
     source_version = SourceVersion(
         source_id=source.id,
@@ -249,7 +271,7 @@ def create_source_pack_version(
 
         asset = SourceAsset(
             source_pack_version_id=source_pack_version.id,
-            authority_role=role,
+            legacy_authority_role="authoritative",
             source_kind=asset_input.source_kind,
             media_type=asset_input.media_type,
             original_filename=safe_original_filename(asset_input.original_filename),
@@ -287,6 +309,60 @@ def create_source_pack_version(
                 text=segment.segment_text,
             )
             for segment in segments
+        )
+        session.flush()
+
+        members: list[tuple[int, int, SourceRole]] = [(source_version.id, asset.id, "PRIMARY")]
+        for member in additional_memberships:
+            role = validate_source_role(member.role)
+            if role == "PRIMARY":
+                raise ValueError("The new source version is the only PRIMARY membership")
+            if member.source_version_id == source_version.id:
+                raise ValueError("A source version can appear only once in a pack snapshot")
+            source_version_owner = session.scalar(
+                select(Source.id)
+                .join(SourceVersion, SourceVersion.source_id == Source.id)
+                .where(SourceVersion.id == member.source_version_id, Source.owner_id == owner_id)
+            )
+            matching_asset = session.scalar(
+                select(SourceAsset.id)
+                .join(
+                    SourcePackVersion,
+                    SourcePackVersion.id == SourceAsset.source_pack_version_id,
+                )
+                .join(SourcePack, SourcePack.id == SourcePackVersion.source_pack_id)
+                .where(
+                    SourceAsset.id == member.source_asset_id,
+                    SourcePack.owner_id == owner_id,
+                    SourcePackVersion.source_version_id == member.source_version_id,
+                )
+            )
+            if source_version_owner is None or matching_asset is None:
+                raise ValueError(
+                    "Membership source and asset must belong to the authenticated owner"
+                )
+            members.append((member.source_version_id, member.source_asset_id, role))
+
+        source_version_ids = [member[0] for member in members]
+        source_asset_ids = [member[1] for member in members]
+        if len(source_version_ids) != len(set(source_version_ids)):
+            raise ValueError("A source version can appear only once in a pack snapshot")
+        if len(source_asset_ids) != len(set(source_asset_ids)):
+            raise ValueError("A source asset can appear only once in a pack snapshot")
+        session.add_all(
+            SourcePackMembership(
+                source_pack_version_id=source_pack_version.id,
+                source_version_id=member_source_version_id,
+                source_asset_id=member_asset_id,
+                ordinal=ordinal,
+                role=member_role,
+                created_at=created_at,
+            )
+            for ordinal, (
+                member_source_version_id,
+                member_asset_id,
+                member_role,
+            ) in enumerate(members, 1)
         )
         session.flush()
     except Exception:

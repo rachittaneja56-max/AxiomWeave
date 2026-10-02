@@ -6,10 +6,12 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -126,6 +128,49 @@ class SourcePackVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class SourcePackMembership(Base):
+    """One exact source version and asset assigned a role in a pack snapshot."""
+
+    __tablename__ = "source_pack_memberships"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_pack_version_id", "source_version_id", name="uq_pack_member_source_version"
+        ),
+        UniqueConstraint(
+            "source_pack_version_id", "source_asset_id", name="uq_pack_member_source_asset"
+        ),
+        UniqueConstraint(
+            "source_pack_version_id", "ordinal", name="uq_pack_member_version_ordinal"
+        ),
+        CheckConstraint(
+            "role IN ('PRIMARY', 'SUPPORTING', 'STYLE', 'REFERENCE', 'OPERATOR_CONTEXT')",
+            name="ck_source_pack_membership_role",
+        ),
+        CheckConstraint("ordinal > 0", name="ck_source_pack_membership_positive_ordinal"),
+        Index(
+            "uq_source_pack_membership_primary",
+            "source_pack_version_id",
+            unique=True,
+            sqlite_where=text("role = 'PRIMARY'"),
+            postgresql_where=text("role = 'PRIMARY'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_pack_version_id: Mapped[int] = mapped_column(
+        ForeignKey("source_pack_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_version_id: Mapped[int] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_asset_id: Mapped[int] = mapped_column(
+        ForeignKey("source_assets.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class SourceSegment(Base):
     __tablename__ = "source_segments"
     __table_args__ = (
@@ -161,7 +206,9 @@ class SourceAsset(Base):
     source_pack_version_id: Mapped[int] = mapped_column(
         ForeignKey("source_pack_versions.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    authority_role: Mapped[str] = mapped_column(String(24), nullable=False)
+    # Retained for existing rows and migration compatibility. Snapshot authority is stored on
+    # SourcePackMembership; this legacy value must not be used to determine factual authority.
+    legacy_authority_role: Mapped[str] = mapped_column("authority_role", String(24), nullable=False)
     source_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     media_type: Mapped[str] = mapped_column(String(127), nullable=False)
     original_filename: Mapped[str | None] = mapped_column(String(255))

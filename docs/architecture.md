@@ -17,7 +17,8 @@ Paste / TXT / MD / DOCX / PDF / one public URL
   -> text or DOCX extraction; PDF native text extraction page by page
   -> OCR/Vision fallback only for PDF pages with under 40 usable native characters
   -> owner-scoped SourcePack -> immutable SourcePackVersion
-  -> authoritative SourceAsset -> addressable SourceRegions
+  -> immutable source memberships (PRIMARY / SUPPORTING / STYLE / REFERENCE / OPERATOR_CONTEXT)
+  -> exact SourceVersion + SourceAsset -> addressable SourceRegions
   -> compatibility SourceVersion + SHA-256 + SourceSegments
   -> TransformationRun (separate context and communication controls)
   -> ArtifactRun per selected format -> immutable ArtifactVersion history
@@ -37,7 +38,9 @@ The server owns model choice and API key. Primary artifact generation and target
 
 Document uploads are bounded: text is capped at 80 KiB; DOCX and PDF at 8 MiB; PDFs at 20 pages; OCR fallback at 8 pages; normalized extracted text at 20,000 characters. PDF text retains `# Page N` markers and its regions retain page locators. Encrypted, corrupt, and empty PDFs are rejected. Original uploads are stored under server-generated keys in the private local directory configured by `SIH_PRIVATE_ASSET_DIR`; that directory is not served by FastAPI. Rendered OCR images are temporary. If the database transaction fails, the app attempts to delete the prepared file; a filesystem failure during that cleanup can leave an unreferenced private file for manual cleanup. The storage boundary is local-development only; no production object-store adapter is deployed.
 
-The additive Phase 1B migration backfills each existing `Source`, `SourceVersion`, and `SourceSegment` into a SourcePack, SourcePackVersion, text SourceAsset, and SourceRegion. Historical raw uploads are not reconstructed. New source writes go through one snapshot writer that creates the pack records and their required legacy projection in the same database transaction. Existing generation, evidence, and revision code continues to read the legacy projection.
+Each pack snapshot has one `PRIMARY` member; an ordered membership row names the exact source version and asset assigned to that snapshot. Additional sources may be `SUPPORTING`, `STYLE`, `REFERENCE`, or `OPERATOR_CONTEXT`. The server validates the role, source/asset pairing, and common owner before writing memberships. The deterministic role policy permits PRIMARY to ground facts; SUPPORTING can ground or contextualize, but conflicts with PRIMARY require review rather than silent override; STYLE controls presentation only; REFERENCE is non-factual by default; OPERATOR_CONTEXT controls the task, not source truth. This policy does not implement semantic conflict detection or resolution.
+
+The additive Phase 1B migrations backfill each existing `Source`, `SourceVersion`, and `SourceSegment` into a SourcePack, SourcePackVersion, text SourceAsset, SourceRegion, and one `PRIMARY` membership linking the exact legacy version and asset. Historical raw uploads are not reconstructed. New source writes go through one snapshot writer that creates the pack records, membership snapshot, and required legacy projection in the same database transaction. A revision appends a pack version and carries forward non-primary members unless its server caller explicitly supplies a replacement membership set. Existing generation, evidence, and revision code continues to read the legacy projection. The old asset-level authority column remains only for migration compatibility; membership roles are canonical.
 
 ## Review, evidence, and discrepancies
 

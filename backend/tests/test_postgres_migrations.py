@@ -20,6 +20,7 @@ from app.models import (
     Source,
     SourceAsset,
     SourcePack,
+    SourcePackMembership,
     SourcePackVersion,
     SourceRegion,
     SourceSegment,
@@ -28,7 +29,12 @@ from app.models import (
     User,
     source_content_hash,
 )
-from app.source_versions import SourceAssetInput, create_source_pack_version, create_source_version
+from app.source_versions import (
+    SourceAssetInput,
+    SourcePackMembershipInput,
+    create_source_pack_version,
+    create_source_version,
+)
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_TEST_URL_ENV = "AXIOMWEAVE_TEST_POSTGRES_URL"
@@ -211,7 +217,7 @@ def test_postgres_populated_legacy_auth_upgrade_preserves_data(
                 text("SELECT owner_id FROM sources WHERE title = 'Legacy source'")
             )
 
-        assert revision == "d31b8f59a202"
+        assert revision == "e8a62c0916df"
         assert user["id"] == 42
         assert user["username"] == "legacy-migrated-42"
         assert user["password_hash"] == "!disabled-legacy-google!"
@@ -257,7 +263,7 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
         } <= set(inspector.get_table_names())
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "d31b8f59a202"
+        assert revision == "e8a62c0916df"
 
         unique_constraints = inspector.get_unique_constraints("artifact_runs")
         assert "uq_artifact_runs_transformation_output" in {
@@ -364,6 +370,16 @@ def test_postgres_phase_one_a_backfill_preserves_version_parent_and_transformati
                     "WHERE source_segment_id BETWEEN 704 AND 707"
                 )
             )
+            memberships = (
+                connection.execute(
+                    text(
+                        "SELECT source_version_id, source_asset_id, role "
+                        "FROM source_pack_memberships ORDER BY source_version_id"
+                    )
+                )
+                .mappings()
+                .all()
+            )
             transformation_source_id = connection.scalar(
                 text("SELECT source_version_id FROM transformation_runs WHERE id = 708")
             )
@@ -374,6 +390,10 @@ def test_postgres_phase_one_a_backfill_preserves_version_parent_and_transformati
         assert versions[1]["parent_source_pack_version_id"] == versions[0]["id"]
         assert [item["version_number"] for item in versions] == [1, 2]
         assert region_count == 4
+        assert [(item["source_version_id"], item["role"]) for item in memberships] == [
+            (702, "PRIMARY"),
+            (703, "PRIMARY"),
+        ]
         assert transformation_source_id == 703
     finally:
         engine.dispose()
@@ -670,7 +690,7 @@ def test_postgres_source_pack_constraints_and_append_only_versioning(
                 .order_by(SourceRegion.ordinal)
             ).all()
         )
-        assert first_asset.authority_role == "authoritative"
+        assert first_asset.legacy_authority_role == "authoritative"
         assert [region.locator for region in regions] == ["heading:1", "paragraph:1"]
 
         second = create_source_pack_version(
@@ -711,7 +731,7 @@ def test_postgres_source_pack_constraints_and_append_only_versioning(
 
         invalid_role = SourceAsset(
             source_pack_version_id=second.source_pack_version.id,
-            authority_role="model_decides",
+            legacy_authority_role="model_decides",
             source_kind="text",
             media_type="text/plain",
             byte_size=1,
@@ -731,3 +751,92 @@ def test_postgres_source_pack_constraints_and_append_only_versioning(
             ).all()
         )
         assert [version.version_number for version in persisted_versions] == [1, 2]
+
+
+def test_postgres_source_pack_memberships_roles_and_owner_validation(
+    postgres_runtime_sessions: sessionmaker[Session],
+) -> None:
+    with postgres_runtime_sessions() as session:
+        owner = User(username="pg_member_owner", password_hash="!disabled-test!")
+        other_owner = User(username="pg_member_other", password_hash="!disabled-test!")
+        session.add_all([owner, other_owner])
+        session.flush()
+        primary = create_source_pack_version(session, owner.id, "Primary version one.")
+        supporting = create_source_pack_version(session, owner.id, "Supporting source.")
+        style = create_source_pack_version(session, owner.id, "Style source.")
+        reference = create_source_pack_version(session, owner.id, "Reference source.")
+        operator_context = create_source_pack_version(session, owner.id, "Task context.")
+        foreign = create_source_pack_version(session, other_owner.id, "Foreign source.")
+        extras = [
+            (supporting, "SUPPORTING"),
+            (style, "STYLE"),
+            (reference, "REFERENCE"),
+            (operator_context, "OPERATOR_CONTEXT"),
+        ]
+        snapshot = create_source_pack_version(
+            session,
+            owner.id,
+            "Primary version two.",
+            source=primary.source,
+            parent_source_version_id=primary.source_version.id,
+            memberships=[
+                SourcePackMembershipInput(
+                    source_version_id=source.source_version.id,
+                    source_asset_id=source.asset.id,
+                    role=role,
+                )
+                for source, role in extras
+            ],
+        )
+        session.commit()
+
+        members = list(
+            session.scalars(
+                select(SourcePackMembership)
+                .where(
+                    SourcePackMembership.source_pack_version_id == snapshot.source_pack_version.id
+                )
+                .order_by(SourcePackMembership.ordinal)
+            ).all()
+        )
+        assert [member.role for member in members] == [
+            "PRIMARY",
+            "SUPPORTING",
+            "STYLE",
+            "REFERENCE",
+            "OPERATOR_CONTEXT",
+        ]
+        assert [member.source_version_id for member in members] == [
+            snapshot.source_version.id,
+            *[source.source_version.id for source, _role in extras],
+        ]
+
+        with pytest.raises(ValueError, match="authenticated owner"):
+            create_source_pack_version(
+                session,
+                owner.id,
+                "Invalid cross-owner snapshot.",
+                source=primary.source,
+                parent_source_version_id=snapshot.source_version.id,
+                memberships=[
+                    SourcePackMembershipInput(
+                        source_version_id=foreign.source_version.id,
+                        source_asset_id=foreign.asset.id,
+                        role="SUPPORTING",
+                    )
+                ],
+            )
+        session.rollback()
+
+        with pytest.raises(IntegrityError):
+            with session.begin_nested():
+                session.add(
+                    SourcePackMembership(
+                        source_pack_version_id=snapshot.source_pack_version.id,
+                        source_version_id=foreign.source_version.id,
+                        source_asset_id=foreign.asset.id,
+                        ordinal=6,
+                        role="MODEL_DECIDES",
+                    )
+                )
+                session.flush()

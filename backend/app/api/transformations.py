@@ -19,6 +19,7 @@ from app.models import (
     Source,
     SourceAsset,
     SourcePack,
+    SourcePackMembership,
     SourcePackVersion,
     SourceRegion,
     SourceSegment,
@@ -101,7 +102,6 @@ class SourceRegionInspection(BaseModel):
 
 class SourceAssetInspection(BaseModel):
     id: int
-    authority_role: Literal["authoritative", "supporting"]
     source_kind: Literal["text", "file", "url"]
     media_type: str
     original_filename: str | None
@@ -112,6 +112,15 @@ class SourceAssetInspection(BaseModel):
     regions: list[SourceRegionInspection]
 
 
+class SourcePackMembershipInspection(BaseModel):
+    id: int
+    source_version_id: int
+    source_asset_id: int
+    ordinal: int
+    role: Literal["PRIMARY", "SUPPORTING", "STYLE", "REFERENCE", "OPERATOR_CONTEXT"]
+    asset: SourceAssetInspection
+
+
 class SourcePackVersionInspection(BaseModel):
     id: int
     source_version_id: int
@@ -120,6 +129,7 @@ class SourcePackVersionInspection(BaseModel):
     content_hash: str
     created_at: datetime
     assets: list[SourceAssetInspection]
+    memberships: list[SourcePackMembershipInspection]
 
 
 class SourcePackInspection(BaseModel):
@@ -362,6 +372,37 @@ def get_transformation_source_pack(
         ).all()
     )
     versions: list[SourcePackVersionInspection] = []
+
+    def inspect_asset(asset: SourceAsset) -> SourceAssetInspection:
+        regions = list(
+            session.scalars(
+                select(SourceRegion)
+                .where(SourceRegion.source_asset_id == asset.id)
+                .order_by(SourceRegion.ordinal)
+            ).all()
+        )
+        return SourceAssetInspection(
+            id=asset.id,
+            source_kind=cast(Literal["text", "file", "url"], asset.source_kind),
+            media_type=asset.media_type,
+            original_filename=asset.original_filename,
+            byte_size=asset.byte_size,
+            content_hash=asset.content_hash,
+            provenance_url=asset.provenance_url,
+            extraction_method=asset.extraction_method,
+            regions=[
+                SourceRegionInspection(
+                    id=region.id,
+                    ordinal=region.ordinal,
+                    locator=region.locator,
+                    region_type=region.region_type,
+                    page_number=region.page_number,
+                    text=region.text,
+                )
+                for region in regions
+            ],
+        )
+
     for pack_version in pack_versions:
         assets = list(
             session.scalars(
@@ -370,39 +411,40 @@ def get_transformation_source_pack(
                 .order_by(SourceAsset.id)
             ).all()
         )
-        asset_views: list[SourceAssetInspection] = []
-        for asset in assets:
-            regions = list(
-                session.scalars(
-                    select(SourceRegion)
-                    .where(SourceRegion.source_asset_id == asset.id)
-                    .order_by(SourceRegion.ordinal)
-                ).all()
+        asset_views = [inspect_asset(asset) for asset in assets]
+        memberships = session.execute(
+            select(SourcePackMembership, SourceAsset)
+            .join(SourceAsset, SourceAsset.id == SourcePackMembership.source_asset_id)
+            .join(SourcePackVersion, SourcePackVersion.id == SourceAsset.source_pack_version_id)
+            .join(SourcePack, SourcePack.id == SourcePackVersion.source_pack_id)
+            .join(SourceVersion, SourceVersion.id == SourcePackMembership.source_version_id)
+            .join(Source, Source.id == SourceVersion.source_id)
+            .where(
+                SourcePackMembership.source_pack_version_id == pack_version.id,
+                SourcePack.owner_id == user.id,
+                Source.owner_id == user.id,
             )
-            asset_views.append(
-                SourceAssetInspection(
-                    id=asset.id,
-                    authority_role=cast(
-                        Literal["authoritative", "supporting"], asset.authority_role
+            .order_by(SourcePackMembership.ordinal)
+        ).all()
+        membership_views: list[SourcePackMembershipInspection] = []
+        for membership, source_asset in memberships:
+            membership_views.append(
+                SourcePackMembershipInspection(
+                    id=membership.id,
+                    source_version_id=membership.source_version_id,
+                    source_asset_id=membership.source_asset_id,
+                    ordinal=membership.ordinal,
+                    role=cast(
+                        Literal[
+                            "PRIMARY",
+                            "SUPPORTING",
+                            "STYLE",
+                            "REFERENCE",
+                            "OPERATOR_CONTEXT",
+                        ],
+                        membership.role,
                     ),
-                    source_kind=cast(Literal["text", "file", "url"], asset.source_kind),
-                    media_type=asset.media_type,
-                    original_filename=asset.original_filename,
-                    byte_size=asset.byte_size,
-                    content_hash=asset.content_hash,
-                    provenance_url=asset.provenance_url,
-                    extraction_method=asset.extraction_method,
-                    regions=[
-                        SourceRegionInspection(
-                            id=region.id,
-                            ordinal=region.ordinal,
-                            locator=region.locator,
-                            region_type=region.region_type,
-                            page_number=region.page_number,
-                            text=region.text,
-                        )
-                        for region in regions
-                    ],
+                    asset=inspect_asset(source_asset),
                 )
             )
         versions.append(
@@ -414,6 +456,7 @@ def get_transformation_source_pack(
                 content_hash=pack_version.content_hash,
                 created_at=pack_version.created_at,
                 assets=asset_views,
+                memberships=membership_views,
             )
         )
     return SourcePackInspection(
