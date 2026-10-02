@@ -24,6 +24,7 @@ from app.private_asset_storage import PrivateAssetStore, get_private_asset_store
 from app.source_roles import SourceRole, validate_source_role
 
 SourceKind = Literal["text", "file", "url"]
+ExtractionCoverage = Literal["complete", "partial"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +35,9 @@ class SourceAssetInput:
     raw_bytes: bytes | None = None
     provenance_url: str | None = None
     extraction_method: str = "pasted_text"
+    extraction_profile: str = "text"
+    extraction_profile_version: int = 1
+    extraction_coverage: ExtractionCoverage = "complete"
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,8 +144,17 @@ def create_source_pack_version(
     """Write one pack snapshot and its required legacy text projection together."""
     canonical_text = normalize_source_text(source_text)
     asset_input = asset_input or SourceAssetInput()
-    if len(asset_input.media_type) > 127 or len(asset_input.extraction_method) > 40:
+    if (
+        len(asset_input.media_type) > 127
+        or len(asset_input.extraction_method) > 40
+        or len(asset_input.extraction_profile) > 40
+    ):
         raise ValueError("Source asset metadata exceeds its supported length")
+    if asset_input.extraction_profile_version < 1 or asset_input.extraction_coverage not in {
+        "complete",
+        "partial",
+    }:
+        raise ValueError("Source asset extraction metadata is invalid")
     if asset_input.source_kind == "file" and asset_input.raw_bytes is None:
         raise ValueError("Uploaded source assets require their original bytes")
     if asset_input.source_kind != "file" and asset_input.raw_bytes is not None:
@@ -280,6 +293,9 @@ def create_source_pack_version(
             storage_key=storage_key,
             provenance_url=asset_input.provenance_url,
             extraction_method=asset_input.extraction_method,
+            extraction_profile=asset_input.extraction_profile,
+            extraction_profile_version=asset_input.extraction_profile_version,
+            extraction_coverage=asset_input.extraction_coverage,
             created_at=created_at,
         )
         session.add(asset)

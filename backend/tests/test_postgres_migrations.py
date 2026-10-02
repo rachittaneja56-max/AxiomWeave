@@ -217,7 +217,7 @@ def test_postgres_populated_legacy_auth_upgrade_preserves_data(
                 text("SELECT owner_id FROM sources WHERE title = 'Legacy source'")
             )
 
-        assert revision == "e8a62c0916df"
+        assert revision == "a17c0f5e2d91"
         assert user["id"] == 42
         assert user["username"] == "legacy-migrated-42"
         assert user["password_hash"] == "!disabled-legacy-google!"
@@ -263,7 +263,18 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
         } <= set(inspector.get_table_names())
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "e8a62c0916df"
+        assert revision == "a17c0f5e2d91"
+        asset_columns = {
+            column["name"]: column for column in inspector.get_columns("source_assets")
+        }
+        assert asset_columns["extraction_profile"]["nullable"] is False
+        assert asset_columns["extraction_profile_version"]["nullable"] is False
+        assert asset_columns["extraction_coverage"]["nullable"] is False
+        region_columns = {
+            column["name"]: column for column in inspector.get_columns("source_regions")
+        }
+        assert region_columns["source_segment_id"]["nullable"] is True
+        assert region_columns["text"]["nullable"] is True
 
         unique_constraints = inspector.get_unique_constraints("artifact_runs")
         assert "uq_artifact_runs_transformation_output" in {
@@ -737,6 +748,9 @@ def test_postgres_source_pack_constraints_and_append_only_versioning(
             byte_size=1,
             content_hash="a" * 64,
             extraction_method="test",
+            extraction_profile="text",
+            extraction_profile_version=1,
+            extraction_coverage="complete",
         )
         with pytest.raises(IntegrityError):
             with session.begin_nested():

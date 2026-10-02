@@ -93,11 +93,12 @@ class TransformationDetail(BaseModel):
 
 class SourceRegionInspection(BaseModel):
     id: int
+    source_segment_id: int | None
     ordinal: int
     locator: str
     region_type: str
     page_number: int | None
-    text: str
+    text: str | None
 
 
 class SourceAssetInspection(BaseModel):
@@ -109,6 +110,9 @@ class SourceAssetInspection(BaseModel):
     content_hash: str
     provenance_url: str | None
     extraction_method: str
+    extraction_profile: str
+    extraction_profile_version: int
+    extraction_coverage: Literal["complete", "partial"]
     regions: list[SourceRegionInspection]
 
 
@@ -390,9 +394,13 @@ def get_transformation_source_pack(
             content_hash=asset.content_hash,
             provenance_url=asset.provenance_url,
             extraction_method=asset.extraction_method,
+            extraction_profile=asset.extraction_profile,
+            extraction_profile_version=asset.extraction_profile_version,
+            extraction_coverage=cast(Literal["complete", "partial"], asset.extraction_coverage),
             regions=[
                 SourceRegionInspection(
                     id=region.id,
+                    source_segment_id=region.source_segment_id,
                     ordinal=region.ordinal,
                     locator=region.locator,
                     region_type=region.region_type,

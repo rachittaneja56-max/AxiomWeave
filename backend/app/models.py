@@ -199,6 +199,14 @@ class SourceAsset(Base):
             "source_kind IN ('text', 'file', 'url')", name="ck_source_assets_source_kind"
         ),
         CheckConstraint("byte_size >= 0", name="ck_source_assets_nonnegative_byte_size"),
+        CheckConstraint(
+            "extraction_coverage IN ('complete', 'partial')",
+            name="ck_source_assets_extraction_coverage",
+        ),
+        CheckConstraint(
+            "extraction_profile_version > 0",
+            name="ck_source_assets_extraction_profile_version",
+        ),
         UniqueConstraint("storage_key", name="uq_source_assets_storage_key"),
     )
 
@@ -217,6 +225,12 @@ class SourceAsset(Base):
     storage_key: Mapped[str | None] = mapped_column(String(80))
     provenance_url: Mapped[str | None] = mapped_column(Text)
     extraction_method: Mapped[str] = mapped_column(String(40), nullable=False)
+    # Profile/version identifies the supported extraction contract; method records the
+    # specific extractor used (for example, pdf_native_plus_ocr).
+    extraction_profile: Mapped[str] = mapped_column(String(40), nullable=False)
+    extraction_profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Coverage is completeness for this extraction profile, not semantic correctness.
+    extraction_coverage: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -236,14 +250,16 @@ class SourceRegion(Base):
     source_asset_id: Mapped[int] = mapped_column(
         ForeignKey("source_assets.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    source_segment_id: Mapped[int] = mapped_column(
-        ForeignKey("source_segments.id", ondelete="RESTRICT"), nullable=False
+    # Compatibility projection for current text workflows. Canonical addressing is by asset
+    # and locator, so future non-text regions do not need a fabricated legacy segment.
+    source_segment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_segments.id", ondelete="RESTRICT"), nullable=True
     )
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     locator: Mapped[str] = mapped_column(String(255), nullable=False)
     region_type: Mapped[str] = mapped_column(String(32), nullable=False)
     page_number: Mapped[int | None] = mapped_column(Integer)
-    text: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class TransformationRun(Base):

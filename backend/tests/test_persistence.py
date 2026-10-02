@@ -104,7 +104,102 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert set(inspector.get_table_names()) == EXPECTED_TABLES | {"alembic_version"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "e8a62c0916df"
+        assert revision == "a17c0f5e2d91"
+        asset_columns = {
+            column["name"]: column for column in inspector.get_columns("source_assets")
+        }
+        assert asset_columns["extraction_profile"]["nullable"] is False
+        assert asset_columns["extraction_profile_version"]["nullable"] is False
+        assert asset_columns["extraction_coverage"]["nullable"] is False
+        region_columns = {
+            column["name"]: column for column in inspector.get_columns("source_regions")
+        }
+        assert region_columns["source_segment_id"]["nullable"] is True
+        assert region_columns["text"]["nullable"] is True
+    finally:
+        engine.dispose()
+
+
+def test_extraction_contract_backfill_marks_only_known_methods_complete(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'extraction-contract.sqlite3').as_posix()}"
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "e8a62c0916df")
+    engine = create_database_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, username, password_hash, created_at) "
+                    "VALUES (17, 'extraction_backfill', '!disabled-test!', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO sources (id, owner_id, title, created_at) "
+                    "VALUES (18, 17, 'Extraction backfill', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_versions "
+                    "(id, source_id, version_number, source_text, content_hash, created_at) "
+                    "VALUES (19, 18, 1, 'Known text.', :content_hash, CURRENT_TIMESTAMP)"
+                ),
+                {"content_hash": source_content_hash("Known text.")},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_packs (id, source_id, owner_id, title, created_at) "
+                    "VALUES (20, 18, 17, 'Extraction backfill', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_pack_versions "
+                    "(id, source_pack_id, source_version_id, version_number, content_hash, "
+                    "created_at) VALUES (21, 20, 19, 1, :content_hash, CURRENT_TIMESTAMP)"
+                ),
+                {"content_hash": source_content_hash("Known text.")},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_assets "
+                    "(id, source_pack_version_id, authority_role, source_kind, media_type, "
+                    "byte_size, content_hash, extraction_method, created_at) VALUES "
+                    "(22, 21, 'authoritative', 'text', 'text/plain', 11, :content_hash, "
+                    "'pasted_text', CURRENT_TIMESTAMP), "
+                    "(23, 21, 'authoritative', 'text', 'text/plain', 11, :content_hash, "
+                    "'unknown_test_method', CURRENT_TIMESTAMP)"
+                ),
+                {"content_hash": source_content_hash("Known text.")},
+            )
+
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            assets = (
+                connection.execute(
+                    text(
+                        "SELECT extraction_method, extraction_profile, "
+                        "extraction_profile_version, extraction_coverage "
+                        "FROM source_assets ORDER BY id"
+                    )
+                )
+                .mappings()
+                .all()
+            )
+
+        assert [(asset["extraction_method"], asset["extraction_coverage"]) for asset in assets] == [
+            ("pasted_text", "complete"),
+            ("unknown_test_method", "partial"),
+        ]
+        assert [
+            (asset["extraction_profile"], asset["extraction_profile_version"]) for asset in assets
+        ] == [
+            ("text", 1),
+            ("text", 1),
+        ]
     finally:
         engine.dispose()
 
@@ -282,7 +377,9 @@ def test_phase_one_a_source_pack_backfill_preserves_versions_segments_and_run(
                     text(
                         "SELECT id, source_pack_version_id, authority_role, source_kind, "
                         "content_hash, "
-                        "storage_key, extraction_method FROM source_assets ORDER BY id"
+                        "storage_key, extraction_method, extraction_profile, "
+                        "extraction_profile_version, extraction_coverage "
+                        "FROM source_assets ORDER BY id"
                     )
                 )
                 .mappings()
@@ -336,6 +433,9 @@ def test_phase_one_a_source_pack_backfill_preserves_versions_segments_and_run(
             for item in memberships
         ] == [(21, assets[0]["id"], 1, "PRIMARY"), (22, assets[1]["id"], 1, "PRIMARY")]
         assert [item["source_kind"] for item in assets] == ["text", "text"]
+        assert [item["extraction_profile"] for item in assets] == ["text", "text"]
+        assert [item["extraction_profile_version"] for item in assets] == [1, 1]
+        assert [item["extraction_coverage"] for item in assets] == ["complete", "complete"]
         assert [item["storage_key"] for item in assets] == [None, None]
         assert [item["content_hash"] for item in assets] == [
             source_content_hash(v1_text),

@@ -17,6 +17,7 @@ from app.models import (
     SourcePack,
     SourcePackMembership,
     SourcePackVersion,
+    SourceRegion,
     SourceVersion,
     User,
 )
@@ -86,7 +87,52 @@ def test_pasted_transformation_creates_inspectable_pack_and_regions(
         "# Update",
         "The program opens on Friday.",
     ]
+    assert all(region["source_segment_id"] is not None for region in asset["regions"])
+    assert asset["extraction_profile"] == "text"
+    assert asset["extraction_profile_version"] == 1
+    assert asset["extraction_coverage"] == "complete"
     assert "storage_key" not in asset
+
+
+def test_source_pack_inspects_partial_coverage_and_region_without_legacy_segment(
+    authorized_client: TestClient,
+    auth_database: tuple[TestClient, object, sessionmaker[Session]],
+) -> None:
+    _client, _engine, factory = auth_database
+    saved = authorized_client.post(
+        "/api/transformations", json=_transformation_request("Text with partial coverage.")
+    )
+    assert saved.status_code == 200
+
+    with factory() as session:
+        asset = session.scalar(select(SourceAsset))
+        assert asset is not None
+        asset.extraction_coverage = "partial"
+        session.add(
+            SourceRegion(
+                source_asset_id=asset.id,
+                source_segment_id=None,
+                ordinal=2,
+                locator="region:2",
+                region_type="attachment",
+                page_number=None,
+                text=None,
+            )
+        )
+        session.commit()
+
+    response = authorized_client.get(
+        f"/api/transformations/{saved.json()['transformation_run_id']}/source-pack"
+    )
+    assert response.status_code == 200
+    asset_view = response.json()["versions"][0]["assets"][0]
+    assert asset_view["extraction_coverage"] == "partial"
+    assert asset_view["extraction_profile"] == "text"
+    unprojected_region = next(
+        region for region in asset_view["regions"] if region["source_segment_id"] is None
+    )
+    assert unprojected_region["locator"] == "region:2"
+    assert unprojected_region["text"] is None
 
 
 def test_file_upload_retains_private_bytes_and_reuses_legacy_projection(
