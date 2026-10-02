@@ -79,6 +79,26 @@ npm test
 npm run build
 ```
 
+## PostgreSQL migration integration check
+
+SQLite remains the local default. To verify the migration chain against PostgreSQL with pgvector, start the pinned test image bound to loopback:
+
+```powershell
+docker run --rm -d --name axiomweave-postgres-test `
+  -e POSTGRES_USER=axiom -e POSTGRES_DB=postgres -e POSTGRES_HOST_AUTH_METHOD=trust `
+  -p 127.0.0.1:55432:5432 pgvector/pgvector:0.8.6-pg17-bookworm
+docker exec axiomweave-postgres-test pg_isready -U axiom -d postgres
+docker exec axiomweave-postgres-test psql -U axiom -d postgres -v ON_ERROR_STOP=1 `
+  -c "CREATE EXTENSION vector" `
+  -c "SELECT extname, extversion FROM pg_extension WHERE extname = 'vector'"
+$env:AXIOMWEAVE_TEST_POSTGRES_URL = "postgresql+psycopg://axiom@127.0.0.1:55432/postgres"
+cd backend
+uv run pytest tests/test_postgres_migrations.py
+docker stop axiomweave-postgres-test
+```
+
+The test creates a uniquely named empty database, upgrades it to Alembic head, verifies tables and constraints, then drops it. This disposable local test instance uses trust authentication and must remain bound to loopback.
+
 ## Scope and limitations
 
 PDF OCR is a model-assisted fallback for scanned pages with little usable native text. It is not guaranteed to be perfect. PDF uploads are limited to 8 MiB and 20 pages; no more than 8 pages are sent for OCR. URL import supports public HTTP/HTTPS text and HTML pages up to 2 MiB, with at most three validated redirects; extracted text is limited to 20,000 characters without truncation. It does not log in, execute JavaScript, or crawl. Evidence analysis proposes claims with a model, but the application verifies each proposed quotation as an exact substring of its saved source version; this is traceability support, not a guarantee that every claim is complete or true. Discrepancy findings are review prompts. Source diffs are deterministic paragraph comparisons. Standalone image input, video input, RAG, infographic rendering, and video package generation are not implemented. The local SQLite setup is for development and demonstration, not a production deployment recipe.
