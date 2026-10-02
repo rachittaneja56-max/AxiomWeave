@@ -79,25 +79,22 @@ npm test
 npm run build
 ```
 
-## PostgreSQL migration integration check
+## PostgreSQL integration tests
 
-SQLite remains the local default. To verify the migration chain against PostgreSQL with pgvector, start the pinned test image bound to loopback:
+SQLite remains the local default. PostgreSQL migration and runtime compatibility is tested with the pinned PostgreSQL 17 and pgvector image. Start it bound to loopback:
 
 ```powershell
 docker run --rm -d --name axiomweave-postgres-test `
   -e POSTGRES_USER=axiom -e POSTGRES_DB=postgres -e POSTGRES_HOST_AUTH_METHOD=trust `
   -p 127.0.0.1:55432:5432 pgvector/pgvector:0.8.6-pg17-bookworm
 docker exec axiomweave-postgres-test pg_isready -U axiom -d postgres
-docker exec axiomweave-postgres-test psql -U axiom -d postgres -v ON_ERROR_STOP=1 `
-  -c "CREATE EXTENSION vector" `
-  -c "SELECT extname, extversion FROM pg_extension WHERE extname = 'vector'"
 $env:AXIOMWEAVE_TEST_POSTGRES_URL = "postgresql+psycopg://axiom@127.0.0.1:55432/postgres"
 cd backend
-uv run pytest tests/test_postgres_migrations.py
+uv run pytest tests/test_postgres_migrations.py -q
 docker stop axiomweave-postgres-test
 ```
 
-The test creates a uniquely named empty database, upgrades it to Alembic head, verifies tables and constraints, then drops it. This disposable local test instance uses trust authentication and must remain bound to loopback.
+The PostgreSQL tests create uniquely named databases, apply the migration chain, exercise ORM persistence, and verify that pgvector 0.8.6 can be enabled. The disposable local test instance uses trust authentication and must remain bound to loopback.
 
 ## Scope and limitations
 

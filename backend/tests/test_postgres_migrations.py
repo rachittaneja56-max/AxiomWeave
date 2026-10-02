@@ -236,6 +236,7 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
     postgres_test_database_url: URL,
 ) -> None:
     _upgrade(postgres_test_database_url, "head")
+    _upgrade(postgres_test_database_url, "head")
     engine = create_engine(postgres_test_database_url)
     try:
         inspector = inspect(engine)
@@ -270,6 +271,24 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
             and foreign_key.get("options", {}).get("ondelete") == "RESTRICT"
             for foreign_key in auth_foreign_keys
         )
+    finally:
+        engine.dispose()
+
+
+def test_postgres_pgvector_extension_is_available(
+    postgres_test_database_url: URL,
+) -> None:
+    engine = create_database_engine(
+        postgres_test_database_url.render_as_string(hide_password=False)
+    )
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
+            extension = connection.execute(
+                text("SELECT extname, extversion FROM pg_extension WHERE extname = 'vector'")
+            ).one()
+        assert extension.extname == "vector"
+        assert extension.extversion == "0.8.6"
     finally:
         engine.dispose()
 
