@@ -132,6 +132,9 @@ export function NewTransformationScreen({
         filename: body.filename,
         character_count: body.character_count,
         ocr_used: body.ocr_used,
+        ...(body.source_version_id !== undefined
+          ? { source_version_id: body.source_version_id }
+          : {}),
       });
     } catch (requestError) {
       if (requestError instanceof ApiError) {
@@ -171,6 +174,9 @@ export function NewTransformationScreen({
         filename: "Imported page: " + body.title,
         character_count: body.character_count,
         ocr_used: false,
+        ...(Number.isInteger(body.source_version_id)
+          ? { source_version_id: Number(body.source_version_id) }
+          : {}),
       });
     } catch (requestError) {
       if (requestError instanceof ApiError) {
@@ -268,7 +274,12 @@ export function NewTransformationScreen({
 
     setPhase("saving");
     try {
-      const body = await api.createTransformation(request);
+      const body = await api.createTransformation({
+        ...request,
+        ...(sourceFile?.source_version_id !== undefined
+          ? { source_version_id: sourceFile.source_version_id }
+          : {}),
+      });
       if (!isSavedTransformation(body)) {
         setError(
           "The service returned an unexpected save response. Please retry.",

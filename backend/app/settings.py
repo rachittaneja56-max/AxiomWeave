@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
     database_url: str = "sqlite:///./axiomweave.db"
+    private_asset_dir: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[1] / ".private-assets"
+    )
     allow_registration: bool = False
     openai_api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY", repr=False)
     openai_model: str = "gpt-6-luna"

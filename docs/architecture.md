@@ -16,14 +16,16 @@ Paste / TXT / MD / DOCX / PDF / one public URL
   -> for URLs: safe bounded HTTP fetch -> HTML/main-content extraction
   -> text or DOCX extraction; PDF native text extraction page by page
   -> OCR/Vision fallback only for PDF pages with under 40 usable native characters
-  -> normalized Source -> immutable SourceVersion + SHA-256 + SourceSegments
+  -> owner-scoped SourcePack -> immutable SourcePackVersion
+  -> authoritative SourceAsset -> addressable SourceRegions
+  -> compatibility SourceVersion + SHA-256 + SourceSegments
   -> TransformationRun (separate context and communication controls)
   -> ArtifactRun per selected format -> immutable ArtifactVersion history
 ```
 
 The five Tier-A output types are executive summary, LinkedIn post, X Post, formal advisory, and presentation with speaker notes. X Post output is limited to 220 provider output tokens and validated at 280 Unicode code points before persistence. Each output has an independent run state, allowing partial failure and retry. Version history records its source version, provider/model, prompt version/hash, and review status. Human edits create another version. Presentation content is validated structured data and is rendered with React text nodes for review.
 
-URL imports accept one public HTTP/HTTPS page at a time. The fetcher validates DNS results and pins the connection to a validated public IP, manually revalidates up to three redirects, streams at most 2 MiB, and extracts readable HTML or plain text. The normalized result enters the source composer and then follows the same immutable SourceVersion path as pasted and uploaded text. It does not crawl or execute page scripts.
+URL imports accept one public HTTP/HTTPS page at a time. The fetcher validates DNS results and pins the connection to a validated public IP, manually revalidates up to three redirects, streams at most 2 MiB, and extracts readable HTML or plain text. File and URL imports create a SourcePackVersion when extraction succeeds; the composer reuses that owned version when saving the transformation. Pasted text creates its SourcePackVersion when the transformation is saved. If an imported source is edited in the composer, the app appends a new version and keeps the imported version intact. URL assets retain the validated final URL as provenance and do not fabricate a binary object. The importer does not crawl or execute page scripts.
 
 ## OpenAI generation boundary
 
@@ -33,7 +35,9 @@ FastAPI generation / analysis routes -> provider protocol -> OpenAI Responses AP
 
 The server owns model choice and API key. Primary artifact generation and targeted updates use `gpt-6-luna`; evidence proposals, discrepancy analysis, and scanned-page OCR use the utility model (`SIH_OPENAI_UTILITY_MODEL`, default `gpt-5-nano`). Generation and analysis calls have code-owned output-token limits. Primary and utility structured generation uses low reasoning effort; OCR uses a separate bounded transcription call. All Responses API requests set `store=False`. Structured responses are used for presentation specifications, evidence proposals, discrepancy findings, and targeted updates. Incomplete provider responses fail without persisting a successful artifact version. Provider errors are converted to safe API errors; raw provider output and credentials are not returned as diagnostics.
 
-Document uploads are bounded: text is capped at 80 KiB; DOCX and PDF at 8 MiB; PDFs at 20 pages; OCR fallback at 8 pages; normalized extracted text at 20,000 characters. PDF text retains `# Page N` markers. Encrypted, corrupt, and empty PDFs are rejected. Raw uploads and rendered OCR images are not persisted.
+Document uploads are bounded: text is capped at 80 KiB; DOCX and PDF at 8 MiB; PDFs at 20 pages; OCR fallback at 8 pages; normalized extracted text at 20,000 characters. PDF text retains `# Page N` markers and its regions retain page locators. Encrypted, corrupt, and empty PDFs are rejected. Original uploads are stored under server-generated keys in the private local directory configured by `SIH_PRIVATE_ASSET_DIR`; that directory is not served by FastAPI. Rendered OCR images are temporary. If the database transaction fails, the app attempts to delete the prepared file; a filesystem failure during that cleanup can leave an unreferenced private file for manual cleanup. The storage boundary is local-development only; no production object-store adapter is deployed.
+
+The additive Phase 1B migration backfills each existing `Source`, `SourceVersion`, and `SourceSegment` into a SourcePack, SourcePackVersion, text SourceAsset, and SourceRegion. Historical raw uploads are not reconstructed. New source writes go through one snapshot writer that creates the pack records and their required legacy projection in the same database transaction. Existing generation, evidence, and revision code continues to read the legacy projection.
 
 ## Review, evidence, and discrepancies
 
@@ -42,7 +46,9 @@ Review APIs return owner-scoped artifact versions and provenance. Evidence analy
 ## Source revision, update, and export
 
 ```text
-V1 -> save immutable V2 -> deterministic segment diff + evidence impact
+SourcePackVersion V1 / SourceVersion V1
+  -> append immutable SourcePackVersion V2 / SourceVersion V2
+  -> deterministic segment diff + evidence impact
    -> targeted update (prior artifact + V1 + changed material + authoritative V2)
    -> new ArtifactVersion linked to V2, or full regeneration from V2
 ```

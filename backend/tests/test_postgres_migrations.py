@@ -18,12 +18,17 @@ from app.models import (
     ArtifactVersion,
     AuthSession,
     Source,
+    SourceAsset,
+    SourcePack,
+    SourcePackVersion,
+    SourceRegion,
     SourceSegment,
     SourceVersion,
     TransformationRun,
     User,
     source_content_hash,
 )
+from app.source_versions import SourceAssetInput, create_source_pack_version, create_source_version
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_TEST_URL_ENV = "AXIOMWEAVE_TEST_POSTGRES_URL"
@@ -94,14 +99,7 @@ def _add_source_version(
     source = Source(owner_id=owner.id, title="PostgreSQL source")
     session.add(source)
     session.flush()
-    source_version = SourceVersion(
-        source_id=source.id,
-        version_number=1,
-        source_text=source_text,
-        content_hash=source_content_hash(source_text),
-    )
-    session.add(source_version)
-    session.flush()
+    source_version = create_source_version(session, source, source_text)
     return source, source_version
 
 
@@ -213,7 +211,7 @@ def test_postgres_populated_legacy_auth_upgrade_preserves_data(
                 text("SELECT owner_id FROM sources WHERE title = 'Legacy source'")
             )
 
-        assert revision == "c2a7e18f4d91"
+        assert revision == "d31b8f59a202"
         assert user["id"] == 42
         assert user["username"] == "legacy-migrated-42"
         assert user["password_hash"] == "!disabled-legacy-google!"
@@ -246,6 +244,10 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
             "sources",
             "source_versions",
             "source_segments",
+            "source_packs",
+            "source_pack_versions",
+            "source_assets",
+            "source_regions",
             "artifact_runs",
             "artifact_versions",
             "evidence_links",
@@ -255,7 +257,7 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
         } <= set(inspector.get_table_names())
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "c2a7e18f4d91"
+        assert revision == "d31b8f59a202"
 
         unique_constraints = inspector.get_unique_constraints("artifact_runs")
         assert "uq_artifact_runs_transformation_output" in {
@@ -271,6 +273,108 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
             and foreign_key.get("options", {}).get("ondelete") == "RESTRICT"
             for foreign_key in auth_foreign_keys
         )
+    finally:
+        engine.dispose()
+
+
+def test_postgres_phase_one_a_backfill_preserves_version_parent_and_transformation_reference(
+    postgres_test_database_url: URL,
+) -> None:
+    _upgrade(postgres_test_database_url, "c2a7e18f4d91")
+    engine = create_engine(postgres_test_database_url)
+    first_text = "# Report\n\nOriginal text."
+    second_text = "# Report\n\nUpdated text."
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, username, password_hash, created_at) "
+                    "VALUES (700, 'pg_phase1a', '!disabled-test!', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO sources (id, owner_id, title, created_at) "
+                    "VALUES (701, 700, 'PG report', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_versions "
+                    "(id, source_id, version_number, source_text, content_hash, created_at) "
+                    "VALUES (702, 701, 1, :source_text, :content_hash, CURRENT_TIMESTAMP)"
+                ),
+                {"source_text": first_text, "content_hash": source_content_hash(first_text)},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_versions "
+                    "(id, source_id, parent_source_version_id, version_number, source_text, "
+                    "content_hash, created_at) "
+                    "VALUES (703, 701, 702, 2, :source_text, :content_hash, CURRENT_TIMESTAMP)"
+                ),
+                {"source_text": second_text, "content_hash": source_content_hash(second_text)},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_segments "
+                    "(id, source_version_id, ordinal, locator, segment_text) VALUES "
+                    "(704, 702, 1, 'heading:1', '# Report'), "
+                    "(705, 702, 2, 'paragraph:1', 'Original text.'), "
+                    "(706, 703, 1, 'heading:1', '# Report'), "
+                    "(707, 703, 2, 'paragraph:1', 'Updated text.')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO transformation_runs "
+                    "(id, owner_id, source_version_id, supporting_context, audience, tone, "
+                    "language, detail_level, objective, style, selected_output_types, created_at) "
+                    "VALUES (708, 700, 703, '', 'Public', 'Clear', 'English', 'standard', "
+                    "'Inform', 'Plain', CAST(:outputs AS json), CURRENT_TIMESTAMP)"
+                ),
+                {"outputs": '["executive_summary"]'},
+            )
+
+        _upgrade(postgres_test_database_url, "head")
+        with engine.connect() as connection:
+            pack = (
+                connection.execute(
+                    text("SELECT id, source_id, owner_id FROM source_packs WHERE source_id = 701")
+                )
+                .mappings()
+                .one()
+            )
+            versions = (
+                connection.execute(
+                    text(
+                        "SELECT id, source_version_id, parent_source_pack_version_id, "
+                        "version_number "
+                        "FROM source_pack_versions WHERE source_pack_id = :pack_id "
+                        "ORDER BY version_number"
+                    ),
+                    {"pack_id": pack["id"]},
+                )
+                .mappings()
+                .all()
+            )
+            region_count = connection.scalar(
+                text(
+                    "SELECT COUNT(*) FROM source_regions "
+                    "WHERE source_segment_id BETWEEN 704 AND 707"
+                )
+            )
+            transformation_source_id = connection.scalar(
+                text("SELECT source_version_id FROM transformation_runs WHERE id = 708")
+            )
+
+        assert (pack["owner_id"], pack["source_id"]) == (700, 701)
+        assert [item["source_version_id"] for item in versions] == [702, 703]
+        assert versions[0]["parent_source_pack_version_id"] is None
+        assert versions[1]["parent_source_pack_version_id"] == versions[0]["id"]
+        assert [item["version_number"] for item in versions] == [1, 2]
+        assert region_count == 4
+        assert transformation_source_id == 703
     finally:
         engine.dispose()
 
@@ -361,13 +465,7 @@ def test_postgres_runtime_source_versions_and_segments(
             source_text="Second source version",
             content_hash=source_content_hash("Second source version"),
         )
-        first_segment = SourceSegment(
-            source_version_id=version_one.id,
-            ordinal=1,
-            locator="paragraph:1",
-            segment_text="Persisted source text",
-        )
-        session.add_all([version_two, first_segment])
+        session.add(version_two)
         session.commit()
         source_id = source.id
         version_one_id = version_one.id
@@ -538,3 +636,98 @@ def test_postgres_runtime_rolled_back_write_does_not_persist_and_later_commit_su
             select(User.id).where(User.username == "pg_after_rollback")
         )
         assert persisted_user_id is not None
+
+
+def test_postgres_source_pack_constraints_and_append_only_versioning(
+    postgres_runtime_sessions: sessionmaker[Session],
+) -> None:
+    with postgres_runtime_sessions() as session:
+        owner = User(username="pg_pack_owner", password_hash="!disabled-test!")
+        other_owner = User(username="pg_pack_other", password_hash="!disabled-test!")
+        session.add_all([owner, other_owner])
+        session.flush()
+        first = create_source_pack_version(
+            session, owner.id, "# Pack\n\nVersion one.", asset_input=SourceAssetInput()
+        )
+        session.commit()
+
+        persisted_pack = session.get(SourcePack, first.source_pack.id)
+        assert persisted_pack is not None and persisted_pack.owner_id == owner.id
+        first_pack_version = session.scalar(
+            select(SourcePackVersion).where(
+                SourcePackVersion.source_version_id == first.source_version.id
+            )
+        )
+        assert first_pack_version is not None
+        first_asset = session.scalar(
+            select(SourceAsset).where(SourceAsset.source_pack_version_id == first_pack_version.id)
+        )
+        assert first_asset is not None
+        regions = list(
+            session.scalars(
+                select(SourceRegion)
+                .where(SourceRegion.source_asset_id == first_asset.id)
+                .order_by(SourceRegion.ordinal)
+            ).all()
+        )
+        assert first_asset.authority_role == "authoritative"
+        assert [region.locator for region in regions] == ["heading:1", "paragraph:1"]
+
+        second = create_source_pack_version(
+            session,
+            owner.id,
+            "# Pack\n\nVersion two.",
+            source=first.source,
+            parent_source_version_id=first.source_version.id,
+        )
+        session.commit()
+        assert second.source_pack_version.version_number == 2
+        assert second.source_pack_version.parent_source_pack_version_id == first_pack_version.id
+        assert first.source_version.source_text == "# Pack\n\nVersion one."
+
+        with pytest.raises(ValueError, match="authenticated owner"):
+            create_source_pack_version(session, other_owner.id, "Wrong owner", source=first.source)
+        session.rollback()
+
+        duplicate_projection = SourceVersion(
+            source_id=first.source.id,
+            version_number=3,
+            source_text="Version three projection.",
+            content_hash=source_content_hash("Version three projection."),
+        )
+        session.add(duplicate_projection)
+        session.flush()
+        duplicate_pack_version = SourcePackVersion(
+            source_pack_id=first.source_pack.id,
+            source_version_id=duplicate_projection.id,
+            parent_source_pack_version_id=second.source_pack_version.id,
+            version_number=2,
+            content_hash=duplicate_projection.content_hash,
+        )
+        with pytest.raises(IntegrityError):
+            with session.begin_nested():
+                session.add(duplicate_pack_version)
+                session.flush()
+
+        invalid_role = SourceAsset(
+            source_pack_version_id=second.source_pack_version.id,
+            authority_role="model_decides",
+            source_kind="text",
+            media_type="text/plain",
+            byte_size=1,
+            content_hash="a" * 64,
+            extraction_method="test",
+        )
+        with pytest.raises(IntegrityError):
+            with session.begin_nested():
+                session.add(invalid_role)
+                session.flush()
+
+        persisted_versions = list(
+            session.scalars(
+                select(SourcePackVersion)
+                .where(SourcePackVersion.source_pack_id == first.source_pack.id)
+                .order_by(SourcePackVersion.version_number)
+            ).all()
+        )
+        assert [version.version_number for version in persisted_versions] == [1, 2]

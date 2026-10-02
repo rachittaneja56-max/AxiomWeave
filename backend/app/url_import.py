@@ -42,6 +42,9 @@ class URLImportResult(BaseModel):
     character_count: int
     source_text: str
     extraction_method: str = "url_html"
+    media_type: str = "text/html"
+    source_id: int | None = None
+    source_version_id: int | None = None
 
 
 class URLImportError(ValueError):
@@ -279,4 +282,5 @@ async def _read_page(
             title=title,
             character_count=len(text),
             source_text=text,
+            media_type=media_type,
         )

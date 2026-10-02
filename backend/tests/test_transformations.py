@@ -9,6 +9,7 @@ from app.main import app
 from app.models import (
     ArtifactRun,
     Source,
+    SourcePackVersion,
     SourceSegment,
     SourceVersion,
     TransformationRun,
@@ -298,7 +299,12 @@ def test_source_version_function_appends_without_overwriting_history(
         with session.begin():
             source = session.get(Source, source.id)
             assert source is not None
-            second = create_source_version(session, source, "# V2\n\nSecond source.")
+            second = create_source_version(
+                session,
+                source,
+                "# V2\n\nSecond source.",
+                parent_source_version_id=first_id,
+            )
             session.flush()
             assert second.version_number == 2
         versions = list(
@@ -319,3 +325,13 @@ def test_source_version_function_appends_without_overwriting_history(
             "# V2",
             "Second source.",
         ]
+        pack_versions = list(
+            session.scalars(
+                select(SourcePackVersion)
+                .where(SourcePackVersion.source_version_id.in_([first_id, second.id]))
+                .order_by(SourcePackVersion.version_number)
+            ).all()
+        )
+        assert [item.version_number for item in pack_versions] == [1, 2]
+        assert pack_versions[0].parent_source_pack_version_id is None
+        assert pack_versions[1].parent_source_pack_version_id == pack_versions[0].id

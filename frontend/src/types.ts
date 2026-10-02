@@ -40,6 +40,7 @@ export type WorkflowStatus =
 
 export type TransformationRequest = {
   source_text: string;
+  source_version_id?: number;
   output_types: OutputType[];
   audience: string;
   tone: string;
@@ -61,10 +62,7 @@ export type SavedTransformation = {
   status: "saved";
   transformation_run_id: number;
   source_id: number;
-  source_version: SourceVersion & {
-    version_number: 1;
-    segment_count: number;
-  };
+  source_version: SourceVersion & { segment_count: number };
   output_types: OutputType[];
 };
 
@@ -184,6 +182,7 @@ export type SourceFileMetadata = {
   filename: string;
   character_count: number;
   ocr_used: boolean;
+  source_version_id?: number;
 };
 
 export type PresentationSlide = {

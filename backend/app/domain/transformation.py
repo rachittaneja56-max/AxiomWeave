@@ -72,6 +72,7 @@ TIER_A_OUTPUT_TYPES = frozenset(
 
 class CreateTransformationRequest(TransformationRequest):
     supporting_context: str = Field(default="", max_length=SUPPORTING_CONTEXT_MAX_LENGTH)
+    source_version_id: int | None = Field(default=None, gt=0)
 
     @field_validator("supporting_context")
     @classmethod

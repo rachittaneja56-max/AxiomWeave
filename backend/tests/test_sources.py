@@ -38,7 +38,8 @@ def test_extracts_utf8_txt_with_canonical_metadata() -> None:
     response = upload("report.txt", source_text.encode("utf-8"), "text/plain")
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    assert body == {
         "filename": "report.txt",
         "media_type": "text/plain",
         "character_count": len(source_text),
@@ -46,7 +47,10 @@ def test_extracts_utf8_txt_with_canonical_metadata() -> None:
         "extraction_method": "text",
         "page_count": None,
         "ocr_used": False,
+        "source_id": body["source_id"],
+        "source_version_id": body["source_version_id"],
     }
+    assert body["source_id"] > 0 and body["source_version_id"] > 0
 
 
 def test_authenticated_url_import_returns_normalized_page(monkeypatch: pytest.MonkeyPatch) -> None:

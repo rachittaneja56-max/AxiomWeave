@@ -17,12 +17,16 @@ from app.models import (
     ArtifactRun,
     ArtifactVersion,
     Source,
+    SourceAsset,
+    SourcePack,
+    SourcePackVersion,
+    SourceRegion,
     SourceSegment,
     SourceVersion,
     TransformationRun,
     User,
 )
-from app.source_versions import create_source_version
+from app.source_versions import create_source_pack_version, create_source_version
 
 router = APIRouter()
 
@@ -84,6 +88,45 @@ class TransformationDetail(BaseModel):
     created_at: datetime
     updated_at: datetime
     artifact_runs: list[ArtifactRunHistory]
+
+
+class SourceRegionInspection(BaseModel):
+    id: int
+    ordinal: int
+    locator: str
+    region_type: str
+    page_number: int | None
+    text: str
+
+
+class SourceAssetInspection(BaseModel):
+    id: int
+    authority_role: Literal["authoritative", "supporting"]
+    source_kind: Literal["text", "file", "url"]
+    media_type: str
+    original_filename: str | None
+    byte_size: int
+    content_hash: str
+    provenance_url: str | None
+    extraction_method: str
+    regions: list[SourceRegionInspection]
+
+
+class SourcePackVersionInspection(BaseModel):
+    id: int
+    source_version_id: int
+    version_number: int
+    parent_source_pack_version_id: int | None
+    content_hash: str
+    created_at: datetime
+    assets: list[SourceAssetInspection]
+
+
+class SourcePackInspection(BaseModel):
+    id: int
+    title: str | None
+    created_at: datetime
+    versions: list[SourcePackVersionInspection]
 
 
 def _owner_source_version(session: Session, user: User, version_id: int) -> SourceVersion | None:
@@ -253,6 +296,7 @@ def get_transformation_detail(
             TransformationRun.owner_id == user.id,
         )
     )
+
     if transformation is None:
         raise HTTPException(status_code=404, detail="Transformation not found")
     card = _dashboard_card(session, user, transformation)
@@ -280,6 +324,103 @@ def get_transformation_detail(
         created_at=transformation.created_at,
         updated_at=max(timestamps),
         artifact_runs=[_artifact_history(session, user, item) for item in runs],
+    )
+
+
+@router.get(
+    "/transformations/{transformation_run_id}/source-pack",
+    response_model=SourcePackInspection,
+)
+def get_transformation_source_pack(
+    transformation_run_id: int,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> SourcePackInspection:
+    transformation = session.scalar(
+        select(TransformationRun).where(
+            TransformationRun.id == transformation_run_id,
+            TransformationRun.owner_id == user.id,
+        )
+    )
+    if transformation is None:
+        raise HTTPException(status_code=404, detail="Transformation not found")
+    source_pack = session.scalar(
+        select(SourcePack)
+        .join(SourcePackVersion, SourcePackVersion.source_pack_id == SourcePack.id)
+        .where(
+            SourcePack.owner_id == user.id,
+            SourcePackVersion.source_version_id == transformation.source_version_id,
+        )
+    )
+    if source_pack is None:
+        raise HTTPException(status_code=404, detail="Transformation not found")
+    pack_versions = list(
+        session.scalars(
+            select(SourcePackVersion)
+            .where(SourcePackVersion.source_pack_id == source_pack.id)
+            .order_by(SourcePackVersion.version_number)
+        ).all()
+    )
+    versions: list[SourcePackVersionInspection] = []
+    for pack_version in pack_versions:
+        assets = list(
+            session.scalars(
+                select(SourceAsset)
+                .where(SourceAsset.source_pack_version_id == pack_version.id)
+                .order_by(SourceAsset.id)
+            ).all()
+        )
+        asset_views: list[SourceAssetInspection] = []
+        for asset in assets:
+            regions = list(
+                session.scalars(
+                    select(SourceRegion)
+                    .where(SourceRegion.source_asset_id == asset.id)
+                    .order_by(SourceRegion.ordinal)
+                ).all()
+            )
+            asset_views.append(
+                SourceAssetInspection(
+                    id=asset.id,
+                    authority_role=cast(
+                        Literal["authoritative", "supporting"], asset.authority_role
+                    ),
+                    source_kind=cast(Literal["text", "file", "url"], asset.source_kind),
+                    media_type=asset.media_type,
+                    original_filename=asset.original_filename,
+                    byte_size=asset.byte_size,
+                    content_hash=asset.content_hash,
+                    provenance_url=asset.provenance_url,
+                    extraction_method=asset.extraction_method,
+                    regions=[
+                        SourceRegionInspection(
+                            id=region.id,
+                            ordinal=region.ordinal,
+                            locator=region.locator,
+                            region_type=region.region_type,
+                            page_number=region.page_number,
+                            text=region.text,
+                        )
+                        for region in regions
+                    ],
+                )
+            )
+        versions.append(
+            SourcePackVersionInspection(
+                id=pack_version.id,
+                source_version_id=pack_version.source_version_id,
+                version_number=pack_version.version_number,
+                parent_source_pack_version_id=pack_version.parent_source_pack_version_id,
+                content_hash=pack_version.content_hash,
+                created_at=pack_version.created_at,
+                assets=asset_views,
+            )
+        )
+    return SourcePackInspection(
+        id=source_pack.id,
+        title=source_pack.title,
+        created_at=source_pack.created_at,
+        versions=versions,
     )
 
 
@@ -313,10 +454,26 @@ def save_transformation(
     session: Annotated[Session, Depends(get_db_session)],
 ) -> SavedTransformation:
     try:
-        source = Source(owner_id=user.id)
-        session.add(source)
-        session.flush()
-        source_version = create_source_version(session, source, transformation_request.source_text)
+        if transformation_request.source_version_id is None:
+            write = create_source_pack_version(session, user.id, transformation_request.source_text)
+            source = write.source
+            source_version = write.source_version
+        else:
+            source_version = _owner_source_version(
+                session, user, transformation_request.source_version_id
+            )
+            if source_version is None:
+                raise HTTPException(status_code=404, detail="Source version not found")
+            source = session.get(Source, source_version.source_id)
+            if source is None:
+                raise HTTPException(status_code=404, detail="Source version not found")
+            if source_version.source_text != transformation_request.source_text:
+                source_version = create_source_version(
+                    session,
+                    source,
+                    transformation_request.source_text,
+                    parent_source_version_id=source_version.id,
+                )
         session.flush()
         run = TransformationRun(
             owner_id=user.id,
@@ -341,6 +498,9 @@ def save_transformation(
             or 0
         )
         session.commit()
+    except HTTPException:
+        session.rollback()
+        raise
     except Exception:
         session.rollback()
         raise HTTPException(

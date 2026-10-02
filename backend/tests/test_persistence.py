@@ -23,6 +23,7 @@ from app.models import (
     User,
     source_content_hash,
 )
+from app.source_versions import create_source_version
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TABLES = {
@@ -31,6 +32,10 @@ EXPECTED_TABLES = {
     "sources",
     "source_versions",
     "source_segments",
+    "source_packs",
+    "source_pack_versions",
+    "source_assets",
+    "source_regions",
     "transformation_runs",
     "artifact_runs",
     "artifact_versions",
@@ -58,14 +63,7 @@ def _make_source(
     source = Source(owner_id=owner.id, title="Briefing")
     session.add(source)
     session.flush()
-    source_version = SourceVersion(
-        source_id=source.id,
-        version_number=1,
-        source_text=source_text,
-        content_hash=source_content_hash(source_text),
-    )
-    session.add(source_version)
-    session.flush()
+    source_version = create_source_version(session, source, source_text)
     return source, source_version
 
 
@@ -105,7 +103,7 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert set(inspector.get_table_names()) == EXPECTED_TABLES | {"alembic_version"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "c2a7e18f4d91"
+        assert revision == "d31b8f59a202"
     finally:
         engine.dispose()
 
@@ -175,6 +173,218 @@ def test_auth_migration_preserves_legacy_user_and_owned_rows(tmp_path: Path) -> 
             assert (
                 connection.scalar(text("SELECT revoked_at FROM auth_sessions WHERE id = 1"))
                 is not None
+            )
+            assert (
+                connection.scalar(text("SELECT owner_id FROM source_packs WHERE source_id = 1"))
+                == 41
+            )
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT authority_role FROM source_assets WHERE source_pack_version_id = 1"
+                    )
+                )
+                == "authoritative"
+            )
+            assert (
+                connection.scalar(
+                    text("SELECT storage_key FROM source_assets WHERE source_pack_version_id = 1")
+                )
+                is None
+            )
+    finally:
+        engine.dispose()
+
+
+def test_phase_one_a_source_pack_backfill_preserves_versions_segments_and_run(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'phase1a.sqlite3').as_posix()}"
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "c2a7e18f4d91")
+    engine = create_database_engine(database_url)
+    v1_text = "# Start\n\nFirst body."
+    v2_text = "# Start\n\nRevised body."
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, username, password_hash, created_at) "
+                    "VALUES (7, 'phase1a_user', '!disabled-test!', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO sources (id, owner_id, title, created_at) "
+                    "VALUES (12, 7, 'Field report', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_versions "
+                    "(id, source_id, version_number, source_text, content_hash, created_at) "
+                    "VALUES (21, 12, 1, :source_text, :content_hash, CURRENT_TIMESTAMP)"
+                ),
+                {"source_text": v1_text, "content_hash": source_content_hash(v1_text)},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_versions "
+                    "(id, source_id, parent_source_version_id, version_number, source_text, "
+                    "content_hash, created_at) "
+                    "VALUES (22, 12, 21, 2, :source_text, :content_hash, CURRENT_TIMESTAMP)"
+                ),
+                {"source_text": v2_text, "content_hash": source_content_hash(v2_text)},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_segments "
+                    "(id, source_version_id, ordinal, locator, segment_text) VALUES "
+                    "(31, 21, 1, 'heading:1', '# Start'), "
+                    "(32, 21, 2, 'paragraph:1', 'First body.'), "
+                    "(33, 22, 1, 'heading:1', '# Start'), "
+                    "(34, 22, 2, 'paragraph:1', 'Revised body.')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO transformation_runs "
+                    "(id, owner_id, source_version_id, supporting_context, audience, tone, "
+                    "language, detail_level, objective, style, selected_output_types, created_at) "
+                    "VALUES (41, 7, 22, '', 'Public', 'Clear', 'English', 'standard', 'Inform', "
+                    "'Plain', '[\"executive_summary\"]', CURRENT_TIMESTAMP)"
+                )
+            )
+
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            pack = (
+                connection.execute(text("SELECT id, source_id, owner_id, title FROM source_packs"))
+                .mappings()
+                .one()
+            )
+            pack_versions = (
+                connection.execute(
+                    text(
+                        "SELECT id, source_version_id, parent_source_pack_version_id, "
+                        "version_number, content_hash FROM source_pack_versions "
+                        "ORDER BY version_number"
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            assets = (
+                connection.execute(
+                    text(
+                        "SELECT source_pack_version_id, authority_role, source_kind, content_hash, "
+                        "storage_key, extraction_method FROM source_assets ORDER BY id"
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            regions = (
+                connection.execute(
+                    text(
+                        "SELECT source_segment_id, ordinal, locator, region_type, text "
+                        "FROM source_regions ORDER BY source_segment_id"
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            references = connection.execute(
+                text(
+                    "SELECT transformation_runs.source_version_id, source_versions.id "
+                    "FROM transformation_runs JOIN source_versions "
+                    "ON source_versions.id = transformation_runs.source_version_id WHERE "
+                    "transformation_runs.id = 41"
+                )
+            ).one()
+
+        assert (pack["source_id"], pack["owner_id"], pack["title"]) == (12, 7, "Field report")
+        assert [item["source_version_id"] for item in pack_versions] == [21, 22]
+        assert pack_versions[0]["parent_source_pack_version_id"] is None
+        assert pack_versions[1]["parent_source_pack_version_id"] == pack_versions[0]["id"]
+        assert [item["content_hash"] for item in pack_versions] == [
+            source_content_hash(v1_text),
+            source_content_hash(v2_text),
+        ]
+        assert [item["authority_role"] for item in assets] == ["authoritative", "authoritative"]
+        assert [item["source_kind"] for item in assets] == ["text", "text"]
+        assert [item["storage_key"] for item in assets] == [None, None]
+        assert [item["content_hash"] for item in assets] == [
+            source_content_hash(v1_text),
+            source_content_hash(v2_text),
+        ]
+        assert [item["source_segment_id"] for item in regions] == [31, 32, 33, 34]
+        assert [item["locator"] for item in regions] == [
+            "heading:1",
+            "paragraph:1",
+            "heading:1",
+            "paragraph:1",
+        ]
+        assert [item["text"] for item in regions] == [
+            "# Start",
+            "First body.",
+            "# Start",
+            "Revised body.",
+        ]
+        assert references == (22, 22)
+    finally:
+        engine.dispose()
+
+
+def test_source_pack_migration_rejects_cross_source_parent_before_schema_changes(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'invalid-lineage.sqlite3').as_posix()}"
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "c2a7e18f4d91")
+    engine = create_database_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, username, password_hash, created_at) "
+                    "VALUES (17, 'lineage_user', '!disabled-test!', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO sources (id, owner_id, created_at) VALUES "
+                    "(18, 17, CURRENT_TIMESTAMP), (19, 17, CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_versions "
+                    "(id, source_id, version_number, source_text, content_hash, created_at) "
+                    "VALUES (20, 18, 1, 'First', :hash, CURRENT_TIMESTAMP)"
+                ),
+                {"hash": source_content_hash("First")},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_versions "
+                    "(id, source_id, parent_source_version_id, version_number, source_text, "
+                    "content_hash, created_at) "
+                    "VALUES (21, 19, 20, 1, 'Other source', :hash, CURRENT_TIMESTAMP)"
+                ),
+                {"hash": source_content_hash("Other source")},
+            )
+
+        with pytest.raises(RuntimeError, match="parent lineage"):
+            command.upgrade(config, "head")
+        assert "source_packs" not in inspect(engine).get_table_names()
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                "c2a7e18f4d91"
             )
     finally:
         engine.dispose()
@@ -322,14 +532,6 @@ def test_source_versions_and_segments_preserve_history_and_locators(database: En
             version_number=1,
             source_text=version_one.source_text,
             content_hash=version_one.content_hash,
-        )
-    )
-    session.add(
-        SourceSegment(
-            source_version_id=version_one.id,
-            ordinal=1,
-            locator="paragraph:1",
-            segment_text="Same content",
         )
     )
     session.commit()

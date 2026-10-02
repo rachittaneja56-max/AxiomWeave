@@ -880,6 +880,8 @@ describe("transformation request form", () => {
           character_count: extractedSource.length,
           source_text: extractedSource,
           ocr_used: true,
+          source_id: 76,
+          source_version_id: 77,
         }),
       )
       .mockResolvedValueOnce(jsonResponse(savedResponse))
@@ -926,6 +928,9 @@ describe("transformation request form", () => {
     expect(
       JSON.parse(fetchMock.mock.calls[1][1].body as string),
     ).toHaveProperty("supporting_context", "");
+    expect(
+      JSON.parse(fetchMock.mock.calls[1][1].body as string),
+    ).toHaveProperty("source_version_id", 77);
   });
 
   it("imports one public URL and uses its extracted text as the source", async () => {
@@ -940,6 +945,8 @@ describe("transformation request form", () => {
           character_count: extractedSource.length,
           source_text: extractedSource,
           extraction_method: "url_html",
+          source_id: 88,
+          source_version_id: 89,
         }),
       )
       .mockResolvedValueOnce(jsonResponse(savedResponse))
@@ -971,6 +978,9 @@ describe("transformation request form", () => {
     expect(
       JSON.parse(fetchMock.mock.calls[1][1].body as string).source_text,
     ).toBe(extractedSource);
+    expect(
+      JSON.parse(fetchMock.mock.calls[1][1].body as string),
+    ).toHaveProperty("source_version_id", 89);
   });
 
   it("shows extraction errors and rejects malformed successful responses", async () => {

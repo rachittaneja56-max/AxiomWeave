@@ -123,7 +123,8 @@ export function isSavedTransformation(
     Number.isInteger(value.transformation_run_id) &&
     Number.isInteger(value.source_id) &&
     Number.isInteger(version.id) &&
-    version.version_number === 1 &&
+    Number.isInteger(version.version_number) &&
+    Number(version.version_number) > 0 &&
     typeof version.content_hash === "string" &&
     /^[a-f0-9]{64}$/.test(version.content_hash) &&
     Number.isInteger(version.segment_count) &&
@@ -154,6 +155,7 @@ export function isExtractedText(value: unknown): value is {
   character_count: number;
   source_text: string;
   ocr_used: boolean;
+  source_version_id?: number;
 } {
   return (
     isRecord(value) &&
@@ -161,6 +163,8 @@ export function isExtractedText(value: unknown): value is {
     typeof value.media_type === "string" &&
     typeof value.source_text === "string" &&
     typeof value.ocr_used === "boolean" &&
+    (value.source_version_id === undefined ||
+      Number.isInteger(value.source_version_id)) &&
     value.source_text.trim().length > 0 &&
     sourceCharacterCount(value.source_text) <= SOURCE_TEXT_MAX_LENGTH &&
     Number.isInteger(value.character_count) &&

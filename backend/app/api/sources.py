@@ -3,15 +3,19 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from openai import AsyncOpenAI
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from app.auth import require_current_user
+from app.database import get_db_session
 from app.document_extraction import (
     DocumentExtractionError,
     ExtractedDocument,
     extract_document,
 )
 from app.models import User
+from app.private_asset_storage import get_private_asset_store
 from app.settings import get_settings
+from app.source_versions import SourceAssetInput, SourceVersionWrite, create_source_pack_version
 from app.url_import import URLImportError, URLImportRequest, URLImportResult, import_public_url
 
 router = APIRouter()
@@ -26,6 +30,8 @@ class ExtractedText(BaseModel):
     extraction_method: str = "text"
     page_count: int | None = None
     ocr_used: bool = False
+    source_id: int | None = None
+    source_version_id: int | None = None
 
 
 def source_error(status_code: int, code: str, message: str) -> HTTPException:
@@ -67,7 +73,15 @@ async def transcribe_pdf_page(page_number: int, image_base64: str) -> str:
     return response.output_text.strip()
 
 
-def _response(filename: str, result: ExtractedDocument) -> ExtractedText:
+def _response(
+    filename: str, result: ExtractedDocument, write: SourceVersionWrite | None = None
+) -> ExtractedText:
+    response_fields: dict[str, int] = {}
+    if write is not None:
+        response_fields = {
+            "source_id": write.source.id,
+            "source_version_id": write.source_version.id,
+        }
     return ExtractedText(
         filename=filename,
         media_type=result.media_type,
@@ -76,15 +90,17 @@ def _response(filename: str, result: ExtractedDocument) -> ExtractedText:
         extraction_method=result.extraction_method,
         page_count=result.page_count,
         ocr_used=result.ocr_used,
+        **response_fields,
     )
 
 
-@router.post("/sources/file", response_model=ExtractedText)
-@router.post("/sources/text-file", response_model=ExtractedText)
+@router.post("/sources/file", response_model=ExtractedText, response_model_exclude_unset=True)
+@router.post("/sources/text-file", response_model=ExtractedText, response_model_exclude_unset=True)
 async def extract_source_file(
     file: Annotated[UploadFile, File()],
-    _user: Annotated[User, Depends(require_current_user)],
+    user: Annotated[User, Depends(require_current_user)],
     request: Request,
+    session: Annotated[Session, Depends(get_db_session)],
 ) -> ExtractedText:
     filename = file.filename or ""
     content_type = (file.content_type or "application/octet-stream").split(";", 1)[0].lower()
@@ -129,16 +145,68 @@ async def extract_source_file(
         if error.code == "unsupported_file":
             status_code = 415
         raise source_error(status_code, error.code, error.message) from None
-    return _response(filename, result)
+    store = get_private_asset_store()
+    write: SourceVersionWrite | None = None
+    try:
+        write = create_source_pack_version(
+            session,
+            user.id,
+            result.source_text,
+            asset_input=SourceAssetInput(
+                source_kind="file",
+                media_type=result.media_type,
+                original_filename=filename,
+                raw_bytes=content,
+                extraction_method=result.extraction_method,
+            ),
+            storage=store,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        if write is not None and write.storage_key is not None:
+            try:
+                store.delete(write.storage_key)
+            except OSError:
+                pass
+        raise source_error(
+            500, "source_save_failed", "The uploaded source could not be saved."
+        ) from None
+    return _response(filename, result, write)
 
 
 @router.post("/sources/url", response_model=URLImportResult)
 async def extract_source_url(
     body: URLImportRequest,
-    _user: Annotated[User, Depends(require_current_user)],
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
 ) -> URLImportResult:
     try:
-        return await import_public_url(body.url)
+        result = await import_public_url(body.url)
     except URLImportError as error:
         status = 413 if error.code in {"response_too_large", "source_too_large"} else 422
         raise source_error(status, error.code, str(error)) from None
+    try:
+        write = create_source_pack_version(
+            session,
+            user.id,
+            result.source_text,
+            asset_input=SourceAssetInput(
+                source_kind="url",
+                media_type=result.media_type,
+                provenance_url=result.final_url,
+                extraction_method=result.extraction_method,
+            ),
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise source_error(
+            500, "source_save_failed", "The imported source could not be saved."
+        ) from None
+    return result.model_copy(
+        update={
+            "source_id": write.source.id,
+            "source_version_id": write.source_version.id,
+        }
+    )

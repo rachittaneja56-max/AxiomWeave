@@ -13,6 +13,7 @@ from app.generation import GenerationRequest, GenerationResult, StructuredGenera
 from app.models import (
     ArtifactVersion,
     EvidenceLink,
+    SourcePackVersion,
     SourceSegment,
     SourceVersion,
     TransformationRun,
@@ -187,6 +188,17 @@ def test_source_v2_diff_impact_targeted_update_and_full_regeneration(
         assert v1_after.source_text == original_source_text
         assert v2.source_id == source_id
         assert v2.parent_source_version_id == v1_after.id
+        v1_pack_version = session.scalar(
+            select(SourcePackVersion).where(SourcePackVersion.source_version_id == v1_after.id)
+        )
+        v2_pack_version = session.scalar(
+            select(SourcePackVersion).where(SourcePackVersion.source_version_id == v2.id)
+        )
+        assert v1_pack_version is not None and v2_pack_version is not None
+        assert v2_pack_version.version_number == 2
+        assert v2_pack_version.parent_source_pack_version_id == v1_pack_version.id
+        assert v1_pack_version.content_hash == v1_after.content_hash
+        assert v2_pack_version.content_hash == v2.content_hash
         transformation = session.get(TransformationRun, transformation_id)
         assert transformation is not None
         assert transformation.source_version_id == v2.id

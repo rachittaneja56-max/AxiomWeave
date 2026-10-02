@@ -17,6 +17,7 @@ def auth_database(
 ) -> Iterator[tuple[TestClient, Engine, sessionmaker[Session]]]:
     monkeypatch.setenv("SIH_ALLOW_REGISTRATION", "true")
     monkeypatch.setenv("SIH_ENVIRONMENT", "development")
+    monkeypatch.setenv("SIH_PRIVATE_ASSET_DIR", str(tmp_path / "private-assets"))
     from app.settings import get_settings
 
     get_settings.cache_clear()

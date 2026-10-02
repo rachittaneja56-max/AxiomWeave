@@ -89,6 +89,43 @@ class SourceVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class SourcePack(Base):
+    __tablename__ = "source_packs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("sources.id", ondelete="RESTRICT"), unique=True, nullable=False
+    )
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    title: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class SourcePackVersion(Base):
+    __tablename__ = "source_pack_versions"
+    __table_args__ = (
+        UniqueConstraint("source_pack_id", "version_number", name="uq_source_pack_versions_number"),
+        UniqueConstraint("source_version_id", name="uq_source_pack_versions_source_version"),
+        CheckConstraint("version_number > 0", name="ck_source_pack_versions_positive_number"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_pack_id: Mapped[int] = mapped_column(
+        ForeignKey("source_packs.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_version_id: Mapped[int] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    parent_source_pack_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_pack_versions.id", ondelete="RESTRICT"), index=True
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class SourceSegment(Base):
     __tablename__ = "source_segments"
     __table_args__ = (
@@ -104,6 +141,62 @@ class SourceSegment(Base):
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     locator: Mapped[str] = mapped_column(String(255), nullable=False)
     segment_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class SourceAsset(Base):
+    __tablename__ = "source_assets"
+    __table_args__ = (
+        CheckConstraint(
+            "authority_role IN ('authoritative', 'supporting')",
+            name="ck_source_assets_authority_role",
+        ),
+        CheckConstraint(
+            "source_kind IN ('text', 'file', 'url')", name="ck_source_assets_source_kind"
+        ),
+        CheckConstraint("byte_size >= 0", name="ck_source_assets_nonnegative_byte_size"),
+        UniqueConstraint("storage_key", name="uq_source_assets_storage_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_pack_version_id: Mapped[int] = mapped_column(
+        ForeignKey("source_pack_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    authority_role: Mapped[str] = mapped_column(String(24), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(127), nullable=False)
+    original_filename: Mapped[str | None] = mapped_column(String(255))
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_key: Mapped[str | None] = mapped_column(String(80))
+    provenance_url: Mapped[str | None] = mapped_column(Text)
+    extraction_method: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class SourceRegion(Base):
+    __tablename__ = "source_regions"
+    __table_args__ = (
+        UniqueConstraint("source_asset_id", "ordinal", name="uq_source_regions_asset_ordinal"),
+        UniqueConstraint("source_asset_id", "locator", name="uq_source_regions_asset_locator"),
+        UniqueConstraint("source_segment_id", name="uq_source_regions_source_segment"),
+        CheckConstraint("ordinal > 0", name="ck_source_regions_positive_ordinal"),
+        CheckConstraint(
+            "page_number IS NULL OR page_number > 0", name="ck_source_regions_positive_page"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_asset_id: Mapped[int] = mapped_column(
+        ForeignKey("source_assets.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_segment_id: Mapped[int] = mapped_column(
+        ForeignKey("source_segments.id", ondelete="RESTRICT"), nullable=False
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    locator: Mapped[str] = mapped_column(String(255), nullable=False)
+    region_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    page_number: Mapped[int | None] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class TransformationRun(Base):
