@@ -20,6 +20,5 @@ dist/
 coverage/
 **/.private-assets/
 backend/.phase5-human-review/
-backend/.phase6-results/
-backend/.phase6-release-review/
+.internal-evaluation/
 .DS_Store

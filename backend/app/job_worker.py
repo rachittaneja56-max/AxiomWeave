@@ -88,7 +88,7 @@ async def _propose_lineage(
     output_type: OutputType,
     content: str,
 ) -> list[LineageProposalItem]:
-    if not getattr(provider, "supports_phase4_lineage", False) or not hasattr(
+    if not getattr(provider, "supports_lineage", False) or not hasattr(
         provider, "generate_structured"
     ):
         return []
@@ -406,7 +406,7 @@ async def _run_automatic_claim_scan(
     artifact_version_id: int,
     provider: GenerationProvider,
 ) -> None:
-    if not getattr(provider, "supports_phase4_automatic_claim_scan", False) or not hasattr(
+    if not getattr(provider, "supports_automatic_claim_scan", False) or not hasattr(
         provider, "generate_structured"
     ):
         return
@@ -443,7 +443,7 @@ async def _resume_incomplete_claim_scans(
     session_factory: sessionmaker[Session],
     provider: GenerationProvider | None,
 ) -> None:
-    if provider is None or not getattr(provider, "supports_phase4_automatic_claim_scan", False):
+    if provider is None or not getattr(provider, "supports_automatic_claim_scan", False):
         return
     with session_factory() as session:
         scan_ids = list(

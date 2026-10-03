@@ -174,7 +174,7 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         engine.dispose()
 
 
-def test_phase_five_migration_preserves_phase_four_artifacts_and_jobs(tmp_path: Path) -> None:
+def test_media_migration_preserves_artifacts_and_jobs(tmp_path: Path) -> None:
     database_url = f"sqlite:///{(tmp_path / 'phase-five-populated.sqlite3').as_posix()}"
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
@@ -440,7 +440,7 @@ def test_durable_jobs_migration_preserves_populated_current_sqlite_data(
         upgraded_engine.dispose()
 
 
-def test_phase_two_sqlite_migration_enforces_context_manifest_immutability(
+def test_context_manifest_migration_enforces_immutability(
     tmp_path: Path,
 ) -> None:
     database_url = f"sqlite:///{(tmp_path / 'phase-two-immutable.sqlite3').as_posix()}"
@@ -709,10 +709,10 @@ def test_auth_migration_preserves_legacy_user_and_owned_rows(tmp_path: Path) -> 
         engine.dispose()
 
 
-def test_phase_one_a_source_pack_backfill_preserves_versions_segments_and_run(
+def test_source_pack_backfill_preserves_versions_segments_and_run(
     tmp_path: Path,
 ) -> None:
-    database_url = f"sqlite:///{(tmp_path / 'phase1a.sqlite3').as_posix()}"
+    database_url = f"sqlite:///{(tmp_path / 'source-pack-backfill.sqlite3').as_posix()}"
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
     config.set_main_option("sqlalchemy.url", database_url)
@@ -725,7 +725,7 @@ def test_phase_one_a_source_pack_backfill_preserves_versions_segments_and_run(
             connection.execute(
                 text(
                     "INSERT INTO users (id, username, password_hash, created_at) "
-                    "VALUES (7, 'phase1a_user', '!disabled-test!', CURRENT_TIMESTAMP)"
+                    "VALUES (7, 'source_pack_backfill_user', '!disabled-test!', CURRENT_TIMESTAMP)"
                 )
             )
             connection.execute(

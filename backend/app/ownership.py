@@ -36,16 +36,20 @@ def get_owned_transformation_run(
 
 
 def get_owned_artifact_run(
-    session: Session, owner_id: int, artifact_run_id: int
+    session: Session,
+    owner_id: int,
+    artifact_run_id: int,
+    *,
+    transformation_run_id: int | None = None,
 ) -> ArtifactRun | None:
-    return session.scalar(
+    statement = (
         select(ArtifactRun)
-        .join(
-            TransformationRun,
-            ArtifactRun.transformation_run_id == TransformationRun.id,
-        )
+        .join(TransformationRun, ArtifactRun.transformation_run_id == TransformationRun.id)
         .where(ArtifactRun.id == artifact_run_id, TransformationRun.owner_id == owner_id)
     )
+    if transformation_run_id is not None:
+        statement = statement.where(TransformationRun.id == transformation_run_id)
+    return session.scalar(statement)
 
 
 def get_owned_artifact_version(

@@ -82,7 +82,7 @@ def generate_proposal(transformation_id: int) -> ActionPlanProposal:
 
 
 def install_planner(monkeypatch: Any, planner: PlannerStub) -> None:
-    monkeypatch.setattr("app.api.action_plans.get_planner_provider", lambda: planner)
+    monkeypatch.setattr("app.action_planning.get_planner_provider", lambda: planner)
 
 
 def test_action_plan_confirmation_is_exact_and_executes_once(
@@ -208,7 +208,7 @@ def test_evidence_analysis_uses_the_same_typed_handler_for_manual_and_chat(
     def evidence_provider(_profile: str) -> StructuredGenerationProvider:
         return provider
 
-    monkeypatch.setattr("app.api.action_plans.get_generation_provider", evidence_provider)
+    monkeypatch.setattr("app.action_planning.get_generation_provider", evidence_provider)
 
     manual = client.post(
         f"/api/artifact-versions/{artifact_version_id}/evidence/analyze",

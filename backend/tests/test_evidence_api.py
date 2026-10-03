@@ -37,7 +37,7 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class FakeGenerationProvider:
-    supports_phase4_automatic_claim_scan: bool = False
+    supports_automatic_claim_scan: bool = False
     empty_automatic_claim_scan: bool = False
 
     def __init__(self, generated_contents: list[str] | None = None) -> None:
@@ -174,7 +174,7 @@ def set_providers(
 ) -> None:
     from app.main import app
 
-    generation.supports_phase4_automatic_claim_scan = automatic_claim_scan
+    generation.supports_automatic_claim_scan = automatic_claim_scan
     app.dependency_overrides[get_generation_provider] = lambda: generation
     app.dependency_overrides[get_analysis_provider] = lambda: analysis
 

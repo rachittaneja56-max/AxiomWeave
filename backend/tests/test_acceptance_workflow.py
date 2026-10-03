@@ -22,7 +22,7 @@ from app.presentation import PresentationSpec, SlideSpec
 
 
 class AcceptanceProvider:
-    supports_phase4_automatic_claim_scan = True
+    supports_automatic_claim_scan = True
 
     def __init__(self) -> None:
         self.presentation_attempts = 0

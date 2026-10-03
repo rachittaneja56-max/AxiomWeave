@@ -14,7 +14,7 @@ TaskProfile = Literal[
     "asr",
 ]
 
-PROFILE_VERSION = "phase6-model-policy-v1"
+PROFILE_VERSION = "task-model-policy-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +122,6 @@ def current_model_registry(settings: Settings | None = None) -> list[dict[str, o
                 "provider": resolved.provider or "NOT_CONFIGURED",
                 "model": resolved.model or "NOT_CONFIGURED",
                 "status": resolved.status,
-                "final_promoted": "PENDING FINAL EVALUATION",
                 "privacy": {
                     "external_processing": resolved.privacy.external_processing,
                     "storage_setting": resolved.privacy.storage_setting,
@@ -137,7 +136,6 @@ def current_model_registry(settings: Settings | None = None) -> list[dict[str, o
             "provider": "NOT_CONFIGURED",
             "model": "NOT_CONFIGURED",
             "status": "not_configured",
-            "final_promoted": "PENDING FINAL EVALUATION",
         }
         for task in ("tts", "image_generation", "video_generation")
     )

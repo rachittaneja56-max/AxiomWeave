@@ -122,7 +122,7 @@ class RevisionProvider:
 
 
 class CompleteEmptyScanRevisionProvider(RevisionProvider):
-    supports_phase4_automatic_claim_scan = True
+    supports_automatic_claim_scan = True
 
     async def generate_structured[TModel: BaseModel](
         self, request: GenerationRequest, response_model: type[TModel]

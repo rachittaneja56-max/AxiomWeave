@@ -89,12 +89,12 @@ class ASRExtractor(Protocol):
 
 
 def get_vision_extractor() -> VisionExtractor | None:
-    """No live vision provider is selected in this phase."""
+    """No live vision provider is configured."""
     return None
 
 
 def get_asr_extractor() -> ASRExtractor | None:
-    """No live ASR provider is selected in this phase."""
+    """No live ASR provider is configured."""
     return None
 
 

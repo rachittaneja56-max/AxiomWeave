@@ -78,8 +78,8 @@ SOURCE_QUOTES = [
 
 
 class PhaseFourProvider:
-    supports_phase4_lineage = True
-    supports_phase4_automatic_claim_scan = True
+    supports_lineage = True
+    supports_automatic_claim_scan = True
 
     def __init__(self, invalid_region_ids: list[int]) -> None:
         self.invalid_region_ids = invalid_region_ids
@@ -238,15 +238,15 @@ def test_lineage_validation_evidence_states_and_human_adjudication(
     auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
 ) -> None:
     client, _engine, factory = auth_database
-    owner_cookie = login(client, "phase4-owner")
+    owner_cookie = login(client, "lineage-owner")
     same_owner_external_id = create_transformation(
-        client, "A region in a different source pack.", "phase4-owner"
+        client, "A region in a different source pack.", "lineage-owner"
     )
-    target_transformation_id = create_transformation(client, SOURCE_TEXT, "phase4-owner")
+    target_transformation_id = create_transformation(client, SOURCE_TEXT, "lineage-owner")
 
-    other_owner_cookie = login(client, "phase4-other-owner")
+    other_owner_cookie = login(client, "lineage-other-owner")
     other_owner_external_id = create_transformation(
-        client, "A private region owned by someone else.", "phase4-other-owner"
+        client, "A private region owned by someone else.", "lineage-other-owner"
     )
     with factory() as session:
         same_owner_version_id = session.scalar(
@@ -337,7 +337,7 @@ def test_lineage_validation_evidence_states_and_human_adjudication(
 
     with factory() as session:
         artifact_version = session.get(ArtifactVersion, version_id)
-        owner = session.scalar(select(User).where(User.username == "phase4_owner"))
+        owner = session.scalar(select(User).where(User.username == "lineage_owner"))
         assert artifact_version is not None and artifact_version.context_manifest_id is not None
         assert owner is not None
         entry = session.scalar(

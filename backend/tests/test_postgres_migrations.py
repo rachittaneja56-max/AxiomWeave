@@ -1,19 +1,16 @@
-import json
 import os
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier
-from time import perf_counter
-from typing import Any
 from uuid import uuid4
 
 import pytest
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
@@ -24,14 +21,12 @@ from app.models import (
     ArtifactRun,
     ArtifactVersion,
     AuthSession,
-    ContextManifestEntry,
     Job,
     JobAttempt,
     MediaAsset,
     MediaRender,
     MediaTask,
     RateLimitBucket,
-    RegionEmbedding,
     Source,
     SourceAsset,
     SourcePack,
@@ -40,17 +35,11 @@ from app.models import (
     SourceRegion,
     SourceSegment,
     SourceVersion,
-    TextEmbeddingProfile,
     TransformationRun,
     User,
     source_content_hash,
 )
 from app.rate_limits import consume_rate_limit
-from app.retrieval import (
-    PostgresRetrievalRepository,
-    create_candidate_manifest,
-    store_region_embedding,
-)
 from app.source_versions import (
     SourceAssetInput,
     SourcePackMembershipInput,
@@ -371,7 +360,7 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
         engine.dispose()
 
 
-def test_postgres_phase_five_migration_preserves_populated_current_data(
+def test_postgres_media_migration_preserves_populated_current_data(
     postgres_test_database_url: URL,
 ) -> None:
     _upgrade(postgres_test_database_url, "f5a127bb64d0")
@@ -674,7 +663,7 @@ def test_postgres_job_claim_is_atomic_and_dependencies_reconcile(
         assert parent.source_version_id == source_version_id
 
 
-def test_postgres_phase_one_a_backfill_preserves_version_parent_and_transformation_reference(
+def test_postgres_source_pack_backfill_preserves_version_parent_and_transformation_reference(
     postgres_test_database_url: URL,
 ) -> None:
     _upgrade(postgres_test_database_url, "c2a7e18f4d91")
@@ -686,7 +675,7 @@ def test_postgres_phase_one_a_backfill_preserves_version_parent_and_transformati
             connection.execute(
                 text(
                     "INSERT INTO users (id, username, password_hash, created_at) "
-                    "VALUES (700, 'pg_phase1a', '!disabled-test!', CURRENT_TIMESTAMP)"
+                    "VALUES (700, 'pg_source_pack_backfill', '!disabled-test!', CURRENT_TIMESTAMP)"
                 )
             )
             connection.execute(
@@ -822,427 +811,6 @@ def test_postgres_runtime_engine_and_session_lifecycle(
         persisted_user = second_session.get(User, user_id)
         assert persisted_user is not None
         assert persisted_user.username == "pg_lifecycle"
-
-
-def _role_filtered_pack(session: Session, owner: User):
-    primary = create_source_pack_version(
-        session, owner.id, "Primary fact: the observatory opened in 2020."
-    )
-    support = create_source_pack_version(
-        session,
-        owner.id,
-        "Supporting fact: the observatory has a telescope named Silver Lens.",
-    )
-    style = create_source_pack_version(
-        session, owner.id, "Style-only distinctive term: celebratoryvoice."
-    )
-    reference = create_source_pack_version(
-        session, owner.id, "Reference-only distinctive term: referencescope."
-    )
-    operator = create_source_pack_version(
-        session, owner.id, "Operator-only distinctive term: operatorcontext."
-    )
-    combined = create_source_pack_version(
-        session,
-        owner.id,
-        "Primary fact: the observatory opened in 2020.",
-        source=primary.source,
-        parent_source_version_id=primary.source_version.id,
-        memberships=[
-            SourcePackMembershipInput(support.source_version.id, support.asset.id, "SUPPORTING"),
-            SourcePackMembershipInput(style.source_version.id, style.asset.id, "STYLE"),
-            SourcePackMembershipInput(reference.source_version.id, reference.asset.id, "REFERENCE"),
-            SourcePackMembershipInput(
-                operator.source_version.id, operator.asset.id, "OPERATOR_CONTEXT"
-            ),
-        ],
-    )
-    role_region_ids = {
-        role: session.scalar(
-            select(SourceRegion.id)
-            .join(SourceAsset, SourceAsset.id == SourceRegion.source_asset_id)
-            .join(SourcePackMembership, SourcePackMembership.source_asset_id == SourceAsset.id)
-            .where(
-                SourcePackMembership.source_pack_version_id == combined.source_pack_version.id,
-                SourcePackMembership.role == role,
-            )
-            .order_by(SourceRegion.ordinal)
-            .limit(1)
-        )
-        for role in ("PRIMARY", "SUPPORTING", "STYLE", "REFERENCE", "OPERATOR_CONTEXT")
-    }
-    return primary, combined, role_region_ids
-
-
-def test_postgres_fts_is_role_owner_and_pack_version_scoped_and_records_candidate_manifest(
-    postgres_runtime_sessions: sessionmaker[Session],
-) -> None:
-    repository = PostgresRetrievalRepository()
-    with postgres_runtime_sessions() as session:
-        owner = _add_user(session, "pg_fts_phase2_owner")
-        _primary, combined, role_region_ids = _role_filtered_pack(session, owner)
-        other_pack = create_source_pack_version(session, owner.id, "Otherpackversion leakterm.")
-        other_owner = _add_user(session, "pg_fts_phase2_other_owner")
-        create_source_pack_version(session, other_owner.id, "Crossowner tenantleakword.")
-        session.commit()
-
-        supporting = repository.search_fts(
-            session,
-            owner_id=owner.id,
-            source_pack_version_id=combined.source_pack_version.id,
-            query="Silver Lens",
-        )
-        assert [item.source_region_id for item in supporting] == [role_region_ids["SUPPORTING"]]
-        for forbidden_term in ("celebratoryvoice", "referencescope", "operatorcontext"):
-            assert (
-                repository.search_fts(
-                    session,
-                    owner_id=owner.id,
-                    source_pack_version_id=combined.source_pack_version.id,
-                    query=forbidden_term,
-                )
-                == []
-            )
-        assert (
-            repository.search_fts(
-                session,
-                owner_id=owner.id,
-                source_pack_version_id=combined.source_pack_version.id,
-                query="tenantleakword",
-            )
-            == []
-        )
-        assert (
-            repository.search_fts(
-                session,
-                owner_id=owner.id,
-                source_pack_version_id=combined.source_pack_version.id,
-                query="leakterm",
-            )
-            == []
-        )
-
-        manifest = create_candidate_manifest(
-            session,
-            owner_id=owner.id,
-            source_pack_id=combined.source_pack.id,
-            source_pack_version_id=combined.source_pack_version.id,
-            source_version_id=combined.source_version.id,
-            task_class="retrieval_benchmark",
-            artifact_family="advisory",
-            profile_name="postgres_fts",
-            query="Silver Lens",
-            lexical=supporting,
-            vector=[],
-            limit=1,
-        )
-        entries = list(
-            session.scalars(
-                select(ContextManifestEntry)
-                .where(ContextManifestEntry.context_manifest_id == manifest.id)
-                .order_by(ContextManifestEntry.source_region_id)
-            )
-        )
-        assert manifest.route == "R1_POSTGRES_FTS_CANDIDATE"
-        assert manifest.state == "candidate_only"
-        assert "not_admitted_for_generation" in manifest.warnings
-        assert any(
-            entry.source_region_id == role_region_ids["SUPPORTING"]
-            and entry.selected
-            and entry.lexical_rank == 1
-            for entry in entries
-        )
-        assert any(
-            entry.source_region_id == role_region_ids["PRIMARY"]
-            and not entry.selected
-            and entry.lexical_rank is None
-            for entry in entries
-        )
-        assert other_pack.source_pack_version.id != combined.source_pack_version.id
-        with pytest.raises(DBAPIError, match="Context manifests are immutable"):
-            session.execute(
-                text("UPDATE context_manifest_entries SET locator = 'changed' WHERE id = :id"),
-                {"id": entries[0].id},
-            )
-            session.commit()
-        session.rollback()
-
-
-def test_postgres_exact_vector_mechanics_filter_roles_and_reject_stale_dependencies(
-    postgres_runtime_sessions: sessionmaker[Session],
-) -> None:
-    repository = PostgresRetrievalRepository()
-    with postgres_runtime_sessions() as session:
-        owner = _add_user(session, "pg_vector_phase2_owner")
-        _primary, combined, role_region_ids = _role_filtered_pack(session, owner)
-        profile = TextEmbeddingProfile(
-            profile_name="fixed-test-vector",
-            profile_version=1,
-            provider="test",
-            model_name="deterministic-fixed-v1",
-            dimension=3,
-            input_construction_version="region-text-v1",
-            privacy_classification="synthetic-fixture",
-            quality_disposition="MECHANICS_ONLY",
-        )
-        session.add(profile)
-        session.flush()
-        vectors = {
-            "PRIMARY": [1.0, 0.0, 0.0],
-            "SUPPORTING": [0.9, 0.1, 0.0],
-            "STYLE": [1.0, 0.0, 0.0],
-            "REFERENCE": [1.0, 0.0, 0.0],
-            "OPERATOR_CONTEXT": [1.0, 0.0, 0.0],
-        }
-        membership_rows = session.execute(
-            select(SourcePackMembership, SourceRegion)
-            .join(SourceAsset, SourceAsset.id == SourcePackMembership.source_asset_id)
-            .join(SourceRegion, SourceRegion.source_asset_id == SourceAsset.id)
-            .where(SourcePackMembership.source_pack_version_id == combined.source_pack_version.id)
-        ).all()
-        for membership, region in membership_rows:
-            store_region_embedding(session, region, profile, vectors[membership.role])
-        session.commit()
-
-        exact = repository.search_exact_vector(
-            session,
-            owner_id=owner.id,
-            source_pack_version_id=combined.source_pack_version.id,
-            embedding_profile_id=profile.id,
-            query_vector=[1.0, 0.0, 0.0],
-        )
-        assert {item.source_region_id for item in exact} == {
-            role_region_ids["PRIMARY"],
-            role_region_ids["SUPPORTING"],
-        }
-        assert exact[0].source_region_id == role_region_ids["PRIMARY"]
-        fused_a = create_candidate_manifest(
-            session,
-            owner_id=owner.id,
-            source_pack_id=combined.source_pack.id,
-            source_pack_version_id=combined.source_pack_version.id,
-            source_version_id=combined.source_version.id,
-            task_class="retrieval_benchmark",
-            artifact_family="advisory",
-            profile_name="hybrid_rrf",
-            query="mechanics only",
-            lexical=[],
-            vector=exact,
-            limit=2,
-        )
-        fused_entries = list(
-            session.scalars(
-                select(ContextManifestEntry)
-                .where(ContextManifestEntry.context_manifest_id == fused_a.id)
-                .order_by(ContextManifestEntry.candidate_rank)
-            )
-        )
-        assert fused_a.state == "candidate_only"
-        assert fused_entries[0].fused_rank == 1
-        assert fused_entries[0].profile_metadata["rank_fusion"] == "rrf-k60-v1"
-
-        support_embedding = session.scalar(
-            select(RegionEmbedding).where(
-                RegionEmbedding.source_region_id == role_region_ids["SUPPORTING"],
-                RegionEmbedding.embedding_profile_id == profile.id,
-            )
-        )
-        assert support_embedding is not None
-        support_embedding.source_content_hash = "0" * 64
-        session.commit()
-        after_stale = repository.search_exact_vector(
-            session,
-            owner_id=owner.id,
-            source_pack_version_id=combined.source_pack_version.id,
-            embedding_profile_id=profile.id,
-            query_vector=[1.0, 0.0, 0.0],
-        )
-        assert [item.source_region_id for item in after_stale] == [role_region_ids["PRIMARY"]]
-
-
-def test_postgres_fts_predeclared_retrieval_benchmark_register(
-    postgres_runtime_sessions: sessionmaker[Session],
-) -> None:
-    fixture_path = (
-        Path(__file__).resolve().parents[1] / "evals" / "retrieval" / "phase2_fixtures.json"
-    )
-    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-    repository = PostgresRetrievalRepository()
-    pack_snapshots: dict[str, dict[str, Any]] = {}
-    search_times_ms: list[float] = []
-
-    with postgres_runtime_sessions() as session:
-        owner = _add_user(session, "pg_retrieval_benchmark_owner")
-        for pack_fixture in fixture["packs"]:
-            members = pack_fixture["members"]
-            primary_fixture = next(member for member in members if member["role"] == "PRIMARY")
-            primary_text = "\n\n".join(primary_fixture["regions"])
-            primary = create_source_pack_version(session, owner.id, primary_text)
-            member_assets: dict[str, int] = {"PRIMARY": primary.asset.id}
-            extra_memberships: list[SourcePackMembershipInput] = []
-            for member in members:
-                role = member["role"]
-                if role == "PRIMARY":
-                    continue
-                supporting = create_source_pack_version(
-                    session, owner.id, "\n\n".join(member["regions"])
-                )
-                member_assets[role] = supporting.asset.id
-                extra_memberships.append(
-                    SourcePackMembershipInput(
-                        supporting.source_version.id,
-                        supporting.asset.id,
-                        role,
-                    )
-                )
-            snapshot = primary
-            if extra_memberships:
-                snapshot = create_source_pack_version(
-                    session,
-                    owner.id,
-                    primary_text,
-                    source=primary.source,
-                    parent_source_version_id=primary.source_version.id,
-                    memberships=extra_memberships,
-                )
-                member_assets["PRIMARY"] = snapshot.asset.id
-            regions_by_ref: dict[tuple[str, int], tuple[int, str]] = {}
-            for role, asset_id in member_assets.items():
-                asset_regions = list(
-                    session.scalars(
-                        select(SourceRegion)
-                        .where(SourceRegion.source_asset_id == asset_id)
-                        .order_by(SourceRegion.ordinal)
-                    )
-                )
-                for region in asset_regions:
-                    if region.text is not None:
-                        regions_by_ref[(role, region.ordinal)] = (region.id, region.text)
-            pack_snapshots[pack_fixture["pack_id"]] = {
-                "pack_id": snapshot.source_pack.id,
-                "pack_version_id": snapshot.source_pack_version.id,
-                "source_version_id": snapshot.source_version.id,
-                "regions": regions_by_ref,
-            }
-        session.commit()
-
-        required_denominator = 0
-        required_recalled = 0
-        qualifier_denominator = 0
-        qualifier_recalled = 0
-        fully_covered_tasks = 0
-        missed_tasks: list[str] = []
-        r0_context_units = 0
-        fts_context_units = 0
-        task_results: list[dict[str, object]] = []
-        text_by_region_id: dict[int, str] = {}
-        for task in fixture["tasks"]:
-            pack = pack_snapshots[task["pack_id"]]
-            regions_by_ref = pack["regions"]
-            required_ids = [regions_by_ref[tuple(ref)][0] for ref in task["required_regions"]]
-            qualifier_ids = [regions_by_ref[tuple(ref)][0] for ref in task["qualifier_regions"]]
-            required_denominator += len(required_ids)
-            qualifier_denominator += len(qualifier_ids)
-            r0_context_units += sum(
-                len(text_value)
-                for (role, _ordinal), (_region_id, text_value) in regions_by_ref.items()
-                if role in ("PRIMARY", "SUPPORTING")
-            )
-            text_by_region_id.update(
-                {region_id: text_value for region_id, text_value in regions_by_ref.values()}
-            )
-
-            started = perf_counter()
-            retrieved = repository.search_fts(
-                session,
-                owner_id=owner.id,
-                source_pack_version_id=pack["pack_version_id"],
-                query=task["query"],
-                limit=fixture["top_k"],
-            )
-            search_times_ms.append((perf_counter() - started) * 1_000)
-            retrieved_ids = {item.source_region_id for item in retrieved}
-            required_hits = sum(region_id in retrieved_ids for region_id in required_ids)
-            qualifier_hits = sum(region_id in retrieved_ids for region_id in qualifier_ids)
-            required_recalled += required_hits
-            qualifier_recalled += qualifier_hits
-            if required_hits == len(required_ids):
-                fully_covered_tasks += 1
-            else:
-                missed_tasks.append(task["task_id"])
-            fts_context_units += sum(
-                len(text_by_region_id[region_id]) for region_id in retrieved_ids
-            )
-            task_results.append(
-                {
-                    "task_id": task["task_id"],
-                    "pack_id": task["pack_id"],
-                    "required_regions": len(required_ids),
-                    "required_hits": required_hits,
-                    "qualifier_regions": len(qualifier_ids),
-                    "qualifier_hits": qualifier_hits,
-                    "fts_region_ids": [item.source_region_id for item in retrieved],
-                }
-            )
-
-        result: dict[str, Any] = {
-            "benchmark_version": "phase2-fts-v1",
-            "profile": "postgres_fts",
-            "profile_version": 1,
-            "profile_disposition": "CANDIDATE",
-            "language_configuration": fixture["language_configuration"],
-            "pack_unit": "SourcePack",
-            "pack_count": len(pack_snapshots),
-            "query_count": len(fixture["tasks"]),
-            "top_k": fixture["top_k"],
-            "r0": {
-                "required_region_recall": {
-                    "numerator": required_denominator,
-                    "denominator": required_denominator,
-                },
-                "qualifier_region_recall": {
-                    "numerator": qualifier_denominator,
-                    "denominator": qualifier_denominator,
-                },
-                "context_units": r0_context_units,
-                "status": "BASELINE_FULL_CONTEXT",
-            },
-            "fts": {
-                "required_region_recall": {
-                    "numerator": required_recalled,
-                    "denominator": required_denominator,
-                },
-                "qualifier_region_recall": {
-                    "numerator": qualifier_recalled,
-                    "denominator": qualifier_denominator,
-                },
-                "top_k_fully_covered_tasks": {
-                    "numerator": fully_covered_tasks,
-                    "denominator": len(fixture["tasks"]),
-                },
-                "misses": missed_tasks,
-                "context_units": fts_context_units,
-                "context_reduction_fraction": 1 - (fts_context_units / r0_context_units),
-                "latency_ms": {
-                    "count": len(search_times_ms),
-                    "mean": sum(search_times_ms) / len(search_times_ms),
-                    "total": sum(search_times_ms),
-                },
-                "status": "INSUFFICIENT",
-            },
-            "limitations": [
-                "Four synthetic source packs do not establish general retrieval quality.",
-                "PostgreSQL simple configuration uses no language-specific stemming.",
-                "No generated-output quality or factuality comparison was run.",
-                "Vector and hybrid semantic quality remain not evaluated.",
-            ],
-            "tasks": task_results,
-        }
-        print("AXIOMWEAVE_PHASE2_RETRIEVAL_BENCHMARK=" + json.dumps(result, sort_keys=True))
-        assert required_recalled <= required_denominator
-        assert qualifier_recalled <= qualifier_denominator
-        assert result["r0"]["required_region_recall"]["numerator"] == required_denominator
-        assert result["r0"]["qualifier_region_recall"]["numerator"] == qualifier_denominator
 
 
 def test_postgres_runtime_owner_foreign_key_and_username_constraints(

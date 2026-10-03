@@ -18,7 +18,7 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class FailFirstClaimScanProvider:
-    supports_phase4_automatic_claim_scan = True
+    supports_automatic_claim_scan = True
 
     def __init__(self) -> None:
         self.scan_attempts = 0
@@ -72,7 +72,7 @@ def test_worker_restart_resumes_failed_durable_claim_scan(
     assert failed["completed_batches"] == 0
     assert failed["failed_batches"] == 1
 
-    asyncio.run(run_worker(factory, provider, "phase4-recovery-test", once=True))
+    asyncio.run(run_worker(factory, provider, "worker-recovery-test", once=True))
     recovered = client.get(f"/api/artifact-versions/{version_id}/claim-scan").json()
     assert recovered["status"] == "complete"
     assert recovered["total_batches"] == recovered["completed_batches"] == 1
