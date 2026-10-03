@@ -243,7 +243,7 @@ def test_postgres_populated_legacy_auth_upgrade_preserves_data(
                 text("SELECT owner_id FROM sources WHERE title = 'Legacy source'")
             )
 
-        assert revision == "a3f709e62b14"
+        assert revision == "c4a91b0d7e22"
         assert user["id"] == 42
         assert user["username"] == "legacy-migrated-42"
         assert user["password_hash"] == "!disabled-legacy-google!"
