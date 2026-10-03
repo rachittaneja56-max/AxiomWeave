@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import { X } from "lucide-react";
 import type { SourceVersionContent } from "../types";
 
@@ -18,7 +18,7 @@ export function SourceViewerDialog({
     return source.source_text.indexOf(quote);
   }, [quote, source.source_text]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     dialogRef.current?.focus();
     if (match >= 0 && typeof markRef.current?.scrollIntoView === "function") {
