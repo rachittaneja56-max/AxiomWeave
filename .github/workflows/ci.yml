@@ -57,7 +57,7 @@ jobs:
       - run: uv run pytest
         working-directory: backend
       - name: Generate deterministic Phase 5 human-review bundle
-        run: uv run python scripts/create_phase5_bundle.py --output-dir .phase5-human-review
+        run: uv run python -m scripts.create_phase5_bundle --output-dir .phase5-human-review
         working-directory: backend
       - name: Upload Phase 5 human-review bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
