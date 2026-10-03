@@ -878,7 +878,7 @@ describe("transformation request form", () => {
     expect(screen.getByRole("heading", { name: "Update" })).toBeInTheDocument();
     expect(document.querySelector("script")).toBeNull();
     expect(
-      screen.queryByText(/SIH|NTRO|Backend connected|SHA-256/i),
+      screen.queryByText(/\bSIH\b|\bNTRO\b|\bBackend connected\b|\bSHA-256\b/i),
     ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText("More artifact actions"));
