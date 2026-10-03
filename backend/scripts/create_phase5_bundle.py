@@ -74,6 +74,7 @@ def _write_json(path: Path, payload: object) -> None:
 
 
 def create_bundle(output_dir: Path) -> dict[str, object]:
+    output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     infographic = InfographicSpec.model_validate(INFOGRAPHIC_JSON)
     video = VideoPackageSpec.model_validate(VIDEO_JSON)
