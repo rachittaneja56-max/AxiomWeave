@@ -300,7 +300,7 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
         } <= set(inspector.get_table_names())
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "f2c6a19b5d40"
+        assert revision == "a3f709e62b14"
         asset_columns = {
             column["name"]: column for column in inspector.get_columns("source_assets")
         }
