@@ -22,6 +22,9 @@ class GenerationResult:
     text: str
     provider: str
     model: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_state: str = "disabled"
 
 
 class GenerationProviderError(Exception):
@@ -43,6 +46,9 @@ class StructuredGenerationResult[T: BaseModel]:
     value: T
     provider: str
     model: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_state: str = "disabled"
 
 
 class StructuredGenerationProvider(Protocol):

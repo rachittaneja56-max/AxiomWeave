@@ -1,0 +1,17 @@
+{
+  "registry_version": "phase6-candidate-registry-v1",
+  "promotion_policy": "Only Final Release Evaluation may promote a profile. No candidate is promoted in Phase 6.",
+  "profiles": [
+    {"task": "artifact_generation", "current_default": "gpt-6-luna", "candidates": ["gpt-6-luna", "gpt-5-nano"], "status": "current_default", "final_promoted": "PENDING FINAL EVALUATION"},
+    {"task": "lineage_analysis", "current_default": "gpt-6-luna", "candidates": ["gpt-6-luna", "gpt-5-nano"], "status": "current_default", "final_promoted": "PENDING FINAL EVALUATION"},
+    {"task": "evidence_analysis", "current_default": "gpt-6-luna", "candidates": ["gpt-6-luna", "gpt-5-nano"], "status": "current_default", "final_promoted": "PENDING FINAL EVALUATION"},
+    {"task": "consistency_analysis", "current_default": "gpt-6-luna", "candidates": ["gpt-6-luna", "gpt-5-nano"], "status": "current_default", "final_promoted": "PENDING FINAL EVALUATION"},
+    {"task": "action_planning", "current_default": "gpt-6-luna", "candidates": ["gpt-6-luna", "gpt-5-nano"], "status": "current_default", "final_promoted": "PENDING FINAL EVALUATION"},
+    {"task": "document_ocr", "current_default": "gpt-5-nano", "candidates": ["gpt-5-nano", "gpt-6-luna"], "status": "current_default", "final_promoted": "PENDING FINAL EVALUATION"},
+    {"task": "vision_extraction", "current_default": "NOT_CONFIGURED", "candidates": [], "status": "not_configured", "final_promoted": "PENDING FINAL EVALUATION"},
+    {"task": "asr", "current_default": "NOT_CONFIGURED", "candidates": [], "status": "not_configured", "final_promoted": "PENDING FINAL EVALUATION"},
+    {"task": "tts", "current_default": "NOT_CONFIGURED", "candidates": [], "status": "not_configured", "final_promoted": "PENDING FINAL EVALUATION"},
+    {"task": "image_generation", "current_default": "NOT_CONFIGURED", "candidates": [], "status": "not_configured", "final_promoted": "PENDING FINAL EVALUATION"},
+    {"task": "video_generation", "current_default": "NOT_CONFIGURED", "candidates": [], "status": "not_configured", "final_promoted": "PENDING FINAL EVALUATION"}
+  ]
+}

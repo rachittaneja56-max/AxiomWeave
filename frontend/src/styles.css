@@ -2104,6 +2104,199 @@ h4 {
 
 /* Review workspace */
 
+.action-chat {
+  display: grid;
+  gap: 14px;
+  margin: 18px 0 22px;
+  padding: 18px;
+  border: 1px solid #dce3dc;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.action-chat__heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 3px 0 5px;
+  font-size: 1.1rem;
+}
+
+.action-chat__heading h2 svg {
+  width: 19px;
+  height: 19px;
+}
+
+.action-chat__heading p:not(.eyebrow),
+.action-chat__empty,
+.action-chat__form-footer span {
+  margin: 0;
+  color: #58645b;
+  font-size: 0.88rem;
+}
+
+.action-chat__history {
+  display: grid;
+  gap: 12px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.action-chat__message {
+  display: grid;
+  gap: 7px;
+  max-width: min(900px, 100%);
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #f5f7f4;
+}
+
+.action-chat__message--user {
+  justify-self: end;
+  background: #edf3e9;
+}
+
+.action-chat__message > p,
+.action-plan-card > p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.action-chat__form {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #e5e9e4;
+  padding-top: 14px;
+}
+
+.action-chat__form textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid #cbd5ca;
+  border-radius: 8px;
+  font: inherit;
+}
+
+.action-chat__form-footer,
+.action-plan-card__topline,
+.action-plan-card__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.action-chat__form-footer .button-primary {
+  flex: 0 0 auto;
+}
+
+.action-plan-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px solid #cbd8c7;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.action-plan-card h3 {
+  margin: 0;
+  font-size: 0.96rem;
+}
+
+.action-plan-status {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #eef1ed;
+  color: #46534a;
+  font-size: 0.75rem;
+  text-transform: capitalize;
+}
+
+.action-plan-status--awaiting_confirmation {
+  background: #fff3d9;
+  color: #79520a;
+}
+
+.action-plan-status--completed {
+  background: #e5f3e7;
+  color: #205b32;
+}
+
+.action-plan-status--failed,
+.action-plan-status--partially_completed,
+.action-plan-status--expired {
+  background: #fce9e6;
+  color: #8d2d20;
+}
+
+.action-plan-steps {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.action-plan-steps li {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.action-plan-steps li > span:last-child {
+  display: grid;
+  gap: 3px;
+}
+
+.action-plan-steps small {
+  color: #58645b;
+}
+
+.action-plan-step-state {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid #cbd5ca;
+  border-radius: 50%;
+  color: #46534a;
+  font-size: 0.78rem;
+}
+
+.action-plan-step-state svg {
+  width: 14px;
+  height: 14px;
+}
+
+.action-plan-step-state--completed {
+  border-color: #8dbb93;
+  background: #e5f3e7;
+  color: #205b32;
+}
+
+.action-plan-step-state--failed,
+.action-plan-step-state--skipped {
+  border-color: #e2aba4;
+  background: #fce9e6;
+  color: #8d2d20;
+}
+
+.action-plan-card__actions {
+  justify-content: flex-end;
+  padding-top: 5px;
+}
+
+@media (max-width: 700px) {
+  .action-chat__form-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .review-screen {
   display: flex;
   min-height: 0;

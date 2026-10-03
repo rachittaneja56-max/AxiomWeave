@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import time
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -11,6 +13,8 @@ from sqlalchemy.orm import Session
 
 from app.artifact_lineage import add_validated_dependency
 from app.generation import GenerationRequest, StructuredGenerationProvider
+from app.model_policy import resolve_model_profile
+from app.model_usage import prompt_fingerprint, record_model_usage
 from app.models import (
     ArtifactBlock,
     ArtifactVersion,
@@ -159,18 +163,63 @@ async def assess_claims(
             }
             for region, role in regions.values()
         ]
-        result = await provider.generate_structured(
-            GenerationRequest(
-                application_instructions=SEMANTIC_EVIDENCE_INSTRUCTIONS,
-                transformation_instructions=(
-                    "Assess only the bounded supplied claims and candidate source regions. "
-                    "Return exact source-region offsets for any quoted evidence."
+        started_at = datetime.now(UTC)
+        started_clock = time.perf_counter()
+        try:
+            result = await provider.generate_structured(
+                GenerationRequest(
+                    application_instructions=SEMANTIC_EVIDENCE_INSTRUCTIONS,
+                    transformation_instructions=(
+                        "Assess only the bounded supplied claims and candidate source regions. "
+                        "Return exact source-region offsets for any quoted evidence."
+                    ),
+                    source_text=json.dumps(region_payload, ensure_ascii=False),
+                    artifact_content=json.dumps(claim_payload, ensure_ascii=False),
+                    max_output_tokens=4_000,
                 ),
-                source_text=json.dumps(region_payload, ensure_ascii=False),
-                artifact_content=json.dumps(claim_payload, ensure_ascii=False),
-                max_output_tokens=4_000,
+                SemanticEvidenceResult,
+            )
+        except Exception as error:
+            completed_at = datetime.now(UTC)
+            profile = resolve_model_profile("evidence_analysis")
+            record_model_usage(
+                session,
+                owner_id=user.id,
+                task_profile="evidence_analysis",
+                provider="openai",
+                model=profile.model or "unknown",
+                prompt_hash=prompt_fingerprint(
+                    SEMANTIC_EVIDENCE_INSTRUCTIONS,
+                    json.dumps(SemanticEvidenceResult.model_json_schema(), sort_keys=True),
+                ),
+                started_at=started_at,
+                completed_at=completed_at,
+                latency_ms=round((time.perf_counter() - started_clock) * 1_000),
+                result_state="failed",
+                error_class=type(error).__name__,
+                artifact_version_id=version.id,
+            )
+            session.commit()
+            raise
+        completed_at = datetime.now(UTC)
+        record_model_usage(
+            session,
+            owner_id=user.id,
+            task_profile="evidence_analysis",
+            provider=result.provider,
+            model=result.model,
+            prompt_hash=prompt_fingerprint(
+                SEMANTIC_EVIDENCE_INSTRUCTIONS,
+                json.dumps(SemanticEvidenceResult.model_json_schema(), sort_keys=True),
             ),
-            SemanticEvidenceResult,
+            started_at=started_at,
+            completed_at=completed_at,
+            latency_ms=round((time.perf_counter() - started_clock) * 1_000),
+            result_state="succeeded" if result.value.complete else "incomplete",
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cache_state=result.cache_state,
+            artifact_version_id=version.id,
         )
         items = result.value.assessments
         returned_ids = [item.material_claim_id for item in items]

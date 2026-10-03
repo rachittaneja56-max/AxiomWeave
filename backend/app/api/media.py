@@ -1,13 +1,21 @@
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.audit import record_audit_event
 from app.auth import require_current_user
+from app.commands import (
+    CreateMediaRenderCommand,
+    RetryFailedMediaTaskCommand,
+    ReviewMediaRenderCommand,
+    SceneMediaAction,
+    dispatch_application_command,
+)
 from app.database import get_db_session
 from app.media_renderer import MediaRenderError, probe_media_bytes, validate_image_bytes
 from app.media_workflows import (
@@ -21,6 +29,7 @@ from app.media_workflows import (
     rights_are_eligible,
 )
 from app.models import (
+    ArtifactRun,
     ArtifactVersion,
     Job,
     JobAttempt,
@@ -30,6 +39,7 @@ from app.models import (
     MediaReviewDecision,
     MediaRightsRecord,
     MediaTask,
+    TransformationRun,
     User,
     utc_now,
 )
@@ -38,6 +48,7 @@ from app.private_asset_storage import (
     AssetStorageError,
     get_private_asset_store,
 )
+from app.rate_limits import rate_limit_dependency
 
 router = APIRouter()
 
@@ -280,18 +291,21 @@ def _render_response(session: Session, render: MediaRender) -> MediaRenderRespon
     )
 
 
-@router.post(
-    "/artifact-versions/{artifact_version_id}/media-renders",
-    response_model=MediaRenderResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-def start_media_render(
+def execute_start_media_render(
     artifact_version_id: int,
     body: CreateMediaRenderRequest,
-    user: Annotated[User, Depends(require_current_user)],
-    session: Annotated[Session, Depends(get_db_session)],
+    user: User,
+    session: Session,
 ) -> MediaRenderResponse:
-    artifact = session.get(ArtifactVersion, artifact_version_id)
+    artifact = session.scalar(
+        select(ArtifactVersion)
+        .join(ArtifactRun, ArtifactRun.id == ArtifactVersion.artifact_run_id)
+        .join(TransformationRun, TransformationRun.id == ArtifactRun.transformation_run_id)
+        .where(
+            ArtifactVersion.id == artifact_version_id,
+            TransformationRun.owner_id == user.id,
+        )
+    )
     if artifact is None:
         raise HTTPException(status_code=404, detail="Artifact version not found")
     try:
@@ -300,14 +314,7 @@ def start_media_render(
             user.id,
             artifact,
             scene_durations_ms=body.scene_durations_ms,
-            scene_media=[
-                {
-                    "scene_index": item.scene_index,
-                    "visual_asset_id": item.visual_asset_id,
-                    "audio_asset_id": item.audio_asset_id,
-                }
-                for item in body.scene_media
-            ],
+            scene_media=[item.model_dump(exclude_none=True) for item in body.scene_media],
         )
         session.commit()
     except ValueError as error:
@@ -325,6 +332,39 @@ def start_media_render(
         ) from None
     session.refresh(render)
     return _render_response(session, render)
+
+
+@router.post(
+    "/artifact-versions/{artifact_version_id}/media-renders",
+    response_model=MediaRenderResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(rate_limit_dependency("media_render", limit=10, window_seconds=3600))],
+)
+def start_media_render(
+    artifact_version_id: int,
+    body: CreateMediaRenderRequest,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+    request: Request,
+) -> MediaRenderResponse:
+    result = dispatch_application_command(
+        CreateMediaRenderCommand(
+            artifact_version_id=artifact_version_id,
+            scene_durations_ms=body.scene_durations_ms,
+            scene_media=[
+                SceneMediaAction(
+                    scene_index=item.scene_index,
+                    visual_asset_id=item.visual_asset_id,
+                    audio_asset_id=item.audio_asset_id,
+                )
+                for item in body.scene_media
+            ],
+        ),
+        session=session,
+        user=user,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return cast(MediaRenderResponse, result)
 
 
 @router.get("/media-renders/{render_id}", response_model=MediaRenderResponse)
@@ -359,15 +399,10 @@ def list_media_renders(
     return [_render_response(session, row) for row in rows]
 
 
-@router.post(
-    "/media-renders/{render_id}/retry-failed",
-    response_model=MediaRenderResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-def retry_failed_media_task(
+def execute_retry_failed_media_task(
     render_id: int,
-    user: Annotated[User, Depends(require_current_user)],
-    session: Annotated[Session, Depends(get_db_session)],
+    user: User,
+    session: Session,
 ) -> MediaRenderResponse:
     render = _owned_render(session, render_id, user.id)
     if render is None:
@@ -395,18 +430,39 @@ def retry_failed_media_task(
     return _render_response(session, render)
 
 
-@router.patch("/media-renders/{render_id}/review", response_model=MediaRenderResponse)
-def review_media(
+@router.post(
+    "/media-renders/{render_id}/retry-failed",
+    response_model=MediaRenderResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(rate_limit_dependency("media_render", limit=10, window_seconds=3600))],
+)
+def retry_failed_media_task(
     render_id: int,
-    body: MediaReviewRequest,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
+    request: Request,
+) -> MediaRenderResponse:
+    result = dispatch_application_command(
+        RetryFailedMediaTaskCommand(render_id=render_id),
+        session=session,
+        user=user,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return cast(MediaRenderResponse, result)
+
+
+def execute_review_media(
+    render_id: int,
+    decision: Literal["approved", "rejected"],
+    note: str | None,
+    user: User,
+    session: Session,
 ) -> MediaRenderResponse:
     render = _owned_render(session, render_id, user.id)
     if render is None:
         raise HTTPException(status_code=404, detail="Media render not found")
     try:
-        review_media_render(session, render, user.id, body.decision, body.note)
+        review_media_render(session, render, user.id, decision, note)
         session.commit()
     except ValueError:
         session.rollback()
@@ -420,12 +476,39 @@ def review_media(
     return _render_response(session, render)
 
 
-@router.post("/media-assets/upload", response_model=MediaAssetResponse, status_code=201)
+@router.patch(
+    "/media-renders/{render_id}/review",
+    response_model=MediaRenderResponse,
+    dependencies=[Depends(rate_limit_dependency("media_render", limit=20, window_seconds=3600))],
+)
+def review_media(
+    render_id: int,
+    body: MediaReviewRequest,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+    request: Request,
+) -> MediaRenderResponse:
+    result = dispatch_application_command(
+        ReviewMediaRenderCommand(render_id=render_id, decision=body.decision, note=body.note),
+        session=session,
+        user=user,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return cast(MediaRenderResponse, result)
+
+
+@router.post(
+    "/media-assets/upload",
+    response_model=MediaAssetResponse,
+    status_code=201,
+    dependencies=[Depends(rate_limit_dependency("media_upload", limit=20, window_seconds=3600))],
+)
 async def upload_scene_asset(
     file: Annotated[UploadFile, File()],
     purpose: Annotated[Literal["scene_visual_upload", "scene_audio_upload"], Form()],
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
+    request: Request,
 ) -> MediaAssetResponse:
     filename = file.filename or ""
     suffix = filename.rpartition(".")[2].lower()
@@ -501,6 +584,15 @@ async def upload_scene_asset(
                 consent_required=False,
             )
         )
+        record_audit_event(
+            session,
+            owner_id=user.id,
+            action_type="media_asset.uploaded",
+            target_type="media_asset",
+            target_id=asset.id,
+            request_id=getattr(request.state, "request_id", None),
+            safe_metadata={"purpose": purpose},
+        )
         session.commit()
         session.refresh(asset)
         return _asset_response(asset)
@@ -547,6 +639,7 @@ def update_media_asset_rights(
     body: RightsUpdateRequest,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
+    request: Request,
 ) -> RightsResponse:
     asset = _owned_asset(session, asset_id, user.id)
     if asset is None:
@@ -564,6 +657,15 @@ def update_media_asset_rights(
     else:
         record.confirmed_by_user_id = None
         record.confirmed_at = None
+    record_audit_event(
+        session,
+        owner_id=user.id,
+        action_type="media_asset.rights_updated",
+        target_type="media_asset",
+        target_id=asset.id,
+        request_id=getattr(request.state, "request_id", None),
+        safe_metadata={"eligible_for_composition": rights_are_eligible(record)},
+    )
     session.commit()
     return _rights_response(record)
 

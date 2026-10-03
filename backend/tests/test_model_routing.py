@@ -1,5 +1,7 @@
 from typing import Any, cast
 
+from starlette.requests import Request
+
 from app.settings import Settings
 
 
@@ -20,6 +22,19 @@ def test_generation_and_analysis_use_primary_model(monkeypatch: Any) -> None:
     from app.api.generation import get_generation_provider
 
     get_generation_provider()
-    get_analysis_provider()
+    get_analysis_provider(
+        Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/artifact-versions/1/evidence/analyze",
+                "headers": [],
+                "query_string": b"",
+                "server": ("testserver", 80),
+                "client": ("testclient", 123),
+                "scheme": "http",
+            }
+        )
+    )
 
     assert captured == ["gpt-6-luna", "gpt-6-luna"]

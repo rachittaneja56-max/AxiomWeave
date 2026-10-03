@@ -1,6 +1,6 @@
 from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -8,6 +8,12 @@ from sqlalchemy.orm import Session
 
 from app.artifact_contracts import ARTIFACT_CONTRACTS
 from app.auth import require_current_user
+from app.commands import (
+    GenerateSelectedArtifactsCommand,
+    RegenerateArtifactCommand,
+    RetryArtifactCommand,
+    dispatch_application_command,
+)
 from app.database import get_db_session
 from app.domain.transformation import OutputType
 from app.job_queue import enqueue_artifact_job
@@ -21,6 +27,7 @@ from app.models import (
     User,
 )
 from app.provider_factory import get_generation_provider as get_generation_provider
+from app.rate_limits import rate_limit_dependency
 
 __all__ = ["get_generation_provider", "router"]
 
@@ -123,12 +130,7 @@ def _batch_status(
     return "succeeded"
 
 
-@router.post(
-    "/transformations/{transformation_run_id}/generate",
-    response_model=GenerationBatchResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-def generate_selected_artifacts(
+def execute_generate_selected_artifacts(
     transformation_run_id: int,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
@@ -205,11 +207,29 @@ def generate_selected_artifacts(
 
 
 @router.post(
-    "/artifact-runs/{artifact_run_id}/retry",
-    response_model=ArtifactRunDetail,
+    "/transformations/{transformation_run_id}/generate",
+    response_model=GenerationBatchResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(rate_limit_dependency("artifact_generation", limit=12, window_seconds=60))
+    ],
 )
-def retry_failed_artifact(
+def generate_selected_artifacts(
+    transformation_run_id: int,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+    request: Request,
+) -> GenerationBatchResponse:
+    result = dispatch_application_command(
+        GenerateSelectedArtifactsCommand(transformation_run_id=transformation_run_id),
+        session=session,
+        user=user,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return cast(GenerationBatchResponse, result)
+
+
+def execute_retry_failed_artifact(
     artifact_run_id: int,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
@@ -273,11 +293,29 @@ def retry_failed_artifact(
 
 
 @router.post(
-    "/artifact-runs/{artifact_run_id}/regenerate",
+    "/artifact-runs/{artifact_run_id}/retry",
     response_model=ArtifactRunDetail,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(rate_limit_dependency("artifact_generation", limit=12, window_seconds=60))
+    ],
 )
-def regenerate_artifact(
+def retry_failed_artifact(
+    artifact_run_id: int,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+    request: Request,
+) -> ArtifactRunDetail:
+    result = dispatch_application_command(
+        RetryArtifactCommand(artifact_run_id=artifact_run_id),
+        session=session,
+        user=user,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return cast(ArtifactRunDetail, result)
+
+
+def execute_regenerate_artifact(
     artifact_run_id: int,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
@@ -331,3 +369,26 @@ def regenerate_artifact(
         if artifact_run is None:
             raise HTTPException(status_code=404, detail="Artifact run not found") from None
     return _run_detail(session, user, artifact_run)
+
+
+@router.post(
+    "/artifact-runs/{artifact_run_id}/regenerate",
+    response_model=ArtifactRunDetail,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(rate_limit_dependency("artifact_generation", limit=12, window_seconds=60))
+    ],
+)
+def regenerate_artifact(
+    artifact_run_id: int,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+    request: Request,
+) -> ArtifactRunDetail:
+    result = dispatch_application_command(
+        RegenerateArtifactCommand(artifact_run_id=artifact_run_id),
+        session=session,
+        user=user,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return cast(ArtifactRunDetail, result)

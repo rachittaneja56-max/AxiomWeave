@@ -1,12 +1,13 @@
 from datetime import datetime
 from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.artifact_contracts import ARTIFACT_CONTRACTS
+from app.audit import record_audit_event
 from app.auth import require_current_user
 from app.claim_scanning import claim_scan_coverage
 from app.database import get_db_session
@@ -645,6 +646,7 @@ def save_transformation(
     transformation_request: CreateTransformationRequest,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
+    request: Request,
 ) -> SavedTransformation:
     try:
         if transformation_request.source_version_id is None:
@@ -682,6 +684,15 @@ def save_transformation(
         )
         session.add(run)
         session.flush()
+        record_audit_event(
+            session,
+            owner_id=user.id,
+            action_type="transformation.created",
+            target_type="transformation",
+            target_id=run.id,
+            request_id=getattr(request.state, "request_id", None),
+            safe_metadata={"output_type_count": len(transformation_request.output_types)},
+        )
         segment_count = (
             session.scalar(
                 select(func.count())

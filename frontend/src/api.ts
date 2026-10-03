@@ -21,9 +21,26 @@ async function requestJson(
   path: string,
   init: RequestInit = {},
 ): Promise<unknown> {
+  const method = (init.method ?? "GET").toUpperCase();
+  const headers = new Headers(init.headers);
+  if (!new Set(["GET", "HEAD", "OPTIONS"]).has(method)) {
+    let csrf: string | undefined;
+    try {
+      const encoded = document.cookie
+        .split(";")
+        .map((item) => item.trim())
+        .find((item) => item.startsWith("axiomweave_csrf="))
+        ?.slice("axiomweave_csrf=".length);
+      csrf = encoded ? decodeURIComponent(encoded) : undefined;
+    } catch {
+      csrf = undefined;
+    }
+    if (csrf) headers.set("X-CSRF-Token", csrf);
+  }
   const response = await fetch(path, {
     credentials: "include",
     ...init,
+    headers,
   });
   let body: unknown = null;
   if (response.status !== 204) {
@@ -80,6 +97,22 @@ export const api = {
       jsonInit("PATCH", rights),
     ) as Promise<MediaRights>,
   transformation: (id: number) => requestJson("/api/transformations/" + id),
+  chatWorkspace: (id: number) => requestJson(`/api/transformations/${id}/chat`),
+  proposeActionPlan: (id: number, message: string) =>
+    requestJson(
+      `/api/transformations/${id}/chat`,
+      jsonInit("POST", { message }),
+    ),
+  confirmActionPlan: (id: number, planHash: string, planVersion: number) =>
+    requestJson(
+      `/api/action-plans/${id}/confirm`,
+      jsonInit("POST", { plan_hash: planHash, plan_version: planVersion }),
+    ),
+  rejectActionPlan: (id: number, planHash: string, planVersion: number) =>
+    requestJson(
+      `/api/action-plans/${id}/reject`,
+      jsonInit("POST", { plan_hash: planHash, plan_version: planVersion }),
+    ),
   revisionImpact: (id: number) =>
     requestJson("/api/transformations/" + id + "/revision-impact"),
   extractTextFile: (file: File) => {

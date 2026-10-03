@@ -1,7 +1,9 @@
 import asyncio
 import json
 import socket
+import time
 from argparse import ArgumentParser
+from datetime import UTC, datetime
 from typing import cast
 from uuid import uuid4
 
@@ -40,6 +42,8 @@ from app.job_queue import (
     claim_next_job,
     normalize_utc,
 )
+from app.model_policy import PROFILE_VERSION, provider_profile_allows_source, resolve_model_profile
+from app.model_usage import prompt_fingerprint, record_model_usage
 from app.models import (
     ArtifactBlock,
     ArtifactBlockDependency,
@@ -51,6 +55,7 @@ from app.models import (
     Job,
     JobAttempt,
     KnowledgeAssertion,
+    ModelUsageRecord,
     SourcePackMembership,
     SourcePackVersion,
     SourceRegion,
@@ -92,6 +97,7 @@ async def _propose_lineage(
         manifest = session.get(ContextManifest, job.context_manifest_id) if job else None
         if job is None or manifest is None:
             return []
+        owner_id = manifest.owner_id
         entries = session.execute(
             select(ContextManifestEntry, SourceRegion, SourcePackMembership)
             .join(SourceRegion, SourceRegion.id == ContextManifestEntry.source_region_id)
@@ -153,14 +159,67 @@ async def _propose_lineage(
         artifact_content=json.dumps(block_payload, ensure_ascii=False),
         max_output_tokens=3_000,
     )
-    result = await cast(StructuredGenerationProvider, provider).generate_structured(
-        request, LineageProposalSet
-    )
+    started_at = datetime.now(UTC)
+    started_clock = time.perf_counter()
+    try:
+        result = await cast(StructuredGenerationProvider, provider).generate_structured(
+            request, LineageProposalSet
+        )
+    except Exception as error:
+        completed_at = datetime.now(UTC)
+        with session_factory() as session:
+            record_model_usage(
+                session,
+                owner_id=owner_id,
+                job_id=claim.job_id,
+                task_profile="lineage_analysis",
+                provider="openai" if hasattr(provider, "_client") else "provider",
+                model=str(getattr(provider, "_model", "unknown")),
+                prompt_hash=prompt_fingerprint(
+                    LINEAGE_PROPOSAL_INSTRUCTIONS,
+                    json.dumps(LineageProposalSet.model_json_schema(), sort_keys=True),
+                ),
+                started_at=started_at,
+                completed_at=completed_at,
+                latency_ms=round((time.perf_counter() - started_clock) * 1_000),
+                result_state="failed",
+                error_class=type(error).__name__,
+            )
+            session.commit()
+        raise
+    completed_at = datetime.now(UTC)
+    with session_factory() as session:
+        record_model_usage(
+            session,
+            owner_id=owner_id,
+            job_id=claim.job_id,
+            task_profile="lineage_analysis",
+            provider=result.provider,
+            model=result.model,
+            prompt_hash=prompt_fingerprint(
+                LINEAGE_PROPOSAL_INSTRUCTIONS,
+                json.dumps(LineageProposalSet.model_json_schema(), sort_keys=True),
+            ),
+            started_at=started_at,
+            completed_at=completed_at,
+            latency_ms=round((time.perf_counter() - started_clock) * 1_000),
+            result_state="succeeded",
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cache_state=result.cache_state,
+        )
+        session.commit()
     return result.value.proposals
 
 
 def _record_failure(
-    session_factory: sessionmaker[Session], claim: ClaimedJob, failure_code: str
+    session_factory: sessionmaker[Session],
+    claim: ClaimedJob,
+    failure_code: str,
+    *,
+    provider_name: str | None = None,
+    model_name: str | None = None,
+    prompt_hash: str | None = None,
 ) -> None:
     with session_factory() as session:
         job = session.scalar(select(Job).where(Job.id == claim.job_id).with_for_update())
@@ -191,6 +250,30 @@ def _record_failure(
         artifact_run = session.get(ArtifactRun, job.artifact_run_id)
         if artifact_run is not None:
             artifact_run.status = "failed"
+        if provider_name is not None and model_name is not None:
+            started_at = normalize_utc(attempt.started_at)
+            transformation = (
+                session.get(TransformationRun, artifact_run.transformation_run_id)
+                if artifact_run is not None
+                else None
+            )
+            session.add(
+                ModelUsageRecord(
+                    owner_id=transformation.owner_id if transformation is not None else None,
+                    job_id=job.id,
+                    task_profile="artifact_generation",
+                    provider=provider_name,
+                    model=model_name,
+                    profile_version=PROFILE_VERSION,
+                    prompt_hash=prompt_hash,
+                    started_at=started_at,
+                    completed_at=now,
+                    latency_ms=max(0, int((now - started_at).total_seconds() * 1_000)),
+                    result_state="failed",
+                    cache_state="disabled",
+                    error_class=failure_code,
+                )
+            )
         session.commit()
 
 
@@ -203,6 +286,9 @@ def _persist_success(
     prompt_version: str,
     prompt_hash: str,
     lineage_proposals: list[LineageProposalItem],
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    cache_state: str = "disabled",
 ) -> int | None:
     try:
         with session_factory() as session:
@@ -227,6 +313,7 @@ def _persist_success(
                 session.rollback()
                 return None
             now = utc_now()
+            started_at = normalize_utc(attempt.started_at)
             if job.lease_expires_at is not None and normalize_utc(job.lease_expires_at) <= now:
                 job.status = "failed"
                 job.failure_code = "worker_lease_expired"
@@ -267,6 +354,25 @@ def _persist_success(
             )
             session.add(artifact_version)
             session.flush()
+            session.add(
+                ModelUsageRecord(
+                    owner_id=transformation.owner_id,
+                    job_id=job.id,
+                    artifact_version_id=artifact_version.id,
+                    task_profile="artifact_generation",
+                    provider=provider_name,
+                    model=model_name,
+                    profile_version=PROFILE_VERSION,
+                    prompt_hash=prompt_hash,
+                    started_at=started_at,
+                    completed_at=now,
+                    latency_ms=max(0, int((now - started_at).total_seconds() * 1_000)),
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    result_state="succeeded",
+                    cache_state=cache_state,
+                )
+            )
             persist_artifact_blocks(
                 session,
                 artifact_version,
@@ -539,13 +645,17 @@ async def process_one_job(
         (
             artifact_run,
             transformation,
-            _source_version,
+            source_version,
             base_version,
             prior_source,
             changed_material,
             context_source_text,
             allowed_blocks,
         ) = _artifact_inputs(session_factory, claim)
+        profile = resolve_model_profile("artifact_generation")
+        if not provider_profile_allows_source(profile, source_version.sensitivity_class):
+            _record_failure(session_factory, claim, "provider_profile_ineligible")
+            return True
         output_type = OutputType(artifact_run.output_type)
         if base_version is None:
             request = build_artifact_request(transformation, context_source_text, output_type)
@@ -591,7 +701,13 @@ async def process_one_job(
         _record_failure(session_factory, claim, "invalid_output")
         return True
     except GenerationProviderError:
-        _record_failure(session_factory, claim, "generation_failed")
+        _record_failure(
+            session_factory,
+            claim,
+            "generation_failed",
+            provider_name="openai" if hasattr(provider, "_client") else "provider",
+            model_name=str(getattr(provider, "_model", "unknown")),
+        )
         return True
     except Exception:
         _record_failure(session_factory, claim, "generation_failed")
@@ -606,6 +722,9 @@ async def process_one_job(
         draft.prompt_version,
         draft.prompt_hash,
         lineage_proposals,
+        draft.input_tokens,
+        draft.output_tokens,
+        draft.cache_state,
     )
     if artifact_version_id is not None:
         await _run_automatic_claim_scan(session_factory, artifact_version_id, provider)

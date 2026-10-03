@@ -1,13 +1,15 @@
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.audit import record_audit_event
 from app.auth import require_current_user
+from app.commands import TargetedUpdateArtifactCommand, dispatch_application_command
 from app.database import get_db_session
 from app.job_queue import enqueue_artifact_job
 from app.models import (
@@ -19,6 +21,7 @@ from app.models import (
     TransformationRun,
     User,
 )
+from app.rate_limits import rate_limit_dependency
 from app.source_alignment import align_source_versions
 from app.source_revisions import (
     AffectedArtifactEvidence,
@@ -142,6 +145,7 @@ def create_transformation_source_version(
     request: CreateSourceVersionRequest,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
+    http_request: Request,
 ) -> SourceRevisionStatus:
     transformation = _owned_transformation(session, user, transformation_run_id)
     if transformation is None:
@@ -161,6 +165,15 @@ def create_transformation_source_version(
         )
         align_source_versions(session, old_source, new_source)
         transformation.source_version_id = new_source.id
+        record_audit_event(
+            session,
+            owner_id=user.id,
+            action_type="source_version.created",
+            target_type="source_version",
+            target_id=new_source.id,
+            request_id=getattr(http_request.state, "request_id", None),
+            safe_metadata={"transformation_id": transformation.id},
+        )
         session.commit()
     except Exception:
         session.rollback()
@@ -219,15 +232,10 @@ def get_transformation_revision_impact(
     )
 
 
-@router.post(
-    "/artifact-runs/{artifact_run_id}/targeted-update",
-    response_model=dict[str, object],
-    status_code=status.HTTP_202_ACCEPTED,
-)
-def targeted_update_artifact(
+def execute_targeted_update_artifact(
     artifact_run_id: int,
-    user: Annotated[User, Depends(require_current_user)],
-    session: Annotated[Session, Depends(get_db_session)],
+    user: User,
+    session: Session,
 ) -> dict[str, object]:
     row = session.execute(
         select(ArtifactRun, TransformationRun)
@@ -339,3 +347,24 @@ def targeted_update_artifact(
         "output_type": output_type,
         "status": "pending",
     }
+
+
+@router.post(
+    "/artifact-runs/{artifact_run_id}/targeted-update",
+    response_model=dict[str, object],
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(rate_limit_dependency("generation", limit=12, window_seconds=60))],
+)
+def targeted_update_artifact(
+    artifact_run_id: int,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+    request: Request,
+) -> dict[str, object]:
+    result = dispatch_application_command(
+        TargetedUpdateArtifactCommand(artifact_run_id=artifact_run_id),
+        session=session,
+        user=user,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return cast(dict[str, object], result)

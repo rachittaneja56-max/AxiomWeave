@@ -7,6 +7,7 @@ import { ArtifactViewer } from "../review/ArtifactViewer";
 import { InspectorPanel } from "../review/InspectorPanel";
 import { SourceRevisionPanel } from "../review/SourceRevisionPanel";
 import { SourceViewerDialog } from "../review/SourceViewerDialog";
+import { ActionPlanChat } from "../review/ActionPlanChat";
 import type {
   DiscrepancyFinding,
   ArtifactLineage,
@@ -728,6 +729,7 @@ export function ReviewWorkspace({
           else void regenerateArtifact(artifactRunId);
         }}
       />
+      <ActionPlanChat transformationId={detail.transformation_run_id} />
       <ArtifactRail
         artifacts={artifacts}
         activeArtifactId={activeArtifact?.artifact_run_id ?? null}

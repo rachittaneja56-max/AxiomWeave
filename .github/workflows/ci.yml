@@ -49,12 +49,15 @@ jobs:
         working-directory: backend
       - run: uv run pyright
         working-directory: backend
+      - name: Create Phase 6 result directory
+        run: mkdir -p .phase6-results
+        working-directory: backend
       - name: Verify PostgreSQL integration URL
         run: test -n "$AXIOMWEAVE_TEST_POSTGRES_URL"
       - name: Run PostgreSQL integration tests
-        run: uv run pytest -s tests/test_postgres_migrations.py
+        run: uv run pytest -s tests/test_postgres_migrations.py --junitxml=.phase6-results/postgres.xml
         working-directory: backend
-      - run: uv run pytest
+      - run: uv run pytest --junitxml=.phase6-results/backend.xml
         working-directory: backend
       - name: Generate deterministic Phase 5 human-review bundle
         run: uv run python -m scripts.create_phase5_bundle --output-dir .phase5-human-review
@@ -66,6 +69,21 @@ jobs:
           path: backend/.phase5-human-review/
           if-no-files-found: error
           include-hidden-files: true
+          retention-days: 14
+      - name: Create Phase 6 release-review bundle
+        run: >-
+          uv run python -m scripts.create_phase6_bundle
+          --sha "$GITHUB_SHA"
+          --backend-junit .phase6-results/backend.xml
+          --postgres-junit .phase6-results/postgres.xml
+          --output-dir .phase6-release-review
+        working-directory: backend
+      - name: Upload Phase 6 release-review bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: axiomweave-release-review-${{ github.sha }}
+          path: backend/.phase6-release-review/*.zip
+          if-no-files-found: error
           retention-days: 14
 
   frontend:

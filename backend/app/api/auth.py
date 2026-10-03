@@ -28,6 +28,8 @@ from app.passwords import (
     verify_dummy_password,
     verify_password,
 )
+from app.rate_limits import rate_limit_dependency
+from app.security import clear_csrf_cookie, set_csrf_cookie
 from app.settings import get_settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -65,7 +67,17 @@ def auth_config() -> AuthConfig:
     return AuthConfig(registration_enabled=get_settings().allow_registration)
 
 
-@router.post("/register", response_model=AuthResponse)
+@router.post(
+    "/register",
+    response_model=AuthResponse,
+    dependencies=[
+        Depends(
+            rate_limit_dependency(
+                "registration", limit=30, window_seconds=3600, authenticated=False
+            )
+        )
+    ],
+)
 def register(
     body: Credentials,
     response: Response,
@@ -84,10 +96,17 @@ def register(
         session.rollback()
         raise auth_error(409, "username_unavailable", "That username is unavailable.") from None
     set_session_cookie(response, raw_token, expires_at)
+    set_csrf_cookie(response)
     return AuthResponse(authenticated=True, username=user.username)
 
 
-@router.post("/login", response_model=AuthResponse)
+@router.post(
+    "/login",
+    response_model=AuthResponse,
+    dependencies=[
+        Depends(rate_limit_dependency("login", limit=60, window_seconds=600, authenticated=False))
+    ],
+)
 def login(
     body: Credentials,
     response: Response,
@@ -152,6 +171,7 @@ def login(
     raw_token, expires_at = issue_local_session(session, user)
     session.commit()
     set_session_cookie(response, raw_token, expires_at)
+    set_csrf_cookie(response)
     return AuthResponse(authenticated=True, username=user.username)
 
 
@@ -176,5 +196,6 @@ def logout(
             auth_session.revoked_at = datetime.now(UTC)
             session.commit()
     clear_session_cookie(response)
+    clear_csrf_cookie(response)
     response.status_code = 204
     return response

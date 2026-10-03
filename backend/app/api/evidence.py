@@ -1,9 +1,10 @@
 import json
+import time
 from datetime import datetime
 from hashlib import sha256
 from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session, aliased
 
 from app.artifact_contracts import artifact_text_projection
 from app.artifact_lineage import add_validated_dependency, reconcile_claim_block
+from app.audit import record_audit_event
 from app.auth import require_current_user
 from app.claim_scanning import (
     batch_input_text,
@@ -18,6 +20,7 @@ from app.claim_scanning import (
     create_or_get_claim_scan,
     refresh_scan_status,
 )
+from app.commands import AnalyzeArtifactEvidenceCommand, dispatch_application_command_async
 from app.context_planning import ContextPlanNeedsReview, context_text_from_manifest
 from app.database import get_db_session
 from app.domain.transformation import OutputType
@@ -26,6 +29,8 @@ from app.generation import (
     GenerationRequest,
     StructuredGenerationProvider,
 )
+from app.model_policy import provider_profile_allows_source, resolve_model_profile
+from app.model_usage import prompt_fingerprint, record_model_usage
 from app.models import (
     ArtifactBlock,
     ArtifactBlockDependency,
@@ -56,6 +61,7 @@ from app.models import (
     utc_now,
 )
 from app.openai_provider import OpenAIGenerationProvider
+from app.rate_limits import rate_limit_dependency
 from app.settings import get_settings
 
 router = APIRouter()
@@ -322,11 +328,17 @@ class DismissDiscrepancyRequest(BaseModel):
     review_status: Literal["dismissed"]
 
 
-def get_analysis_provider() -> StructuredGenerationProvider | None:
+def get_analysis_provider(request: Request) -> StructuredGenerationProvider | None:
     settings = get_settings()
-    if not settings.openai_api_key:
+    task_profile = (
+        "consistency_analysis"
+        if request.url.path.endswith("/discrepancies/analyze")
+        else "evidence_analysis"
+    )
+    profile = resolve_model_profile(task_profile, settings)
+    if not settings.openai_api_key or profile.model is None:
         return None
-    return OpenAIGenerationProvider(settings.openai_api_key, settings.openai_model)
+    return OpenAIGenerationProvider(settings.openai_api_key, profile.model)
 
 
 def _owned_artifact_version(
@@ -583,6 +595,7 @@ def review_claim_evidence(
     request: EvidenceReviewRequest,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
+    http_request: Request,
 ) -> EvidenceAssessmentResponse:
     assessment = session.scalar(
         select(ClaimEvidenceAssessment)
@@ -601,6 +614,15 @@ def review_claim_evidence(
     assessment.adjudicated_state = request.adjudicated_state
     assessment.reviewed_by = user.id
     assessment.reviewed_at = utc_now()
+    record_audit_event(
+        session,
+        owner_id=user.id,
+        action_type="evidence_assessment.reviewed",
+        target_type="evidence_assessment",
+        target_id=assessment.id,
+        request_id=getattr(http_request.state, "request_id", None),
+        safe_metadata={"review_state": assessment.review_state},
+    )
     session.commit()
     session.refresh(assessment)
     return _assessment_response(assessment)
@@ -948,6 +970,8 @@ async def process_claim_scan(
         scan.updated_at = utc_now()
         session.commit()
 
+        started_at = utc_now()
+        started_clock = time.perf_counter()
         try:
             result = await provider.generate_structured(
                 GenerationRequest(
@@ -964,13 +988,53 @@ async def process_claim_scan(
                 ),
                 EvidenceAnalysis,
             )
-        except Exception:
+        except Exception as error:
+            completed_at = utc_now()
+            profile = resolve_model_profile("evidence_analysis")
+            record_model_usage(
+                session,
+                owner_id=user.id,
+                task_profile="evidence_analysis",
+                provider="openai",
+                model=profile.model or "unknown",
+                prompt_hash=prompt_fingerprint(
+                    EVIDENCE_INSTRUCTIONS,
+                    json.dumps(EvidenceAnalysis.model_json_schema(), sort_keys=True),
+                ),
+                started_at=started_at,
+                completed_at=completed_at,
+                latency_ms=round((time.perf_counter() - started_clock) * 1_000),
+                result_state="failed",
+                error_class=type(error).__name__,
+                artifact_version_id=artifact_version.id,
+            )
             batch.status = "failed"
             batch.error_code = "analysis_failed"
             batch.completed_at = utc_now()
             refresh_scan_status(session, scan)
             session.commit()
             raise
+
+        completed_at = utc_now()
+        record_model_usage(
+            session,
+            owner_id=user.id,
+            task_profile="evidence_analysis",
+            provider=result.provider,
+            model=result.model,
+            prompt_hash=prompt_fingerprint(
+                EVIDENCE_INSTRUCTIONS,
+                json.dumps(EvidenceAnalysis.model_json_schema(), sort_keys=True),
+            ),
+            started_at=started_at,
+            completed_at=completed_at,
+            latency_ms=round((time.perf_counter() - started_clock) * 1_000),
+            result_state="succeeded",
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cache_state=result.cache_state,
+            artifact_version_id=artifact_version.id,
+        )
 
         needs_review = result.value.analysis_complete is not True
         segments = list(
@@ -1232,22 +1296,22 @@ def list_artifact_evidence(
     return [_evidence_response(link) for link in rows]
 
 
-@router.post(
-    "/artifact-versions/{artifact_version_id}/evidence/analyze",
-    response_model=list[EvidenceLinkResponse],
-)
-async def analyze_artifact_evidence(
-    artifact_version_id: int,
-    request: EvidenceAnalysisRequest,
-    user: Annotated[User, Depends(require_current_user)],
-    session: Annotated[Session, Depends(get_db_session)],
-    provider: Annotated[StructuredGenerationProvider | None, Depends(get_analysis_provider)],
+async def execute_analyze_artifact_evidence(
+    command: AnalyzeArtifactEvidenceCommand,
+    *,
+    user: User,
+    session: Session,
+    provider: StructuredGenerationProvider | None,
+    expected_source_version_id: int | None,
 ) -> list[EvidenceLinkResponse]:
-    row = _owned_artifact_version(session, user, artifact_version_id)
+    row = _owned_artifact_version(session, user, command.artifact_version_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Artifact version not found")
     version, _artifact_run, _transformation = row
-    if request.source_version_id != version.source_version_id:
+    if (
+        expected_source_version_id is not None
+        and expected_source_version_id != version.source_version_id
+    ):
         raise HTTPException(
             status_code=409,
             detail={
@@ -1255,9 +1319,19 @@ async def analyze_artifact_evidence(
                 "message": "Evidence must use the artifact's source version.",
             },
         )
-    source_version = _owned_source_version(session, user, request.source_version_id)
+    source_version = _owned_source_version(session, user, version.source_version_id)
     if source_version is None:
         raise HTTPException(status_code=404, detail="Source version not found")
+    if not provider_profile_allows_source(
+        resolve_model_profile("evidence_analysis"), source_version.sensitivity_class
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "provider_profile_ineligible",
+                "message": "This source is not eligible for external evidence analysis.",
+            },
+        )
     if provider is None:
         raise HTTPException(
             status_code=503,
@@ -1291,18 +1365,57 @@ async def analyze_artifact_evidence(
 
 
 @router.post(
+    "/artifact-versions/{artifact_version_id}/evidence/analyze",
+    response_model=list[EvidenceLinkResponse],
+    dependencies=[Depends(rate_limit_dependency("model_analysis", limit=12, window_seconds=60))],
+)
+async def analyze_artifact_evidence(
+    artifact_version_id: int,
+    request: EvidenceAnalysisRequest,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+    provider: Annotated[StructuredGenerationProvider | None, Depends(get_analysis_provider)],
+    http_request: Request,
+) -> list[EvidenceLinkResponse]:
+    result = await dispatch_application_command_async(
+        AnalyzeArtifactEvidenceCommand(artifact_version_id=artifact_version_id),
+        session=session,
+        user=user,
+        request_id=getattr(http_request.state, "request_id", None),
+        provider=provider,
+        expected_source_version_id=request.source_version_id,
+    )
+    return cast(list[EvidenceLinkResponse], result)
+
+
+@router.post(
     "/artifact-versions/{artifact_version_id}/evidence/verify",
     response_model=list[EvidenceAssessmentResponse],
+    dependencies=[Depends(rate_limit_dependency("model_analysis", limit=12, window_seconds=60))],
 )
 async def verify_artifact_evidence(
     artifact_version_id: int,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
     provider: Annotated[StructuredGenerationProvider | None, Depends(get_analysis_provider)],
+    request: Request,
 ) -> list[EvidenceAssessmentResponse]:
     owned = _owned_artifact_version(session, user, artifact_version_id)
     if owned is None:
         raise HTTPException(status_code=404, detail="Artifact version not found")
+    source_version = _owned_source_version(session, user, owned[0].source_version_id)
+    if source_version is None:
+        raise HTTPException(status_code=404, detail="Source version not found")
+    if not provider_profile_allows_source(
+        resolve_model_profile("evidence_analysis"), source_version.sensitivity_class
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "provider_profile_ineligible",
+                "message": "This source is not eligible for external evidence analysis.",
+            },
+        )
     if provider is None:
         raise HTTPException(
             status_code=503,
@@ -1334,6 +1447,15 @@ async def verify_artifact_evidence(
             status_code=502,
             detail={"code": "evidence_verification_failed", "message": "Assessment failed."},
         ) from None
+    record_audit_event(
+        session,
+        owner_id=user.id,
+        action_type="evidence_assessment.completed",
+        target_type="artifact_version",
+        target_id=artifact_version_id,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    session.commit()
     return [_assessment_response(item) for item in assessments]
 
 
@@ -1434,12 +1556,17 @@ def list_artifact_assertions(
     ]
 
 
-@router.post("/claim-scans/{claim_scan_id}/resume", response_model=ClaimScanCoverage)
+@router.post(
+    "/claim-scans/{claim_scan_id}/resume",
+    response_model=ClaimScanCoverage,
+    dependencies=[Depends(rate_limit_dependency("model_analysis", limit=12, window_seconds=60))],
+)
 async def resume_claim_scan(
     claim_scan_id: int,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
     provider: Annotated[StructuredGenerationProvider | None, Depends(get_analysis_provider)],
+    request: Request,
 ) -> ClaimScanCoverage:
     scan = session.scalar(
         select(ClaimScan).where(
@@ -1461,6 +1588,16 @@ async def resume_claim_scan(
     source_version = _owned_source_version(session, user, scan.source_version_id)
     if owned is None or source_version is None:
         raise HTTPException(status_code=404, detail="Claim scan not found")
+    if not provider_profile_allows_source(
+        resolve_model_profile("evidence_analysis"), source_version.sensitivity_class
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "provider_profile_ineligible",
+                "message": "This source is not eligible for external evidence analysis.",
+            },
+        )
     version = owned[0]
     try:
         await process_claim_scan(session, user, scan, version, source_version, provider)
@@ -1468,15 +1605,29 @@ async def resume_claim_scan(
         # The persisted batch state retains the failed unit and successful siblings.
         refresh_scan_status(session, scan)
         session.commit()
+    record_audit_event(
+        session,
+        owner_id=user.id,
+        action_type="claim_scan.resumed",
+        target_type="claim_scan",
+        target_id=scan.id,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    session.commit()
     return _claim_scan_response(session, scan)
 
 
-@router.post("/discrepancies/analyze", response_model=DiscrepancyAnalysisResponse)
+@router.post(
+    "/discrepancies/analyze",
+    response_model=DiscrepancyAnalysisResponse,
+    dependencies=[Depends(rate_limit_dependency("model_analysis", limit=12, window_seconds=60))],
+)
 async def analyze_sibling_discrepancy(
     request: DiscrepancyAnalysisRequest,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
     provider: Annotated[StructuredGenerationProvider | None, Depends(get_analysis_provider)],
+    http_request: Request,
 ) -> DiscrepancyAnalysisResponse:
     if request.artifact_version_a_id == request.artifact_version_b_id:
         raise HTTPException(status_code=422, detail="Choose two different artifact versions")
@@ -1505,6 +1656,16 @@ async def analyze_sibling_discrepancy(
     source_version = _owned_source_version(session, user, version_a.source_version_id)
     if source_version is None:
         raise HTTPException(status_code=404, detail="Source version not found")
+    if not provider_profile_allows_source(
+        resolve_model_profile("consistency_analysis"), source_version.sensitivity_class
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "provider_profile_ineligible",
+                "message": "This source is not eligible for external consistency analysis.",
+            },
+        )
 
     # Canonical pair ordering makes repeated requests idempotent.
     if version_a.id > version_b.id:
@@ -1558,6 +1719,8 @@ async def analyze_sibling_discrepancy(
         )
     )
 
+    started_at = utc_now()
+    started_clock = time.perf_counter()
     try:
         result = await provider.generate_structured(
             GenerationRequest(
@@ -1591,7 +1754,26 @@ async def analyze_sibling_discrepancy(
             ),
             DiscrepancyAnalysis,
         )
-    except Exception:
+    except Exception as error:
+        completed_at = utc_now()
+        profile = resolve_model_profile("consistency_analysis")
+        record_model_usage(
+            session,
+            owner_id=user.id,
+            task_profile="consistency_analysis",
+            provider="openai",
+            model=profile.model or "unknown",
+            prompt_hash=prompt_fingerprint(
+                DISCREPANCY_INSTRUCTIONS,
+                json.dumps(DiscrepancyAnalysis.model_json_schema(), sort_keys=True),
+            ),
+            started_at=started_at,
+            completed_at=completed_at,
+            latency_ms=round((time.perf_counter() - started_clock) * 1_000),
+            result_state="failed",
+            error_class=type(error).__name__,
+        )
+        session.commit()
         raise HTTPException(
             status_code=502,
             detail={
@@ -1599,6 +1781,37 @@ async def analyze_sibling_discrepancy(
                 "message": "Discrepancy analysis failed.",
             },
         ) from None
+
+    completed_at = utc_now()
+    record_model_usage(
+        session,
+        owner_id=user.id,
+        task_profile="consistency_analysis",
+        provider=result.provider,
+        model=result.model,
+        prompt_hash=prompt_fingerprint(
+            DISCREPANCY_INSTRUCTIONS,
+            json.dumps(DiscrepancyAnalysis.model_json_schema(), sort_keys=True),
+        ),
+        started_at=started_at,
+        completed_at=completed_at,
+        latency_ms=round((time.perf_counter() - started_clock) * 1_000),
+        result_state="succeeded",
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cache_state=result.cache_state,
+    )
+    session.commit()
+    record_audit_event(
+        session,
+        owner_id=user.id,
+        action_type="consistency_analysis.completed",
+        target_type="source_version",
+        target_id=source_version.id,
+        request_id=getattr(http_request.state, "request_id", None),
+        safe_metadata={"artifact_version_count": 2},
+    )
+    session.commit()
 
     if not result.value.possible_discrepancy:
         return DiscrepancyAnalysisResponse(finding=None)
@@ -1699,6 +1912,7 @@ def dismiss_discrepancy(
     request: DismissDiscrepancyRequest,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
+    http_request: Request,
 ) -> DiscrepancyFindingResponse:
     finding = session.scalar(
         select(DiscrepancyFinding)
@@ -1709,6 +1923,15 @@ def dismiss_discrepancy(
     if finding is None:
         raise HTTPException(status_code=404, detail="Discrepancy finding not found")
     finding.review_status = request.review_status
+    record_audit_event(
+        session,
+        owner_id=user.id,
+        action_type="discrepancy.reviewed",
+        target_type="discrepancy_finding",
+        target_id=finding.id,
+        request_id=getattr(http_request.state, "request_id", None),
+        safe_metadata={"review_status": finding.review_status},
+    )
     session.commit()
     session.refresh(finding)
     return _discrepancy_response(finding)

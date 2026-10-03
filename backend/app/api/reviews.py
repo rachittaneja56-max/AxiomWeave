@@ -1,7 +1,7 @@
 from hashlib import sha256
 from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,11 +9,14 @@ from sqlalchemy.orm import Session
 from app.api.evidence import get_analysis_provider, process_claim_scan
 from app.artifact_contracts import ARTIFACT_CONTRACTS, validate_artifact_content
 from app.artifact_lineage import persist_artifact_blocks
+from app.audit import record_audit_event
 from app.auth import require_current_user
 from app.claim_scanning import create_or_get_claim_scan
+from app.commands import ReviewArtifactVersionCommand, dispatch_application_command
 from app.database import get_db_session
 from app.domain.transformation import OutputType
 from app.generation import StructuredGenerationProvider
+from app.model_policy import provider_profile_allows_source, resolve_model_profile
 from app.models import (
     ArtifactReviewDecision,
     ArtifactRun,
@@ -84,6 +87,7 @@ async def create_edited_artifact_version(
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
     provider: Annotated[StructuredGenerationProvider | None, Depends(get_analysis_provider)],
+    http_request: Request,
 ) -> ArtifactVersionResponse:
     artifact_run = _owned_artifact_run(session, user, artifact_run_id)
     if artifact_run is None:
@@ -134,6 +138,15 @@ async def create_edited_artifact_version(
     )
     session.add(version)
     session.flush()
+    record_audit_event(
+        session,
+        owner_id=user.id,
+        action_type="artifact_version.edited",
+        target_type="artifact_version",
+        target_id=version.id,
+        request_id=getattr(http_request.state, "request_id", None),
+        safe_metadata={"artifact_run_id": artifact_run.id},
+    )
     persist_artifact_blocks(
         session,
         version,
@@ -146,7 +159,10 @@ async def create_edited_artifact_version(
     if provider is not None:
         scan = session.scalar(select(ClaimScan).where(ClaimScan.artifact_version_id == version.id))
         source_version = session.get(SourceVersion, version.source_version_id)
-        if scan is not None and source_version is not None:
+        eligible = source_version is not None and provider_profile_allows_source(
+            resolve_model_profile("evidence_analysis"), source_version.sensitivity_class
+        )
+        if scan is not None and source_version is not None and eligible:
             try:
                 await process_claim_scan(session, user, scan, version, source_version, provider)
             except Exception:
@@ -156,13 +172,10 @@ async def create_edited_artifact_version(
     return _version_response(version)
 
 
-@router.patch(
-    "/artifact-versions/{artifact_version_id}/review",
-    response_model=ArtifactVersionResponse,
-)
-def set_artifact_review_status(
+def execute_review_artifact_version(
     artifact_version_id: int,
-    request: ReviewArtifactRequest,
+    review_status: Literal["accepted", "rejected"],
+    note: str | None,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
 ) -> ArtifactVersionResponse:
@@ -189,16 +202,40 @@ def set_artifact_review_status(
             },
         )
 
-    version.review_status = request.review_status
+    version.review_status = review_status
     session.add(
         ArtifactReviewDecision(
             owner_id=user.id,
             artifact_version_id=version.id,
-            decision=request.review_status,
-            note=request.note.strip() if request.note else None,
+            decision=review_status,
+            note=note.strip() if note else None,
             created_at=utc_now(),
         )
     )
     session.commit()
     session.refresh(version)
     return _version_response(version)
+
+
+@router.patch(
+    "/artifact-versions/{artifact_version_id}/review",
+    response_model=ArtifactVersionResponse,
+)
+def set_artifact_review_status(
+    artifact_version_id: int,
+    body: ReviewArtifactRequest,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+    request: Request,
+) -> ArtifactVersionResponse:
+    result = dispatch_application_command(
+        ReviewArtifactVersionCommand(
+            artifact_version_id=artifact_version_id,
+            review_status=body.review_status,
+            note=body.note,
+        ),
+        session=session,
+        user=user,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return cast(ArtifactVersionResponse, result)

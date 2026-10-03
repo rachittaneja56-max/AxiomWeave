@@ -16,6 +16,21 @@ from app.generation import (
 logger = logging.getLogger(__name__)
 
 
+def _usage_value(response: object, name: str) -> int | None:
+    usage = getattr(response, "usage", None)
+    value = getattr(usage, name, None)
+    return value if isinstance(value, int) and value >= 0 else None
+
+
+def _cache_state(response: object) -> str:
+    usage = getattr(response, "usage", None)
+    details = getattr(usage, "input_tokens_details", None)
+    cached = getattr(details, "cached_tokens", None)
+    if not isinstance(cached, int):
+        return "unavailable"
+    return "hit" if cached > 0 else "miss"
+
+
 class OpenAIGenerationProvider:
     supports_phase4_lineage = True
     supports_phase4_automatic_claim_scan = True
@@ -110,7 +125,14 @@ class OpenAIGenerationProvider:
         if getattr(response, "status", None) == "incomplete":
             raise GenerationProviderError()
         content = response.output_text
-        return GenerationResult(text=content, provider="openai", model=self._model)
+        return GenerationResult(
+            text=content,
+            provider="openai",
+            model=self._model,
+            input_tokens=_usage_value(response, "input_tokens"),
+            output_tokens=_usage_value(response, "output_tokens"),
+            cache_state=_cache_state(response),
+        )
 
     async def generate_structured[T: BaseModel](
         self, request: GenerationRequest, response_model: type[T]
@@ -156,5 +178,10 @@ class OpenAIGenerationProvider:
             )
             raise GenerationProviderError()
         return StructuredGenerationResult(
-            value=response.output_parsed, provider="openai", model=self._model
+            value=response.output_parsed,
+            provider="openai",
+            model=self._model,
+            input_tokens=_usage_value(response, "input_tokens"),
+            output_tokens=_usage_value(response, "output_tokens"),
+            cache_state=_cache_state(response),
         )

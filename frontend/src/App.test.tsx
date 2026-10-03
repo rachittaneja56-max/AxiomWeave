@@ -1222,12 +1222,17 @@ describe("transformation request form", () => {
       "/api/transformations",
       expect.objectContaining({
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: expect.any(Headers),
         body: JSON.stringify({
           ...preparedRequest,
           supporting_context: "For local administrators.",
         }),
       }),
+    );
+    const createRequest = fetchMock.mock.calls[0][1];
+    expect(createRequest).toBeDefined();
+    expect(new Headers(createRequest?.headers).get("Content-Type")).toBe(
+      "application/json",
     );
   });
 

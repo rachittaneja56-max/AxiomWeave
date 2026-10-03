@@ -45,6 +45,9 @@ class ExecutiveSummaryDraft:
     content: str
     provider: str
     model: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_state: str = "disabled"
 
 
 def build_transformation_instructions(request: TransformationRequest) -> str:
@@ -84,4 +87,7 @@ class ExecutiveSummaryGenerator:
             content=content,
             provider=result.provider,
             model=result.model,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cache_state=result.cache_state,
         )

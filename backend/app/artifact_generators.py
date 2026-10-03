@@ -45,6 +45,9 @@ class ArtifactDraft:
     model: str
     prompt_version: str
     prompt_hash: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_state: str = "disabled"
 
 
 REVISION_INSTRUCTIONS = (
@@ -206,6 +209,9 @@ async def generate_artifact(
             model=draft.model,
             prompt_version=EXECUTIVE_SUMMARY_PROMPT_VERSION,
             prompt_hash=artifact_prompt_hash(output_type),
+            input_tokens=draft.input_tokens,
+            output_tokens=draft.output_tokens,
+            cache_state=draft.cache_state,
         )
 
     generation_request = GenerationRequest(
@@ -231,6 +237,9 @@ async def generate_artifact(
             model=result.model,
             prompt_version=ARTIFACT_PROMPT_VERSIONS[output_type],
             prompt_hash=artifact_prompt_hash(output_type),
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cache_state=result.cache_state,
         )
 
     result = await provider.generate(generation_request)
@@ -242,6 +251,9 @@ async def generate_artifact(
         model=result.model,
         prompt_version=ARTIFACT_PROMPT_VERSIONS[output_type],
         prompt_hash=artifact_prompt_hash(output_type),
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cache_state=result.cache_state,
     )
 
 
@@ -269,6 +281,9 @@ async def generate_targeted_update(
         prompt_hash=sha256(
             (REVISION_INSTRUCTIONS + request.transformation_instructions).encode("utf-8")
         ).hexdigest(),
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cache_state=result.cache_state,
     )
 
 
@@ -302,4 +317,7 @@ async def generate_selective_update(
         prompt_hash=sha256(
             (request.application_instructions + request.transformation_instructions).encode("utf-8")
         ).hexdigest(),
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cache_state=result.cache_state,
     )

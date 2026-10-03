@@ -23,9 +23,15 @@ class Settings(BaseSettings):
         default_factory=lambda: Path(__file__).resolve().parents[1] / ".private-assets"
     )
     allow_registration: bool = False
+    allowed_frontend_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    rate_limit_enabled: bool = True
     openai_api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY", repr=False)
     openai_model: str = "gpt-6-luna"
     openai_utility_model: str = "gpt-5-nano"
+    openai_action_model: str | None = None
+    openai_evidence_model: str | None = None
+    openai_consistency_model: str | None = None
+    openai_ocr_model: str | None = None
 
 
 @lru_cache

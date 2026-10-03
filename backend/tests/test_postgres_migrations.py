@@ -30,6 +30,7 @@ from app.models import (
     MediaAsset,
     MediaRender,
     MediaTask,
+    RateLimitBucket,
     RegionEmbedding,
     Source,
     SourceAsset,
@@ -44,6 +45,7 @@ from app.models import (
     User,
     source_content_hash,
 )
+from app.rate_limits import consume_rate_limit
 from app.retrieval import (
     PostgresRetrievalRepository,
     create_candidate_manifest,
@@ -246,7 +248,7 @@ def test_postgres_populated_legacy_auth_upgrade_preserves_data(
                 text("SELECT owner_id FROM sources WHERE title = 'Legacy source'")
             )
 
-        assert revision == "f5a127bb64d0"
+        assert revision == "d6a2c9f7b140"
         assert user["id"] == 42
         assert user["username"] == "legacy-migrated-42"
         assert user["password_hash"] == "!disabled-legacy-google!"
@@ -313,11 +315,17 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
             "media_rights_records",
             "media_review_decisions",
             "media_operation_metrics",
+            "action_plans",
+            "action_plan_steps",
+            "chat_messages",
+            "audit_events",
+            "model_usage_records",
+            "rate_limit_buckets",
             "alembic_version",
         } <= set(inspector.get_table_names())
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "f5a127bb64d0"
+        assert revision == "d6a2c9f7b140"
         asset_columns = {
             column["name"]: column for column in inspector.get_columns("source_assets")
         }
@@ -366,7 +374,7 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
 def test_postgres_phase_five_migration_preserves_populated_current_data(
     postgres_test_database_url: URL,
 ) -> None:
-    _upgrade(postgres_test_database_url, "c4a91b0d7e22")
+    _upgrade(postgres_test_database_url, "f5a127bb64d0")
     rendered_url = postgres_test_database_url.render_as_string(hide_password=False)
     engine = create_database_engine(rendered_url)
     try:
@@ -376,15 +384,35 @@ def test_postgres_phase_five_migration_preserves_populated_current_data(
             session.add(source)
             session.flush()
             source_text = "Existing PG source"
-            source_version = SourceVersion(
-                source_id=source.id,
-                version_number=1,
-                source_text=source_text,
-                content_hash=source_content_hash(source_text),
+            content_hash = source_content_hash(source_text)
+            source_version_id = session.scalar(
+                text(
+                    "INSERT INTO source_versions "
+                    "(source_id, version_number, source_text, content_hash, created_at) "
+                    "VALUES (:source_id, 1, :source_text, :content_hash, CURRENT_TIMESTAMP) "
+                    "RETURNING id"
+                ),
+                {
+                    "source_id": source.id,
+                    "source_text": source_text,
+                    "content_hash": content_hash,
+                },
             )
-            session.add(source_version)
+            assert source_version_id is not None
+            transformation = TransformationRun(
+                owner_id=owner.id,
+                source_version_id=source_version_id,
+                supporting_context="Use the approved event date.",
+                audience="Local residents",
+                tone="Clear",
+                language="English",
+                detail_level="standard",
+                objective="Inform",
+                style="Plain language",
+                selected_output_types=["advisory"],
+            )
+            session.add(transformation)
             session.flush()
-            transformation = _add_transformation(session, owner, source_version)
             artifact_run = ArtifactRun(
                 transformation_run_id=transformation.id,
                 output_type="advisory",
@@ -401,7 +429,7 @@ def test_postgres_phase_five_migration_preserves_populated_current_data(
                     "'draft', CURRENT_TIMESTAMP) "
                     "RETURNING id"
                 ),
-                {"run_id": artifact_run.id, "source_id": source_version.id},
+                {"run_id": artifact_run.id, "source_id": source_version_id},
             )
             assert artifact_version_id is not None
             job_id = session.scalar(
@@ -412,12 +440,11 @@ def test_postgres_phase_five_migration_preserves_populated_current_data(
                     "VALUES (:run_id, :source_id, 'artifact_generation', 'model_io', 'succeeded', "
                     "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id"
                 ),
-                {"run_id": artifact_run.id, "source_id": source_version.id},
+                {"run_id": artifact_run.id, "source_id": source_version_id},
             )
             assert job_id is not None
             session.commit()
             owner_id = owner.id
-            source_version_id = source_version.id
             artifact_run_id = artifact_run.id
     finally:
         engine.dispose()
@@ -509,6 +536,35 @@ def test_postgres_phase_five_migration_preserves_populated_current_data(
             assert persisted_asset.content_hash == "d" * 64
     finally:
         upgraded_engine.dispose()
+
+
+def test_postgres_rate_limit_bucket_is_atomic_under_concurrent_requests(
+    postgres_runtime_sessions: sessionmaker[Session],
+) -> None:
+    now = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
+    scope = "pg-concurrent-rate-limit"
+    key = f"user:{uuid4().hex}"
+
+    def take_slot(_index: int) -> tuple[bool, int]:
+        with postgres_runtime_sessions() as session:
+            return consume_rate_limit(
+                session,
+                scope=scope,
+                key=key,
+                limit=8,
+                window_seconds=60,
+                now=now,
+            )
+
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        outcomes = list(executor.map(take_slot, range(32)))
+
+    assert sum(allowed for allowed, _retry_after in outcomes) == 8
+    assert all(retry_after == 60 for _allowed, retry_after in outcomes)
+    with postgres_runtime_sessions() as session:
+        bucket = session.scalar(select(RateLimitBucket).where(RateLimitBucket.scope == scope))
+        assert bucket is not None
+        assert bucket.request_count == 32
 
 
 def test_postgres_job_claim_is_atomic_and_dependencies_reconcile(

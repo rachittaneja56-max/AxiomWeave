@@ -85,6 +85,12 @@ EXPECTED_TABLES = {
     "media_rights_records",
     "media_review_decisions",
     "media_operation_metrics",
+    "action_plans",
+    "action_plan_steps",
+    "chat_messages",
+    "audit_events",
+    "model_usage_records",
+    "rate_limit_buckets",
 }
 
 
@@ -146,7 +152,7 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert set(inspector.get_table_names()) == EXPECTED_TABLES | {"alembic_version"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "f5a127bb64d0"
+        assert revision == "d6a2c9f7b140"
         asset_columns = {
             column["name"]: column for column in inspector.get_columns("source_assets")
         }
@@ -248,7 +254,7 @@ def test_phase_five_migration_preserves_phase_four_artifacts_and_jobs(tmp_path: 
             migration = connection.scalar(text("SELECT version_num FROM alembic_version"))
         assert version == (1, 1, "draft")
         assert job == (1, "artifact_generation", "model_io", "succeeded")
-        assert migration == "f5a127bb64d0"
+        assert migration == "d6a2c9f7b140"
     finally:
         engine.dispose()
 
@@ -260,7 +266,7 @@ def test_durable_jobs_migration_preserves_populated_current_sqlite_data(
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
     config.set_main_option("sqlalchemy.url", database_url)
-    command.upgrade(config, "a17c0f5e2d91")
+    command.upgrade(config, "f5a127bb64d0")
 
     engine = create_database_engine(database_url)
     factory = create_session_factory(engine)
@@ -272,22 +278,25 @@ def test_durable_jobs_migration_preserves_populated_current_sqlite_data(
         session.add(source)
         session.flush()
         source_text = "Existing source text"
-        source_version = SourceVersion(
-            source_id=source.id,
-            version_number=1,
-            source_text=source_text,
-            content_hash=source_content_hash(source_text),
+        content_hash = source_content_hash(source_text)
+        source_version_id = session.scalar(
+            text(
+                "INSERT INTO source_versions "
+                "(source_id, version_number, source_text, content_hash, created_at) "
+                "VALUES (:source_id, 1, :source_text, :content_hash, CURRENT_TIMESTAMP) "
+                "RETURNING id"
+            ),
+            {"source_id": source.id, "source_text": source_text, "content_hash": content_hash},
         )
-        session.add(source_version)
-        session.flush()
+        assert source_version_id is not None
         source_pack = SourcePack(source_id=source.id, owner_id=owner.id, title="Existing pack")
         session.add(source_pack)
         session.flush()
         pack_version = SourcePackVersion(
             source_pack_id=source_pack.id,
-            source_version_id=source_version.id,
+            source_version_id=source_version_id,
             version_number=1,
-            content_hash=source_version.content_hash,
+            content_hash=content_hash,
         )
         session.add(pack_version)
         session.flush()
@@ -312,7 +321,7 @@ def test_durable_jobs_migration_preserves_populated_current_sqlite_data(
         session.add(
             SourcePackMembership(
                 source_pack_version_id=pack_version.id,
-                source_version_id=source_version.id,
+                source_version_id=source_version_id,
                 source_asset_id=source_asset_id,
                 ordinal=1,
                 role="PRIMARY",
@@ -320,7 +329,20 @@ def test_durable_jobs_migration_preserves_populated_current_sqlite_data(
         )
         source_pack = session.scalar(select(SourcePack).where(SourcePack.source_id == source.id))
         assert source_pack is not None
-        transformation = _make_transformation(session, owner, source_version)
+        transformation = TransformationRun(
+            owner_id=owner.id,
+            source_version_id=source_version_id,
+            supporting_context="Use the approved event date.",
+            audience="Local residents",
+            tone="Clear",
+            language="English",
+            detail_level="standard",
+            objective="Inform",
+            style="Plain language",
+            selected_output_types=["advisory"],
+        )
+        session.add(transformation)
+        session.flush()
         artifact_run = ArtifactRun(
             transformation_run_id=transformation.id,
             output_type="advisory",
@@ -332,15 +354,14 @@ def test_durable_jobs_migration_preserves_populated_current_sqlite_data(
             text(
                 "INSERT INTO artifact_versions "
                 "(artifact_run_id, version_number, source_version_id, content, "
-                "review_status, created_at) "
+                "review_status, origin, created_at) "
                 "VALUES (:run_id, 1, :source_id, 'Existing immutable artifact.', "
-                "'draft', CURRENT_TIMESTAMP) RETURNING id"
+                "'draft', 'legacy', CURRENT_TIMESTAMP) RETURNING id"
             ),
-            {"run_id": artifact_run.id, "source_id": source_version.id},
+            {"run_id": artifact_run.id, "source_id": source_version_id},
         )
         assert artifact_version_id is not None
         session.commit()
-        source_version_id = source_version.id
         source_pack_id = source_pack.id
         artifact_run_id = artifact_run.id
     engine.dispose()

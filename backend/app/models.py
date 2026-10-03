@@ -73,6 +73,159 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class ActionPlan(Base):
+    __tablename__ = "action_plans"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('proposed', 'awaiting_confirmation', 'executing', 'completed', "
+            "'partially_completed', 'rejected', 'expired', 'failed')",
+            name="ck_action_plans_status",
+        ),
+        CheckConstraint("plan_version > 0", name="ck_action_plans_positive_version"),
+        Index("ix_action_plans_owner_created", "owner_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    transformation_run_id: Mapped[int] = mapped_column(
+        ForeignKey("transformation_runs.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    user_request: Mapped[str] = mapped_column(String(2_000), nullable=False)
+    explanation: Mapped[str] = mapped_column(String(1_000), nullable=False)
+    planner_profile: Mapped[str] = mapped_column(String(80), nullable=False)
+    planner_profile_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    planner_model: Mapped[str] = mapped_column(String(120), nullable=False)
+    prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    requires_confirmation: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="proposed")
+    execution_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ActionPlanStep(Base):
+    __tablename__ = "action_plan_steps"
+    __table_args__ = (
+        UniqueConstraint("action_plan_id", "ordinal", name="uq_action_plan_steps_ordinal"),
+        CheckConstraint("ordinal > 0", name="ck_action_plan_steps_positive_ordinal"),
+        CheckConstraint(
+            "status IN ('waiting', 'running', 'completed', 'failed', 'skipped')",
+            name="ck_action_plan_steps_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    action_plan_id: Mapped[int] = mapped_column(
+        ForeignKey("action_plans.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    command_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    arguments: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    target_ids: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False, default=dict)
+    summary: Mapped[str] = mapped_column(String(500), nullable=False)
+    consequential: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    precondition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="waiting")
+    result_reference: Mapped[str | None] = mapped_column(String(160))
+    error_code: Mapped[str | None] = mapped_column(String(64))
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        CheckConstraint("role IN ('user', 'assistant')", name="ck_chat_messages_role"),
+        Index("ix_chat_messages_workspace_created", "owner_id", "transformation_run_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    transformation_run_id: Mapped[int] = mapped_column(
+        ForeignKey("transformation_runs.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    action_plan_id: Mapped[int | None] = mapped_column(
+        ForeignKey("action_plans.id", ondelete="RESTRICT"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(String(4_000), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (Index("ix_audit_events_owner_created", "owner_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    actor_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    action_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    action_plan_id: Mapped[int | None] = mapped_column(
+        ForeignKey("action_plans.id", ondelete="RESTRICT"), index=True
+    )
+    request_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    outcome: Mapped[str] = mapped_column(String(24), nullable=False)
+    safe_metadata: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ModelUsageRecord(Base):
+    __tablename__ = "model_usage_records"
+    __table_args__ = (
+        CheckConstraint(
+            "result_state IN ('succeeded', 'failed', 'incomplete')",
+            name="ck_model_usage_records_result_state",
+        ),
+        Index("ix_model_usage_task_started", "task_profile", "started_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id", ondelete="RESTRICT"))
+    artifact_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("artifact_versions.id", ondelete="RESTRICT")
+    )
+    action_plan_id: Mapped[int | None] = mapped_column(
+        ForeignKey("action_plans.id", ondelete="RESTRICT")
+    )
+    task_profile: Mapped[str] = mapped_column(String(48), nullable=False)
+    provider: Mapped[str] = mapped_column(String(48), nullable=False)
+    model: Mapped[str] = mapped_column(String(120), nullable=False)
+    profile_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    prompt_hash: Mapped[str | None] = mapped_column(String(64))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    result_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    cache_state: Mapped[str] = mapped_column(String(24), nullable=False, default="disabled")
+    error_class: Mapped[str | None] = mapped_column(String(80))
+
+
+class RateLimitBucket(Base):
+    __tablename__ = "rate_limit_buckets"
+    __table_args__ = (
+        CheckConstraint("request_count > 0", name="ck_rate_limit_buckets_positive_count"),
+    )
+
+    scope: Mapped[str] = mapped_column(String(48), primary_key=True)
+    key_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class LoginThrottle(Base):
     __tablename__ = "login_throttles"
 
@@ -112,6 +265,10 @@ class SourceVersion(Base):
     __table_args__ = (
         UniqueConstraint("source_id", "version_number", name="uq_source_versions_source_number"),
         CheckConstraint("version_number > 0", name="ck_source_versions_positive_number"),
+        CheckConstraint(
+            "sensitivity_class IN ('public', 'internal', 'restricted')",
+            name="ck_source_versions_sensitivity_class",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -124,6 +281,7 @@ class SourceVersion(Base):
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     source_text: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    sensitivity_class: Mapped[str] = mapped_column(String(16), nullable=False, default="internal")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
