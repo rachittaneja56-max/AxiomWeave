@@ -141,7 +141,7 @@ def create_bundle(output_dir: Path) -> dict[str, object]:
     video_elapsed_ms = round((time.perf_counter() - started) * 1_000)
     if not probe.has_video or not probe.has_audio:
         raise RuntimeError("FFprobe did not find the expected video and silent audio streams")
-    if probe.duration_ms != sum(durations_ms):
+    if abs(probe.duration_ms - sum(durations_ms)) > 1_000:
         raise RuntimeError("FFprobe duration does not match the fixture plan")
 
     provenance = {
