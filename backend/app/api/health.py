@@ -17,7 +17,7 @@ from app.private_asset_storage import private_asset_store_is_configured
 from app.settings import get_settings
 
 router = APIRouter()
-EXPECTED_SCHEMA_REVISION = "d6a2c9f7b140"
+EXPECTED_SCHEMA_REVISION = "a41f028bc9e2"
 
 
 class HealthResponse(BaseModel):
