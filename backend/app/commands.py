@@ -92,6 +92,7 @@ EvidenceReviewState = Literal[
 
 class CreateTransformationCommand(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+    command_type: Literal["create_transformation"] = "create_transformation"
     request: CreateTransformationRequest
 
 
@@ -173,7 +174,8 @@ type ManualApplicationCommand = (
 
 
 type ApplicationCommand = Annotated[
-    GenerateSelectedArtifactsCommand
+    CreateTransformationCommand
+    | GenerateSelectedArtifactsCommand
     | RetryArtifactCommand
     | RegenerateArtifactCommand
     | TargetedUpdateArtifactCommand
@@ -189,6 +191,7 @@ type ApplicationCommand = Annotated[
 class ProposedActionStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command_type: Literal[
+        "create_transformation",
         "generate_selected_artifacts",
         "retry_artifact",
         "regenerate_artifact",
@@ -214,6 +217,7 @@ class CommandValidationError(ValueError):
 
 
 COMMAND_ARGUMENT_MODELS: dict[str, type[BaseModel]] = {
+    "create_transformation": CreateTransformationCommand,
     "generate_selected_artifacts": GenerateSelectedArtifactsCommand,
     "retry_artifact": RetryArtifactCommand,
     "regenerate_artifact": RegenerateArtifactCommand,
@@ -239,6 +243,8 @@ def parse_action_command(command_type: str, arguments: dict[str, object]) -> App
 
 
 def command_targets(command: ApplicationCommand) -> dict[str, int]:
+    if isinstance(command, CreateTransformationCommand):
+        return {}
     if isinstance(command, GenerateSelectedArtifactsCommand):
         return {"transformation_run_id": command.transformation_run_id}
     if isinstance(
@@ -272,7 +278,18 @@ def dispatch_application_command(
     request_id: str | None,
     action_plan_id: int | None = None,
 ) -> object:
-    if isinstance(command, GenerateSelectedArtifactsCommand):
+    if isinstance(command, CreateTransformationCommand):
+        result = dispatch_manual_application_command(
+            command,
+            session=session,
+            user=user,
+            request_id=request_id,
+        )
+        target_type = "transformation"
+        target_id = getattr(result, "transformation_run_id", None)
+        if not isinstance(target_id, int):
+            raise RuntimeError("Create command returned no transformation reference")
+    elif isinstance(command, GenerateSelectedArtifactsCommand):
         from app.api.generation import execute_generate_selected_artifacts
 
         result = execute_generate_selected_artifacts(command.transformation_run_id, user, session)

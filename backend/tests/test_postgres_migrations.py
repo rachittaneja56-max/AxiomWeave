@@ -237,7 +237,7 @@ def test_postgres_populated_legacy_auth_upgrade_preserves_data(
                 text("SELECT owner_id FROM sources WHERE title = 'Legacy source'")
             )
 
-        assert revision == "d6a2c9f7b140"
+        assert revision == "a41f028bc9e2"
         assert user["id"] == 42
         assert user["username"] == "legacy-migrated-42"
         assert user["password_hash"] == "!disabled-legacy-google!"
@@ -314,7 +314,7 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
         } <= set(inspector.get_table_names())
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "d6a2c9f7b140"
+        assert revision == "a41f028bc9e2"
         asset_columns = {
             column["name"]: column for column in inspector.get_columns("source_assets")
         }

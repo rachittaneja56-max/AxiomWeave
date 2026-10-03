@@ -5930,3 +5930,741 @@ h4 {
     flex-direction: column;
   }
 }
+
+/* Global Weave assistant and lighter review workspace */
+.sidebar-project {
+  display: grid;
+  gap: 5px;
+  margin: 20px 5px 4px;
+  padding: 13px 10px;
+  border: 1px solid rgb(215 230 224 / 13%);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 3%);
+}
+
+.sidebar-project .sidebar-section-label {
+  margin: 0 0 2px;
+  color: #a6c8be;
+}
+
+.sidebar-project strong {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #f0f3ed;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.sidebar-project > span {
+  color: #b8c9c2;
+  font-size: 0.69rem;
+}
+
+.review-sidebar-context {
+  margin-top: 12px;
+}
+
+.review-sidebar-context__dot--needs-attention {
+  background: #e4b76e;
+}
+
+.review-sidebar-context__dot--rejected {
+  background: #db9286;
+}
+
+.review-sidebar-context__dot--generating,
+.review-sidebar-context__dot--waiting {
+  background: #83b3d7;
+}
+
+.review-sidebar-context__dot--not-selected {
+  background: #70827d;
+}
+
+.content-area--review > .page-heading {
+  display: none;
+}
+
+.source-revision {
+  margin: 0 0 18px;
+  border: 0;
+  border-bottom: 1px solid #e7e8e1;
+  border-radius: 0;
+  background: transparent;
+}
+
+.source-revision__summary {
+  min-height: 48px;
+  gap: 11px;
+  padding: 4px 2px 12px;
+}
+
+.source-revision__icon {
+  width: 30px;
+  height: 30px;
+  background: #eef3ed;
+}
+
+.artifact-viewer__header {
+  align-items: center;
+  gap: 16px;
+  padding: 23px clamp(24px, 3.5vw, 44px);
+}
+
+.artifact-viewer__header h2 {
+  display: block;
+  margin: 0 0 4px;
+  color: #22373c;
+  font-size: clamp(1.75rem, 2.4vw, 2.1rem);
+  letter-spacing: -0.045em;
+  line-height: 1.18;
+}
+
+.artifact-project-meta {
+  margin: 0 0 9px;
+  color: #71807c;
+  font-size: 0.82rem;
+}
+
+.artifact-project-meta span {
+  padding: 0 3px;
+}
+
+.artifact-document > .markdown-document {
+  width: min(100%, 76ch);
+  margin-inline: auto;
+}
+
+.creation-start {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  max-width: 650px;
+  margin: 52px auto;
+  padding: 12px;
+}
+
+.creation-start .eyebrow {
+  margin: 0;
+  color: #64877c;
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.creation-start h2 {
+  margin: 0;
+  color: #263a3a;
+  font-size: clamp(1.7rem, 3vw, 2.1rem);
+  letter-spacing: -0.05em;
+  line-height: 1.2;
+}
+
+.creation-start p:not(.eyebrow) {
+  max-width: 58ch;
+  margin: 0 0 7px;
+  color: #60706c;
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
+.manual-setup-backlink {
+  margin: 0 0 15px;
+}
+
+.weave-panel-scrim {
+  position: fixed;
+  z-index: 74;
+  inset: 0;
+  border: 0;
+  background: transparent;
+}
+
+.weave-panel {
+  position: fixed;
+  z-index: 75;
+  top: 18px;
+  right: 22px;
+  bottom: 18px;
+  display: flex;
+  width: min(460px, calc(100vw - 42px));
+  max-height: min(840px, calc(100dvh - 36px));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #dce4df;
+  border-radius: 18px;
+  background: #fffefa;
+  box-shadow: 0 18px 60px rgb(26 39 37 / 18%);
+}
+
+.weave-panel__header {
+  display: flex;
+  min-height: 82px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 17px;
+  border-bottom: 1px solid #e9ece6;
+  background: #fffefa;
+}
+
+.weave-panel__identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 11px;
+}
+
+.weave-panel__mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 12px;
+  background: #eaf2ec;
+  color: #4f8275;
+}
+
+.weave-panel__mark svg {
+  width: 19px;
+  height: 19px;
+}
+
+.weave-panel__identity > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.weave-panel__identity strong {
+  color: #243a3a;
+  font-size: 0.94rem;
+}
+
+.weave-panel__identity span:not(.weave-panel__mark) {
+  color: #687873;
+  font-size: 0.72rem;
+}
+
+.weave-panel__identity small {
+  overflow: hidden;
+  color: #81908a;
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.weave-panel__controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+
+.weave-panel__controls .icon-button {
+  width: 34px;
+  height: 34px;
+}
+
+.weave-panel__controls .weave-panel__clear-label {
+  color: #64736e;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.weave-panel__history {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 15px;
+  overflow-y: auto;
+  padding: 20px 18px;
+  scroll-behavior: smooth;
+}
+
+.weave-welcome {
+  display: grid;
+  align-content: start;
+  gap: 11px;
+  color: #43524d;
+}
+
+.weave-welcome > p:not(.weave-welcome__label) {
+  max-width: 40ch;
+  margin: 0;
+  font-size: 0.91rem;
+  line-height: 1.6;
+}
+
+.weave-welcome__label {
+  margin: 0;
+  color: #527e73;
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.weave-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 3px;
+}
+
+.weave-suggestions button,
+.weave-link-button {
+  min-height: 35px;
+  padding: 7px 10px;
+  border: 1px solid #dbe5df;
+  border-radius: 999px;
+  background: #fff;
+  color: #476b61;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+}
+
+.weave-link-button {
+  justify-self: start;
+}
+
+.weave-message {
+  display: grid;
+  align-self: start;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.weave-message--user {
+  align-self: end;
+  max-width: 90%;
+  padding: 10px 12px;
+  border-radius: 13px 13px 3px 13px;
+  background: #eef4ed;
+}
+
+.weave-message > strong {
+  color: #648078;
+  font-size: 0.7rem;
+}
+
+.weave-message > p {
+  margin: 0;
+  color: #3c4a45;
+  font-size: 0.84rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.weave-message--assistant > p {
+  max-width: 46ch;
+}
+
+.weave-panel__loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: #718079;
+  font-size: 0.82rem;
+}
+
+.weave-panel__error,
+.weave-source__error {
+  margin: 0 16px 8px;
+  color: #a23b35;
+  font-size: 0.76rem;
+}
+
+.weave-source {
+  display: grid;
+  gap: 8px;
+  padding: 0 16px;
+}
+
+.weave-source__attached {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 7px 4px 10px;
+  border: 1px solid #dce5df;
+  border-radius: 9px;
+  color: #50645c;
+  font-size: 0.72rem;
+}
+
+.weave-source__attached > svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+.weave-source__attached > span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.weave-source__attached .icon-button {
+  width: 28px;
+  height: 28px;
+}
+
+.weave-source__paste,
+.weave-source__url {
+  display: grid;
+  gap: 6px;
+  color: #5c6d65;
+  font-size: 0.72rem;
+}
+
+.weave-source__paste textarea,
+.weave-source__url input {
+  width: 100%;
+  min-height: 39px;
+  padding: 9px 10px;
+  border: 1px solid #d6dfd9;
+  border-radius: 9px;
+  background: #fff;
+  color: #2e403b;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.weave-source__paste textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.weave-source__url > div {
+  display: flex;
+  gap: 7px;
+}
+
+.weave-source__url .button-secondary {
+  min-height: 39px;
+}
+
+.weave-composer {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 7px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid #eaede7;
+  background: #fffefa;
+}
+
+.weave-composer__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.weave-composer__attachments button {
+  display: inline-flex;
+  min-height: 29px;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #59766c;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.7rem;
+}
+
+.weave-composer__attachments button:hover {
+  background: #eff4ef;
+}
+
+.weave-composer__attachments svg {
+  width: 14px;
+  height: 14px;
+}
+
+.weave-composer__input {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid #d8e1db;
+  border-radius: 13px;
+  background: #fff;
+}
+
+.weave-composer__input:focus-within {
+  border-color: #83aa9a;
+  box-shadow: 0 0 0 3px rgb(116 180 165 / 13%);
+}
+
+.weave-composer__input textarea {
+  width: 100%;
+  min-height: 56px;
+  max-height: 170px;
+  resize: vertical;
+  padding: 4px 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #2d403a;
+  font: inherit;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.weave-composer__input textarea::placeholder {
+  color: #89958f;
+}
+
+.weave-composer__input > button {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  background: #2c709b;
+  color: white;
+  cursor: pointer;
+}
+
+.weave-composer__input > button:disabled {
+  background: #dce5e2;
+  color: #81908a;
+  cursor: not-allowed;
+}
+
+.weave-composer__input > button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.weave-composer > small {
+  color: #8b9690;
+  font-size: 0.64rem;
+}
+
+.weave-plan {
+  display: grid;
+  gap: 11px;
+  margin-top: 7px;
+  padding: 13px;
+  border: 1px solid #dce6de;
+  border-radius: 13px;
+  background: #fff;
+}
+
+.weave-plan__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.weave-plan__heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.weave-plan__heading > div > span {
+  color: #698278;
+  font-size: 0.67rem;
+  font-weight: 700;
+}
+
+.weave-plan__heading strong {
+  color: #2b4038;
+  font-size: 0.85rem;
+}
+
+.weave-plan__pending {
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #f8f0dc;
+  color: #86672f;
+  font-size: 0.64rem;
+  white-space: nowrap;
+}
+
+.weave-plan__step {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: #41534b;
+}
+
+.weave-plan__step-icon {
+  display: grid;
+  width: 21px;
+  height: 21px;
+  place-items: center;
+  border-radius: 50%;
+  background: #edf3ee;
+  color: #5b897a;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.weave-plan__step-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.weave-plan__step > div {
+  display: grid;
+  gap: 5px;
+}
+
+.weave-plan__step > div > strong {
+  font-size: 0.76rem;
+}
+
+.weave-plan__details {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding-left: 16px;
+  color: #75837c;
+  font-size: 0.69rem;
+  line-height: 1.4;
+}
+
+.weave-plan__step small {
+  color: #9a6f34;
+  font-size: 0.67rem;
+}
+
+.weave-plan__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  padding-top: 3px;
+}
+
+.weave-plan__actions .button-primary,
+.weave-plan__actions .button-secondary {
+  min-height: 35px;
+  padding-inline: 12px;
+  font-size: 0.74rem;
+}
+
+.weave-plan__complete {
+  margin: 0;
+  color: #5e8275;
+  font-size: 0.68rem;
+}
+
+.weave-launcher {
+  position: fixed;
+  z-index: 76;
+  right: 24px;
+  bottom: 22px;
+  display: inline-flex;
+  min-height: 47px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 16px 0 13px;
+  border: 1px solid #b9d1c6;
+  border-radius: 999px;
+  background: #fafffc;
+  color: #386d60;
+  box-shadow: 0 5px 22px rgb(35 54 47 / 12%);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.weave-launcher svg {
+  width: 19px;
+  height: 19px;
+}
+
+.weave-launcher:hover {
+  border-color: #80a99a;
+  background: #f2f8f4;
+}
+
+.weave-launcher[aria-expanded="true"] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.weave-launcher:focus-visible,
+.weave-suggestions button:focus-visible,
+.weave-panel button:focus-visible {
+  outline: 3px solid rgb(72 133 115 / 38%);
+  outline-offset: 2px;
+}
+
+@media (max-width: 900px) {
+  .weave-panel {
+    right: 12px;
+    width: min(460px, calc(100vw - 24px));
+  }
+}
+
+@media (max-width: 720px) {
+  .weave-panel {
+    inset: 0;
+    width: 100%;
+    max-height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .weave-panel-scrim {
+    display: none;
+  }
+
+  .weave-panel__header {
+    min-height: 75px;
+    padding: 12px 13px;
+  }
+
+  .weave-panel__history {
+    padding: 17px 14px;
+  }
+
+  .weave-launcher {
+    right: 14px;
+    bottom: 14px;
+    min-height: 44px;
+    padding-inline: 13px;
+  }
+
+  .content-area--review > .page-heading {
+    display: none;
+  }
+
+  .artifact-viewer__header {
+    align-items: flex-start;
+    padding: 18px;
+  }
+
+  .artifact-viewer__header h2 {
+    font-size: 1.55rem;
+  }
+
+  .artifact-project-meta {
+    font-size: 0.73rem;
+  }
+
+  .creation-start {
+    margin: 30px auto;
+    padding: 8px 3px;
+  }
+}

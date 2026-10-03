@@ -137,8 +137,9 @@ describe("ReviewWorkspace asynchronous generation", () => {
       />,
     );
 
-    expect(await screen.findByText(/No version yet/)).toBeInTheDocument();
-    expect(screen.getByText("Generating")).toBeInTheDocument();
+    expect(
+      await screen.findByText("This artifact is waiting to be prepared."),
+    ).toBeInTheDocument();
     expect(
       screen.queryByText("Generated after the worker completed."),
     ).toBeNull();

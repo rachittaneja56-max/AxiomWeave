@@ -98,6 +98,15 @@ export const api = {
     ) as Promise<MediaRights>,
   transformation: (id: number) => requestJson("/api/transformations/" + id),
   chatWorkspace: (id: number) => requestJson(`/api/transformations/${id}/chat`),
+  weaveChat: () => requestJson("/api/weave/chat"),
+  proposeWeaveActionPlan: (message: string, sourceText?: string) =>
+    requestJson(
+      "/api/weave/chat",
+      jsonInit("POST", {
+        message,
+        ...(sourceText ? { source_text: sourceText } : {}),
+      }),
+    ),
   proposeActionPlan: (id: number, message: string) =>
     requestJson(
       `/api/transformations/${id}/chat`,

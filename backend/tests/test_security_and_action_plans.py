@@ -81,6 +81,31 @@ def generate_proposal(transformation_id: int) -> ActionPlanProposal:
     )
 
 
+def create_transformation_proposal(source_text: str) -> ActionPlanProposal:
+    return ActionPlanProposal(
+        explanation="I prepared a transformation draft for your review.",
+        steps=[
+            ProposedActionStep(
+                command_type="create_transformation",
+                arguments={
+                    "request": {
+                        "source_text": source_text,
+                        "output_types": ["executive_summary", "presentation"],
+                        "audience": "Senior leadership",
+                        "tone": "Professional",
+                        "language": "English",
+                        "detail_level": "standard",
+                        "objective": "Inform leadership",
+                        "style": "Plain language",
+                        "supporting_context": "",
+                    }
+                },
+                summary="Create an executive summary and presentation",
+            )
+        ],
+    )
+
+
 def install_planner(monkeypatch: Any, planner: PlannerStub) -> None:
     monkeypatch.setattr("app.action_planning.get_planner_provider", lambda: planner)
 
@@ -142,6 +167,104 @@ def test_action_plan_confirmation_is_exact_and_executes_once(
         assert chat_event.outcome == manual_event.outcome == "succeeded"
         assert chat_event.action_plan_id == plan["id"]
         assert manual_event.action_plan_id is None
+
+
+def test_global_weave_create_waits_for_confirmation_and_uses_typed_handler(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+    monkeypatch: Any,
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    source = "The city will open a new emergency coordination center next month."
+    planner = PlannerStub(create_transformation_proposal(source))
+    install_planner(monkeypatch, planner)
+
+    proposed = client.post(
+        "/api/weave/chat",
+        json={
+            "message": "Create a summary and presentation for senior leadership.",
+            "source_text": source,
+        },
+    )
+    assert proposed.status_code == 201
+    plan = proposed.json()
+    assert plan["transformation_run_id"] is None
+    assert plan["status"] == "awaiting_confirmation"
+    assert plan["requires_confirmation"] is True
+    assert plan["steps"][0]["command_type"] == "create_transformation"
+    with factory() as session:
+        assert session.scalar(select(TransformationRun)) is None
+
+    decision = {"plan_hash": plan["plan_hash"], "plan_version": plan["plan_version"]}
+    confirmed = client.post(f"/api/action-plans/{plan['id']}/confirm", json=decision)
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "completed"
+    assert confirmed.json()["steps"][0]["status"] == "completed"
+    reference = confirmed.json()["steps"][0]["result_reference"]
+    assert reference is not None and reference.startswith("transformation_run_id:")
+    assert client.post(f"/api/action-plans/{plan['id']}/confirm", json=decision).status_code == 409
+
+    history = client.get("/api/weave/chat")
+    assert history.status_code == 200
+    assert len(history.json()["messages"]) == 2
+    with factory() as session:
+        created = session.scalars(select(TransformationRun)).one()
+        assert created.selected_output_types == ["executive_summary", "presentation"]
+        action_names = list(session.scalars(select(AuditEvent.action_type).order_by(AuditEvent.id)))
+        assert action_names == [
+            "transformation.created",
+            "create_transformation",
+            "action_plan.confirmed",
+        ]
+
+
+def test_global_weave_rejects_incomplete_creation_and_workspace_commands(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+    monkeypatch: Any,
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    invalid = ActionPlanProposal.model_construct(
+        explanation="This should not be accepted.",
+        steps=[
+            ProposedActionStep.model_construct(
+                command_type="create_transformation",
+                arguments={
+                    "request": {
+                        "source_text": "",
+                        "output_types": ["not_a_supported_output"],
+                        "audience": "",
+                        "tone": "",
+                        "objective": "",
+                        "style": "",
+                    }
+                },
+                summary="Invalid create",
+            )
+        ],
+    )
+    install_planner(monkeypatch, PlannerStub(invalid))
+    response = client.post("/api/weave/chat", json={"message": "Create this."})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_action_plan"
+    with factory() as session:
+        assert session.scalar(select(TransformationRun)) is None
+        assert session.scalar(select(ActionPlan)) is None
+
+    wrong_scope = ActionPlanProposal.model_construct(
+        explanation="This command belongs to a selected workspace.",
+        steps=[
+            ProposedActionStep.model_construct(
+                command_type="generate_selected_artifacts",
+                arguments={"transformation_run_id": 5},
+                summary="Generate selected artifacts",
+            )
+        ],
+    )
+    install_planner(monkeypatch, PlannerStub(wrong_scope))
+    wrong_scope_response = client.post("/api/weave/chat", json={"message": "Generate artifacts."})
+    assert wrong_scope_response.status_code == 422
+    assert wrong_scope_response.json()["error"]["code"] == "invalid_action_plan"
 
 
 def test_evidence_analysis_uses_the_same_typed_handler_for_manual_and_chat(

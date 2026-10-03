@@ -57,6 +57,9 @@ function installWorkspaceFetch(fetchMock: ReturnType<typeof vi.fn>) {
     if (input === "/api/transformations" && init?.method !== "POST") {
       return Promise.resolve(jsonResponse([]));
     }
+    if (input === "/api/weave/chat" && !init?.method) {
+      return Promise.resolve(jsonResponse({ messages: [], plans: [] }));
+    }
     return delegateFetch(input, init);
   });
   vi.stubGlobal("fetch", routedFetch);
@@ -78,6 +81,13 @@ async function renderAuthenticatedWorkspace() {
     screen.getByRole("button", { name: "Open navigation menu" }),
   ).toHaveAttribute("aria-expanded", "false");
   await screen.findByRole("heading", { name: "New transformation" });
+  expect(
+    await screen.findByRole("heading", {
+      name: "Tell Weave what you’re working with",
+    }),
+  ).toBeVisible();
+  expect(screen.getByRole("dialog", { name: "Weave assistant" })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Use manual setup" }));
 }
 
 function fillRequiredControls() {
@@ -873,7 +883,7 @@ describe("transformation request form", () => {
       screen.queryByRole("button", { name: "X Post" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Formal Advisory" }),
+      await screen.findByRole("button", { name: "Formal Advisory" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Update" })).toBeInTheDocument();
     expect(document.querySelector("script")).toBeNull();
@@ -1361,15 +1371,19 @@ describe("transformation request form", () => {
     }
     fireEvent.click(screen.getByRole("button", { name: "Generate artifacts" }));
 
-    expect(await screen.findByText("Needs attention")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Formal Advisory" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByTitle("Needs attention")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Executive Summary" }));
     expect(
       await screen.findByText("A short generated summary."),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Formal Advisory" }));
-    expect(screen.getByText(/No version yet/)).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Retry artifact" }),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry artifact" }));
-    expect(await screen.findByText(/No version yet/)).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/artifact-runs/41/retry",
       expect.objectContaining({ method: "POST", credentials: "include" }),

@@ -53,6 +53,7 @@ export function ArtifactRail({
             artifact.status,
             latest?.review_status ?? null,
           );
+          const statusClass = status.toLowerCase().replaceAll(" ", "-");
           const Icon = OUTPUT_ICONS[artifact.output_type];
           return (
             <li key={artifact.artifact_run_id}>
@@ -70,19 +71,24 @@ export function ArtifactRail({
                     : undefined
                 }
                 aria-label={outputLabel(artifact.output_type)}
+                aria-describedby={`artifact-status-${artifact.artifact_run_id}`}
                 onClick={() => onSelect(artifact.artifact_run_id)}
               >
                 <span className="review-sidebar-context__label">
                   <Icon aria-hidden="true" />
                   <span>{outputLabel(artifact.output_type)}</span>
                 </span>
-                {latest && (
-                  <span
-                    className="review-sidebar-context__dot"
-                    aria-hidden="true"
-                    title={status}
-                  />
-                )}
+                <span
+                  className={`review-sidebar-context__dot review-sidebar-context__dot--${statusClass}`}
+                  aria-hidden="true"
+                  title={status}
+                />
+                <span
+                  className="visually-hidden"
+                  id={`artifact-status-${artifact.artifact_run_id}`}
+                >
+                  {status}
+                </span>
               </button>
             </li>
           );

@@ -89,8 +89,8 @@ class ActionPlan(Base):
     owner_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    transformation_run_id: Mapped[int] = mapped_column(
-        ForeignKey("transformation_runs.id", ondelete="RESTRICT"), nullable=False, index=True
+    transformation_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("transformation_runs.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     user_request: Mapped[str] = mapped_column(String(2_000), nullable=False)
     explanation: Mapped[str] = mapped_column(String(1_000), nullable=False)
@@ -145,8 +145,8 @@ class ChatMessage(Base):
     owner_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    transformation_run_id: Mapped[int] = mapped_column(
-        ForeignKey("transformation_runs.id", ondelete="RESTRICT"), nullable=False, index=True
+    transformation_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("transformation_runs.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     action_plan_id: Mapped[int | None] = mapped_column(
         ForeignKey("action_plans.id", ondelete="RESTRICT"), index=True

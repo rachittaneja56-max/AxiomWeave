@@ -16,6 +16,7 @@ from app.action_planning import (
 )
 from app.auth import require_current_user
 from app.database import get_db_session
+from app.domain.transformation import SOURCE_TEXT_MAX_LENGTH
 from app.models import (
     ActionPlan,
     ActionPlanStep,
@@ -29,6 +30,11 @@ router = APIRouter()
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2_000)
+
+
+class GlobalChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2_000)
+    source_text: str | None = Field(default=None, max_length=SOURCE_TEXT_MAX_LENGTH)
 
 
 class PlanDecisionRequest(BaseModel):
@@ -51,7 +57,7 @@ class ActionPlanStepResponse(BaseModel):
 
 class ActionPlanResponse(BaseModel):
     id: int
-    transformation_run_id: int
+    transformation_run_id: int | None
     explanation: str
     planner_profile: str
     planner_profile_version: str
@@ -121,6 +127,59 @@ def _plan_response(session: Session, plan: ActionPlan) -> ActionPlanResponse:
         executed_at=plan.executed_at,
         steps=_step_responses(session, plan.id),
     )
+
+
+@router.get("/weave/chat", response_model=ChatWorkspaceResponse)
+def get_global_chat(
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> ChatWorkspaceResponse:
+    messages = session.scalars(
+        select(ChatMessage)
+        .where(ChatMessage.owner_id == user.id, ChatMessage.transformation_run_id.is_(None))
+        .order_by(ChatMessage.id.desc())
+        .limit(100)
+    ).all()
+    plans = session.scalars(
+        select(ActionPlan)
+        .where(ActionPlan.owner_id == user.id, ActionPlan.transformation_run_id.is_(None))
+        .order_by(ActionPlan.id.desc())
+        .limit(20)
+    ).all()
+    return ChatWorkspaceResponse(
+        messages=[
+            ChatMessageResponse(
+                id=item.id,
+                role=item.role,
+                content=item.content,
+                action_plan_id=item.action_plan_id,
+                created_at=item.created_at,
+            )
+            for item in reversed(messages)
+        ],
+        plans=[_plan_response(session, plan) for plan in reversed(plans)],
+    )
+
+
+@router.post(
+    "/weave/chat",
+    response_model=ActionPlanResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit_dependency("action_planning", limit=12, window_seconds=60))],
+)
+async def propose_global_action_plan(
+    body: GlobalChatRequest,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> ActionPlanResponse:
+    plan = await create_action_plan(
+        transformation_run_id=None,
+        message=body.message,
+        source_text=body.source_text,
+        user=user,
+        session=session,
+    )
+    return _plan_response(session, plan)
 
 
 @router.get(

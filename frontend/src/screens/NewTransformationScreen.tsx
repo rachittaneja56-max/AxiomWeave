@@ -83,6 +83,7 @@ export function NewTransformationScreen({
   const [retryingArtifact, setRetryingArtifact] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [manualSetup, setManualSetup] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const isLocked =
     phase === "saving" || phase === "generating" || Boolean(saved);
@@ -343,8 +344,42 @@ export function NewTransformationScreen({
 
   const sourceCount = sourceCharacterCount(request.source_text);
 
+  if (!manualSetup && phase === "idle" && !saved) {
+    return (
+      <section
+        className="creation-start"
+        aria-labelledby="creation-start-title"
+      >
+        <p className="eyebrow">Start with Weave</p>
+        <h2 id="creation-start-title">Tell Weave what you’re working with</h2>
+        <p>
+          Describe the source and the materials you need. Add a document, paste
+          text, or import a public page in the Weave panel. You’ll review the
+          proposed setup before anything is created.
+        </p>
+        <button
+          type="button"
+          className="button-secondary"
+          onClick={() => setManualSetup(true)}
+        >
+          Use manual setup
+        </button>
+      </section>
+    );
+  }
+
   return (
     <section className="composer-screen" aria-label="New transformation">
+      <div className="manual-setup-backlink">
+        <button
+          type="button"
+          className="text-button"
+          onClick={() => setManualSetup(false)}
+          disabled={isLocked}
+        >
+          Back to chat-first setup
+        </button>
+      </div>
       <form
         className="composer-form"
         onSubmit={(event) => void submitRequest(event)}

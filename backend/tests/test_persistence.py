@@ -152,7 +152,7 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert set(inspector.get_table_names()) == EXPECTED_TABLES | {"alembic_version"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "d6a2c9f7b140"
+        assert revision == "a41f028bc9e2"
         asset_columns = {
             column["name"]: column for column in inspector.get_columns("source_assets")
         }
@@ -254,7 +254,7 @@ def test_media_migration_preserves_artifacts_and_jobs(tmp_path: Path) -> None:
             migration = connection.scalar(text("SELECT version_num FROM alembic_version"))
         assert version == (1, 1, "draft")
         assert job == (1, "artifact_generation", "model_io", "succeeded")
-        assert migration == "d6a2c9f7b140"
+        assert migration == "a41f028bc9e2"
     finally:
         engine.dispose()
 

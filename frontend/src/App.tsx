@@ -21,7 +21,9 @@ function Workspace({
   const [screen, setScreen] = useState<WorkspaceScreen>("dashboard");
   const [reviewId, setReviewId] = useState<number | null>(null);
   const [reviewTitle, setReviewTitle] = useState("Review workspace");
-  const [, setReviewSourceVersion] = useState(1);
+  const [reviewSourceVersion, setReviewSourceVersion] = useState(1);
+  const [assistantContext, setAssistantContext] = useState("Project overview");
+  const [reviewRefresh, setReviewRefresh] = useState(0);
   const [logoutError, setLogoutError] = useState(false);
   const [pendingOutput, setPendingOutput] = useState<OutputType | undefined>();
 
@@ -34,6 +36,7 @@ function Workspace({
     setReviewId(id);
     setReviewTitle(title || "Untitled transformation");
     setReviewSourceVersion(sourceVersion);
+    setAssistantContext("Project overview");
     setPendingOutput(outputType);
     setScreen("review");
   }
@@ -58,7 +61,7 @@ function Workspace({
     screen === "dashboard"
       ? "Create, review and update source-grounded content."
       : screen === "new"
-        ? "Start with a source. Choose the artifacts you need."
+        ? "Describe your source and the materials you want to create."
         : undefined;
 
   const headerActions =
@@ -81,8 +84,22 @@ function Workspace({
       headerActions={headerActions}
       logoutError={logoutError}
       username={username}
+      projectTitle={screen === "review" ? reviewTitle : undefined}
+      sourceVersion={screen === "review" ? reviewSourceVersion : null}
+      assistantContext={
+        screen === "dashboard"
+          ? "Dashboard"
+          : screen === "new"
+            ? "Creating a transformation"
+            : assistantContext
+      }
+      transformationId={screen === "review" ? reviewId : null}
       onNavigate={navigate}
       onLogout={() => void handleLogout()}
+      onTransformationCreated={(id, title, sourceVersion) =>
+        openReview(id, title, sourceVersion)
+      }
+      onWorkspaceChanged={() => setReviewRefresh((value) => value + 1)}
     >
       {screen === "dashboard" && (
         <DashboardScreen
@@ -104,6 +121,9 @@ function Workspace({
           onBack={() => navigate("dashboard")}
           onTitleChange={setReviewTitle}
           onSourceVersionChange={setReviewSourceVersion}
+          onAssistantContextChange={setAssistantContext}
+          projectTitle={reviewTitle}
+          refreshKey={reviewRefresh}
         />
       )}
     </AppShell>

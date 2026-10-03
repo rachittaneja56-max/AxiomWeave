@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoaderCircle, RefreshCw, GitBranch, X } from "lucide-react";
 import { api } from "../api";
-import { StatusBadge } from "../components/StatusBadge";
 import { ArtifactRail } from "../review/ArtifactRail";
 import { ArtifactViewer } from "../review/ArtifactViewer";
 import { InspectorPanel } from "../review/InspectorPanel";
 import { SourceRevisionPanel } from "../review/SourceRevisionPanel";
 import { SourceViewerDialog } from "../review/SourceViewerDialog";
-import { ActionPlanChat } from "../review/ActionPlanChat";
 import type {
   DiscrepancyFinding,
   ArtifactLineage,
@@ -36,18 +34,26 @@ function pairKey(left: number, right: number): string {
   return [left, right].sort((a, b) => a - b).join(":");
 }
 
+const ignoreAssistantContextChange = () => undefined;
+
 export function ReviewWorkspace({
   transformationId,
   initialOutputType,
   onBack,
   onTitleChange,
   onSourceVersionChange,
+  onAssistantContextChange = ignoreAssistantContextChange,
+  projectTitle = "Project workspace",
+  refreshKey = 0,
 }: {
   transformationId: number;
   initialOutputType?: OutputType;
   onBack: () => void;
   onTitleChange: (title: string) => void;
   onSourceVersionChange: (version: number) => void;
+  onAssistantContextChange?: (context: string) => void;
+  projectTitle?: string;
+  refreshKey?: number;
 }) {
   const [detail, setDetail] = useState<TransformationDetail | null>(null);
   const [revision, setRevision] = useState<SourceRevisionStatus | null>(null);
@@ -195,7 +201,13 @@ export function ReviewWorkspace({
     return () => {
       active = false;
     };
-  }, [transformationId, reload, initialOutputType, onSourceVersionChange]);
+  }, [
+    transformationId,
+    reload,
+    initialOutputType,
+    onSourceVersionChange,
+    refreshKey,
+  ]);
 
   const hasActiveGeneration = Boolean(
     detail?.artifact_runs.some(
@@ -251,6 +263,14 @@ export function ReviewWorkspace({
     ) ??
     latestVersion ??
     null;
+
+  useEffect(() => {
+    onAssistantContextChange(
+      activeArtifact
+        ? outputLabel(activeArtifact.output_type)
+        : "Project overview",
+    );
+  }, [activeArtifact, onAssistantContextChange]);
 
   useEffect(() => {
     const versionId = selectedVersion?.id;
@@ -677,46 +697,6 @@ export function ReviewWorkspace({
 
   return (
     <section className="review-screen" aria-label="Artifact review workspace">
-      <div className="review-context">
-        <div className="review-context__source">
-          <span className="source-kind__dot" />
-          <strong>Source V{detail.source_version.version_number}</strong>
-          <span>
-            One source, {detail.artifact_runs.length} artifact
-            {detail.artifact_runs.length === 1 ? "" : "s"}
-          </span>
-        </div>
-        {activeArtifact?.context_manifest && (
-          <span
-            className={
-              activeArtifact.context_manifest.state === "needs_review"
-                ? "review-context__plan review-context__plan--warning"
-                : "review-context__plan"
-            }
-            role="status"
-          >
-            Latest context plan: {activeArtifact.context_manifest.route}
-            {" · Pack V"}
-            {activeArtifact.context_manifest.source_pack_version_id}
-            {" · "}
-            {activeArtifact.context_manifest.region_count} regions
-            {activeArtifact.context_manifest.state === "needs_review" &&
-              " · Needs review"}
-            {activeArtifact.context_manifest.extraction_coverage ===
-              "partial" && " · Partial extraction"}
-          </span>
-        )}
-        <StatusBadge
-          status={
-            detail.status === "Partial Failure"
-              ? "Needs attention"
-              : detail.status === "Review Required"
-                ? "Ready for review"
-                : detail.status
-          }
-          compact
-        />
-      </div>
       <SourceRevisionPanel
         transformationId={detail.transformation_run_id}
         sourceVersion={detail.source_version}
@@ -729,7 +709,6 @@ export function ReviewWorkspace({
           else void regenerateArtifact(artifactRunId);
         }}
       />
-      <ActionPlanChat transformationId={detail.transformation_run_id} />
       <ArtifactRail
         artifacts={artifacts}
         activeArtifactId={activeArtifact?.artifact_run_id ?? null}
@@ -756,7 +735,7 @@ export function ReviewWorkspace({
             <p className="eyebrow">Review workspace</p>
             <h2>No artifacts yet</h2>
             <p>
-              Return to your transformations to generate the selected materials.
+              Ask Weave to prepare the selected materials when you’re ready.
             </p>
             <button type="button" className="button-secondary" onClick={onBack}>
               Back to transformations
@@ -769,6 +748,8 @@ export function ReviewWorkspace({
             <ArtifactViewer
               artifact={activeArtifact}
               version={selectedVersion}
+              projectTitle={projectTitle}
+              currentSourceVersion={detail.source_version.version_number}
               isLatest={isLatest}
               busy={busy}
               exportStatus={exportStatus}

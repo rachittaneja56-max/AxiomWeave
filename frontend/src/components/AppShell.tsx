@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Files, LogOut, Menu, Plus, X } from "lucide-react";
 import type { WorkspaceScreen } from "../types";
 import { BrandMark } from "./BrandMark";
+import { WeaveAssistant } from "./WeaveAssistant";
 
 type AppShellProps = {
   screen: WorkspaceScreen;
@@ -14,6 +15,16 @@ type AppShellProps = {
   onLogout: () => void;
   children: ReactNode;
   contextualNavigation?: ReactNode;
+  projectTitle?: string;
+  sourceVersion?: number | null;
+  assistantContext: string;
+  transformationId: number | null;
+  onTransformationCreated: (
+    id: number,
+    title: string,
+    sourceVersion: number,
+  ) => void;
+  onWorkspaceChanged: () => void;
 };
 
 export function AppShell({
@@ -27,6 +38,12 @@ export function AppShell({
   onLogout,
   children,
   contextualNavigation,
+  projectTitle,
+  sourceVersion,
+  assistantContext,
+  transformationId,
+  onTransformationCreated,
+  onWorkspaceChanged,
 }: AppShellProps) {
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -91,6 +108,15 @@ export function AppShell({
             <span>New transformation</span>
           </button>
         </nav>
+        {screen === "review" && projectTitle && (
+          <div className="sidebar-project" aria-label="Current project">
+            <p className="sidebar-section-label">Current project</p>
+            <strong title={projectTitle}>{projectTitle}</strong>
+            {sourceVersion !== null && sourceVersion !== undefined && (
+              <span>Source V{sourceVersion}</span>
+            )}
+          </div>
+        )}
         {contextualNavigation}
         <div id="review-context-navigation" />
         <div className="sidebar-footer">
@@ -142,6 +168,14 @@ export function AppShell({
           {children}
         </main>
       </div>
+      <WeaveAssistant
+        transformationId={transformationId}
+        contextLabel={assistantContext}
+        creationMode={screen === "new"}
+        onNavigateNew={() => navigate("new")}
+        onTransformationCreated={onTransformationCreated}
+        onWorkspaceChanged={onWorkspaceChanged}
+      />
     </div>
   );
 }

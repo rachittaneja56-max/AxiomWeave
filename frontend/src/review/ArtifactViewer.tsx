@@ -263,6 +263,8 @@ function PresentationViewer({ content }: { content: string }) {
 export function ArtifactViewer({
   artifact,
   version,
+  projectTitle,
+  currentSourceVersion,
   isLatest,
   busy,
   exportStatus,
@@ -279,6 +281,8 @@ export function ArtifactViewer({
 }: {
   artifact: ReviewArtifactRun;
   version: ReviewArtifactVersion | null;
+  projectTitle: string;
+  currentSourceVersion: number;
   isLatest: boolean;
   busy: boolean;
   exportStatus: string | null;
@@ -336,12 +340,12 @@ export function ArtifactViewer({
     <section className="artifact-viewer" aria-labelledby="artifact-title">
       <header className="artifact-viewer__header">
         <div>
-          <p className="eyebrow">
-            Source V{version?.source_version_number ?? "—"}
-            {version && <span aria-hidden="true"> · </span>}
-            {version ? "Version " + version.version_number : "No version yet"}
-          </p>
           <h2 id="artifact-title">{label}</h2>
+          <p className="artifact-project-meta">
+            {projectTitle} <span aria-hidden="true">·</span> Source V
+            {currentSourceVersion}
+            {version && <span> · Version {version.version_number}</span>}
+          </p>
           {artifact.output_type === "infographic" && (
             <p className="artifact-capability">
               Editable infographic specification
