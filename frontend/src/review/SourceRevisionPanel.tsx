@@ -11,6 +11,8 @@ import {
 import { api } from "../api";
 import type {
   AffectedArtifact,
+  SourceAssetInspection,
+  SourcePackInspection,
   SourceRevisionStatus,
   SourceVersion,
 } from "../types";
@@ -42,6 +44,9 @@ export function SourceRevisionPanel({
   const [loadingSource, setLoadingSource] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sourcePack, setSourcePack] = useState<SourcePackInspection | null>(
+    null,
+  );
 
   useEffect(() => {
     if (!editorOpen) return;
@@ -51,6 +56,23 @@ export function SourceRevisionPanel({
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [editorOpen]);
+
+  useEffect(() => {
+    let active = true;
+    void api
+      .sourcePack(transformationId)
+      .then((pack) => {
+        if (active) {
+          setSourcePack(pack && Array.isArray(pack.versions) ? pack : null);
+        }
+      })
+      .catch(() => {
+        if (active) setSourcePack(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [transformationId, sourceVersion.id]);
 
   async function openEditor() {
     setError(null);
@@ -91,6 +113,12 @@ export function SourceRevisionPanel({
   const changeCount = revision?.changes.length ?? 0;
   const affected = revision?.potentially_affected_artifacts ?? [];
   const hasPrevious = Boolean(revision?.parent_source_version);
+  const sourceMedia =
+    sourcePack?.versions
+      .find((item) => item.source_version_id === sourceVersion.id)
+      ?.assets.filter((asset) =>
+        ["image", "audio", "video"].includes(asset.source_kind),
+      ) ?? [];
 
   return (
     <section className="source-revision" aria-label="Source version">
@@ -152,6 +180,14 @@ export function SourceRevisionPanel({
         <p className="notice notice--error" role="alert">
           {error}
         </p>
+      )}
+      {sourceMedia.length > 0 && (
+        <section className="source-media-panel" aria-label="Source media">
+          <p className="eyebrow">Private source media</p>
+          {sourceMedia.map((asset) => (
+            <SourceMediaReview key={asset.id} asset={asset} />
+          ))}
+        </section>
       )}
       {changesOpen && revision && (
         <div className="source-revision__details">
@@ -325,5 +361,180 @@ export function SourceRevisionPanel({
         </div>
       )}
     </section>
+  );
+}
+
+function SourceMediaReview({ asset }: { asset: SourceAssetInspection }) {
+  const [rightsBasis, setRightsBasis] = useState(asset.rights_basis ?? "");
+  const [consentState, setConsentState] = useState(asset.consent_state ?? "");
+  const [consentRequired, setConsentRequired] = useState(
+    asset.consent_required ?? false,
+  );
+  const [attribution, setAttribution] = useState(asset.attribution ?? "");
+  const [eligible, setEligible] = useState(
+    Boolean(
+      asset.rights_basis &&
+      asset.rights_basis !== "unknown" &&
+      ["confirmed", "not_applicable"].includes(asset.consent_state ?? "") &&
+      (!asset.consent_required || asset.consent_state === "confirmed"),
+    ),
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function saveRights() {
+    if (!rightsBasis || !consentState) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await api.updateSourceMediaRights(asset.id, {
+        rights_basis: rightsBasis as
+          | "user_owned"
+          | "permission_confirmed"
+          | "public_domain"
+          | "not_applicable"
+          | "unknown",
+        consent_state: consentState as
+          "confirmed" | "not_applicable" | "unknown",
+        consent_required: consentRequired,
+        attribution: attribution || undefined,
+      });
+      setEligible(response.eligible_for_composition);
+    } catch {
+      setError("Source media rights could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <article className="source-media-card">
+      <header>
+        <strong>
+          {asset.original_filename || `${asset.source_kind} source`}
+        </strong>
+        <span>
+          {asset.extraction_coverage.replaceAll("_", " ")} extraction ·{" "}
+          {asset.extraction_method}
+        </span>
+      </header>
+      {asset.preview_url && asset.source_kind === "image" && (
+        <img
+          className="source-media-card__preview"
+          src={asset.preview_url}
+          alt="Private source image"
+        />
+      )}
+      {asset.preview_url && asset.source_kind === "audio" && (
+        <audio controls preload="metadata" src={asset.preview_url} />
+      )}
+      {asset.preview_url && asset.source_kind === "video" && (
+        <video controls preload="metadata" src={asset.preview_url} />
+      )}
+      {asset.download_url && (
+        <a href={asset.download_url} download>
+          Download original media
+        </a>
+      )}
+      {asset.extraction_coverage === "unavailable" ? (
+        <p>
+          Media bytes are preserved privately. No extracted text is being
+          treated as evidence.
+        </p>
+      ) : (
+        <ul className="source-media-regions">
+          {asset.regions.map((region) => (
+            <li key={region.id}>
+              <code>{region.locator}</code>
+              {region.text ? (
+                <span>{region.text}</span>
+              ) : (
+                <span>Locator only; no extracted text.</span>
+              )}
+              {region.locator_metadata?.timestamp_ms !== undefined && (
+                <small>
+                  At {String(region.locator_metadata.timestamp_ms)} ms
+                </small>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <details className="source-media-rights">
+        <summary>Rights and consent</summary>
+        <label>
+          Rights basis
+          <select
+            value={rightsBasis}
+            onChange={(event) => {
+              setRightsBasis(event.target.value);
+              setEligible(false);
+            }}
+            disabled={busy}
+          >
+            <option value="">Choose a rights basis</option>
+            <option value="user_owned">I own this media</option>
+            <option value="permission_confirmed">Permission confirmed</option>
+            <option value="public_domain">Public domain</option>
+            <option value="not_applicable">Not applicable</option>
+            <option value="unknown">Unknown</option>
+          </select>
+        </label>
+        <label>
+          Consent
+          <select
+            value={consentState}
+            onChange={(event) => {
+              setConsentState(event.target.value);
+              setEligible(false);
+            }}
+            disabled={busy}
+          >
+            <option value="">Choose consent state</option>
+            <option value="confirmed">Consent confirmed</option>
+            <option value="not_applicable">Not applicable</option>
+            <option value="unknown">Unknown</option>
+          </select>
+        </label>
+        <label className="source-media-rights__check">
+          <input
+            type="checkbox"
+            checked={consentRequired}
+            onChange={(event) => {
+              setConsentRequired(event.target.checked);
+              setEligible(false);
+            }}
+            disabled={busy}
+          />
+          Consent is required for this media
+        </label>
+        <label>
+          Attribution (optional)
+          <input
+            value={attribution}
+            maxLength={500}
+            onChange={(event) => {
+              setAttribution(event.target.value);
+              setEligible(false);
+            }}
+            disabled={busy}
+          />
+        </label>
+        <button
+          type="button"
+          className="button-secondary"
+          onClick={() => void saveRights()}
+          disabled={busy || !rightsBasis || !consentState}
+        >
+          {eligible ? "Rights confirmed" : "Save rights and consent"}
+        </button>
+        {error && (
+          <p className="notice notice--error" role="alert">
+            {error}
+          </p>
+        )}
+        {!eligible && <small>Unknown rights remain visible for review.</small>}
+      </details>
+    </article>
   );
 }

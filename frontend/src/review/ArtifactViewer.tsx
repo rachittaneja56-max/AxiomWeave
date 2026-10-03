@@ -27,6 +27,7 @@ import {
 } from "../utils";
 import { MarkdownDocument } from "../components/MarkdownDocument";
 import { StatusBadge } from "../components/StatusBadge";
+import { MediaWorkflowPanel } from "./MediaWorkflowPanel";
 import type { PresentationDocument } from "../types";
 import {
   InfographicEditor,
@@ -629,6 +630,7 @@ export function ArtifactViewer({
           {exportStatus}
         </p>
       )}
+      <MediaWorkflowPanel outputType={artifact.output_type} version={version} />
     </section>
   );
 }

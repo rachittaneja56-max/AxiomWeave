@@ -136,6 +136,12 @@ export function NewTransformationScreen({
         filename: body.filename,
         character_count: body.character_count,
         ocr_used: body.ocr_used,
+        ...(body.extraction_coverage !== undefined
+          ? { extraction_coverage: body.extraction_coverage }
+          : {}),
+        ...(body.extraction_details !== undefined
+          ? { extraction_details: body.extraction_details }
+          : {}),
         ...(body.source_version_id !== undefined
           ? { source_version_id: body.source_version_id }
           : {}),
@@ -475,7 +481,7 @@ export function NewTransformationScreen({
                   aria-label="Upload source file"
                   className="visually-hidden"
                   type="file"
-                  accept=".txt,.md,.docx,.pdf,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  accept=".txt,.md,.docx,.pdf,.png,.jpg,.jpeg,.wav,.mp3,.m4a,.mp4,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg,audio/wav,audio/mpeg,audio/mp4,video/mp4"
                   onChange={(event) =>
                     void extractSourceFile(event.target.files?.[0])
                   }
@@ -494,6 +500,19 @@ export function NewTransformationScreen({
                       {sourceFile.ocr_used && (
                         <small className="ocr-used-note">
                           OCR used on scanned pages
+                        </small>
+                      )}
+                      {sourceFile.extraction_coverage === "partial" && (
+                        <small className="ocr-used-note">
+                          Partial extraction coverage. Review source locators
+                          and sampled video frames.
+                        </small>
+                      )}
+                      {sourceFile.extraction_coverage === "unavailable" && (
+                        <small className="ocr-used-note">
+                          Original media is saved privately. Vision or ASR
+                          extraction is unavailable, so this source needs review
+                          before generation.
                         </small>
                       )}
                     </span>
@@ -528,7 +547,8 @@ export function NewTransformationScreen({
                     </strong>
                     <span>or browse your device</span>
                     <small>
-                      TXT, MD, DOCX or PDF · source text up to 20,000 characters
+                      TXT, MD, DOCX, PDF, PNG, JPEG, WAV, MP3, M4A or MP4. Media
+                      coverage can be partial or unavailable.
                     </small>
                   </label>
                 )}

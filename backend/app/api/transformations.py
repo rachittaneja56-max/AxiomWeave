@@ -23,6 +23,7 @@ from app.models import (
     ContextManifest,
     ContextManifestEntry,
     Job,
+    MediaRightsRecord,
     Source,
     SourceAsset,
     SourcePack,
@@ -136,11 +137,13 @@ class SourceRegionInspection(BaseModel):
     region_type: str
     page_number: int | None
     text: str | None
+    locator_kind: str | None
+    locator_metadata: dict[str, object] | None
 
 
 class SourceAssetInspection(BaseModel):
     id: int
-    source_kind: Literal["text", "file", "url"]
+    source_kind: Literal["text", "file", "url", "image", "audio", "video"]
     media_type: str
     original_filename: str | None
     byte_size: int
@@ -149,7 +152,14 @@ class SourceAssetInspection(BaseModel):
     extraction_method: str
     extraction_profile: str
     extraction_profile_version: int
-    extraction_coverage: Literal["complete", "partial"]
+    extraction_coverage: Literal["complete", "partial", "unavailable"]
+    extraction_details: dict[str, object] | None
+    preview_url: str | None = None
+    download_url: str | None = None
+    rights_basis: str | None = None
+    consent_state: str | None = None
+    consent_required: bool | None = None
+    attribution: str | None = None
     regions: list[SourceRegionInspection]
 
 
@@ -499,9 +509,16 @@ def get_transformation_source_pack(
                 .order_by(SourceRegion.ordinal)
             ).all()
         )
+        rights = session.scalar(
+            select(MediaRightsRecord).where(MediaRightsRecord.source_asset_id == asset.id)
+        )
+        is_media = asset.source_kind in {"image", "audio", "video"}
         return SourceAssetInspection(
             id=asset.id,
-            source_kind=cast(Literal["text", "file", "url"], asset.source_kind),
+            source_kind=cast(
+                Literal["text", "file", "url", "image", "audio", "video"],
+                asset.source_kind,
+            ),
             media_type=asset.media_type,
             original_filename=asset.original_filename,
             byte_size=asset.byte_size,
@@ -510,7 +527,16 @@ def get_transformation_source_pack(
             extraction_method=asset.extraction_method,
             extraction_profile=asset.extraction_profile,
             extraction_profile_version=asset.extraction_profile_version,
-            extraction_coverage=cast(Literal["complete", "partial"], asset.extraction_coverage),
+            extraction_coverage=cast(
+                Literal["complete", "partial", "unavailable"], asset.extraction_coverage
+            ),
+            extraction_details=asset.extraction_details,
+            preview_url=f"/api/source-assets/{asset.id}/preview" if is_media else None,
+            download_url=f"/api/source-assets/{asset.id}/download" if is_media else None,
+            rights_basis=rights.rights_basis if rights is not None else None,
+            consent_state=rights.consent_state if rights is not None else None,
+            consent_required=rights.consent_required if rights is not None else None,
+            attribution=rights.attribution if rights is not None else None,
             regions=[
                 SourceRegionInspection(
                     id=region.id,
@@ -520,6 +546,8 @@ def get_transformation_source_pack(
                     region_type=region.region_type,
                     page_number=region.page_number,
                     text=region.text,
+                    locator_kind=region.locator_kind,
+                    locator_metadata=region.locator_metadata,
                 )
                 for region in regions
             ],

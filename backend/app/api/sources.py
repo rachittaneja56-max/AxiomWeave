@@ -1,8 +1,11 @@
-from typing import Annotated
+import asyncio
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import Response
 from openai import AsyncOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import require_current_user
@@ -12,14 +15,41 @@ from app.document_extraction import (
     ExtractedDocument,
     extract_document,
 )
-from app.models import User
-from app.private_asset_storage import get_private_asset_store
+from app.media_workflows import rights_are_eligible
+from app.models import MediaRightsRecord, SourceAsset, SourcePack, SourcePackVersion, User, utc_now
+from app.multimodal_extraction import (
+    MAX_AUDIO_BYTES,
+    MAX_IMAGE_BYTES,
+    MAX_VIDEO_BYTES,
+    MediaSourceError,
+    extract_source_media,
+    get_asr_extractor,
+    get_vision_extractor,
+)
+from app.private_asset_storage import (
+    MAX_RENDERED_MEDIA_BYTES,
+    AssetStorageError,
+    get_private_asset_store,
+)
 from app.settings import get_settings
-from app.source_versions import SourceAssetInput, SourceVersionWrite, create_source_pack_version
+from app.source_versions import (
+    SourceAssetInput,
+    SourceVersionWrite,
+    create_source_pack_version,
+)
 from app.url_import import URLImportError, URLImportRequest, URLImportResult, import_public_url
 
 router = APIRouter()
 MAX_TEXT_FILE_BYTES = 80 * 1024
+
+
+class SourceRightsUpdate(BaseModel):
+    rights_basis: Literal[
+        "user_owned", "permission_confirmed", "public_domain", "not_applicable", "unknown"
+    ]
+    consent_state: Literal["confirmed", "not_applicable", "unknown"]
+    consent_required: bool = False
+    attribution: str | None = Field(default=None, max_length=500)
 
 
 class ExtractedText(BaseModel):
@@ -30,6 +60,8 @@ class ExtractedText(BaseModel):
     extraction_method: str = "text"
     page_count: int | None = None
     ocr_used: bool = False
+    extraction_coverage: Literal["complete", "partial", "unavailable"] | None = None
+    extraction_details: dict[str, object] | None = None
     source_id: int | None = None
     source_version_id: int | None = None
 
@@ -76,12 +108,6 @@ async def transcribe_pdf_page(page_number: int, image_base64: str) -> str:
 def _response(
     filename: str, result: ExtractedDocument, write: SourceVersionWrite | None = None
 ) -> ExtractedText:
-    response_fields: dict[str, int] = {}
-    if write is not None:
-        response_fields = {
-            "source_id": write.source.id,
-            "source_version_id": write.source_version.id,
-        }
     return ExtractedText(
         filename=filename,
         media_type=result.media_type,
@@ -90,7 +116,8 @@ def _response(
         extraction_method=result.extraction_method,
         page_count=result.page_count,
         ocr_used=result.ocr_used,
-        **response_fields,
+        source_id=write.source.id if write is not None else None,
+        source_version_id=write.source_version.id if write is not None else None,
     )
 
 
@@ -108,11 +135,97 @@ async def extract_source_file(
     if request.url.path.endswith("/text-file") and extension not in {"txt", "md"}:
         await file.close()
         raise source_error(415, "unsupported_file", "Only .txt and .md files are supported.")
-    limit = 80 * 1024 if extension in {"txt", "md"} else 8 * 1024 * 1024
+    media_limits = {
+        "png": MAX_IMAGE_BYTES,
+        "jpg": MAX_IMAGE_BYTES,
+        "jpeg": MAX_IMAGE_BYTES,
+        "wav": MAX_AUDIO_BYTES,
+        "mp3": MAX_AUDIO_BYTES,
+        "m4a": MAX_AUDIO_BYTES,
+        "mp4": MAX_VIDEO_BYTES,
+    }
+    limit = (
+        80 * 1024 if extension in {"txt", "md"} else media_limits.get(extension, 8 * 1024 * 1024)
+    )
     try:
         content = await file.read(limit + 1)
     finally:
         await file.close()
+    if extension in media_limits:
+        media_kind = (
+            "image"
+            if extension in {"png", "jpg", "jpeg"}
+            else "audio"
+            if extension in {"wav", "mp3", "m4a"}
+            else "video"
+        )
+        try:
+            extracted = await asyncio.to_thread(
+                extract_source_media,
+                extension,
+                content,
+                vision=get_vision_extractor(),
+                asr=get_asr_extractor(),
+            )
+        except MediaSourceError as error:
+            if error.code in {"ffmpeg_unavailable", "ffprobe_unavailable"}:
+                raise source_error(
+                    503,
+                    error.code,
+                    "Media validation or sampling is unavailable on this server.",
+                ) from None
+            if "too_large" in error.code:
+                raise source_error(
+                    413, error.code, "The uploaded media exceeds its size limit."
+                ) from None
+            status_code = 415 if error.code.startswith("unsupported_") else 422
+            raise source_error(
+                status_code, error.code, "The uploaded media could not be validated."
+            ) from None
+        store = get_private_asset_store()
+        write: SourceVersionWrite | None = None
+        try:
+            write = create_source_pack_version(
+                session,
+                user.id,
+                extracted.source_text,
+                asset_input=SourceAssetInput(
+                    source_kind=media_kind,
+                    media_type=extracted.media_type,
+                    original_filename=filename,
+                    raw_bytes=content,
+                    extraction_method=extracted.method,
+                    extraction_profile=f"{media_kind}_extraction_v1",
+                    extraction_profile_version=1,
+                    extraction_coverage=extracted.coverage,
+                    extraction_details=extracted.details,
+                    storage_max_bytes=extracted.storage_max_bytes,
+                    source_regions=extracted.regions,
+                ),
+                storage=store,
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
+            if write is not None and write.storage_key is not None:
+                try:
+                    store.delete(write.storage_key)
+                except OSError:
+                    pass
+            raise source_error(
+                500, "source_save_failed", "The uploaded source could not be saved."
+            ) from None
+        return ExtractedText(
+            filename=filename,
+            media_type=extracted.media_type,
+            character_count=len(extracted.source_text),
+            source_text=extracted.source_text,
+            extraction_method=extracted.method,
+            extraction_coverage=extracted.coverage,
+            extraction_details=extracted.details,
+            source_id=write.source.id,
+            source_version_id=write.source_version.id,
+        )
     # The extractor uses the filename extension as the format authority; the MIME type is
     # checked against that type to reject mislabeled content while permitting browser octet-stream.
     permitted = {
@@ -173,6 +286,117 @@ async def extract_source_file(
             500, "source_save_failed", "The uploaded source could not be saved."
         ) from None
     return _response(filename, result, write)
+
+
+def _owned_media_source(
+    session: Session, source_asset_id: int, owner_id: int
+) -> SourceAsset | None:
+    return session.scalar(
+        select(SourceAsset)
+        .join(SourcePackVersion, SourcePackVersion.id == SourceAsset.source_pack_version_id)
+        .join(SourcePack, SourcePack.id == SourcePackVersion.source_pack_id)
+        .where(
+            SourceAsset.id == source_asset_id,
+            SourceAsset.source_kind.in_(("image", "audio", "video")),
+            SourcePack.owner_id == owner_id,
+        )
+    )
+
+
+def _source_media_response(
+    source_asset_id: int,
+    user: User,
+    session: Session,
+    *,
+    inline: bool,
+) -> Response:
+    asset = _owned_media_source(session, source_asset_id, user.id)
+    if asset is None or asset.storage_key is None:
+        raise HTTPException(status_code=404, detail="Source media not found")
+    max_bytes = {
+        "image": MAX_IMAGE_BYTES,
+        "audio": MAX_AUDIO_BYTES,
+        "video": MAX_VIDEO_BYTES,
+    }[asset.source_kind]
+    try:
+        content = get_private_asset_store().read(
+            asset.storage_key, max_bytes=min(max_bytes, MAX_RENDERED_MEDIA_BYTES)
+        )
+    except AssetStorageError:
+        raise HTTPException(status_code=404, detail="Source media not found") from None
+    extension = {
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "audio/wav": "wav",
+        "audio/mpeg": "mp3",
+        "audio/mp4": "m4a",
+        "video/mp4": "mp4",
+    }.get(asset.media_type)
+    if extension is None:
+        raise HTTPException(status_code=415, detail="Unsupported source media type")
+    disposition = "inline" if inline else "attachment"
+    return Response(
+        content,
+        media_type=asset.media_type,
+        headers={
+            "Content-Disposition": f'{disposition}; filename="source-{asset.id}.{extension}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/source-assets/{source_asset_id}/preview")
+def preview_source_media(
+    source_asset_id: int,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> Response:
+    return _source_media_response(source_asset_id, user, session, inline=True)
+
+
+@router.get("/source-assets/{source_asset_id}/download")
+def download_source_media(
+    source_asset_id: int,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> Response:
+    return _source_media_response(source_asset_id, user, session, inline=False)
+
+
+@router.patch("/source-assets/{source_asset_id}/rights")
+def update_source_media_rights(
+    source_asset_id: int,
+    body: SourceRightsUpdate,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> dict[str, object]:
+    asset = _owned_media_source(session, source_asset_id, user.id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Source media not found")
+    record = session.scalar(
+        select(MediaRightsRecord).where(MediaRightsRecord.source_asset_id == asset.id)
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Source media rights record not found")
+    record.rights_basis = body.rights_basis
+    record.consent_state = body.consent_state
+    record.consent_required = body.consent_required
+    record.attribution = body.attribution.strip() if body.attribution else None
+    if rights_are_eligible(record):
+        record.confirmed_by_user_id = user.id
+        record.confirmed_at = utc_now()
+    else:
+        record.confirmed_by_user_id = None
+        record.confirmed_at = None
+    session.commit()
+    return {
+        "rights_basis": record.rights_basis,
+        "consent_state": record.consent_state,
+        "consent_required": record.consent_required,
+        "attribution": record.attribution,
+        "eligible_for_composition": rights_are_eligible(record),
+    }
 
 
 @router.post("/sources/url", response_model=URLImportResult)

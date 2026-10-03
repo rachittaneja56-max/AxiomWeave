@@ -10,13 +10,17 @@ from app.models import (
     Job,
     JobAttempt,
     JobDependency,
+    MediaRender,
+    MediaTask,
     SourceVersion,
     TransformationRun,
     utc_now,
 )
 
 MODEL_IO = "model_io"
+MEDIA_CPU = "media_cpu"
 ARTIFACT_GENERATION = "artifact_generation"
+MEDIA_TASK = "media_task"
 DEFAULT_LEASE_SECONDS = 180
 
 
@@ -51,6 +55,39 @@ def enqueue_artifact_job(
     session.add(job)
     session.flush()
     return job
+
+
+def enqueue_media_job(session: Session, task: MediaTask, source_version_id: int) -> Job:
+    job = Job(
+        media_task_id=task.id,
+        source_version_id=source_version_id,
+        job_type=MEDIA_TASK,
+        resource_class=MEDIA_CPU,
+        status="queued",
+    )
+    session.add(job)
+    session.flush()
+    return job
+
+
+def _mark_media_task_failed(session: Session, task_id: int | None, failure_code: str) -> None:
+    if task_id is None:
+        return
+    task = session.get(MediaTask, task_id)
+    if task is None:
+        return
+    task.status = "failed"
+    task.failure_code = failure_code
+    task.completed_at = utc_now()
+    render = session.get(MediaRender, task.render_id)
+    if render is None:
+        return
+    if task.task_kind == "video_scene_render":
+        render.status = "partial_failure"
+    else:
+        render.status = "failed"
+        render.failure_code = failure_code
+        render.completed_at = utc_now()
 
 
 def add_job_dependency(session: Session, job_id: int, depends_on_job_id: int) -> JobDependency:
@@ -106,9 +143,14 @@ def _fail_stale_jobs(session: Session, now: datetime) -> None:
         job.worker_id = None
         job.lease_expires_at = None
         job.terminal_at = now
-        artifact_run = session.get(ArtifactRun, job.artifact_run_id)
+        artifact_run = (
+            session.get(ArtifactRun, job.artifact_run_id)
+            if job.artifact_run_id is not None
+            else None
+        )
         if artifact_run is not None:
             artifact_run.status = "failed"
+        _mark_media_task_failed(session, job.media_task_id, "worker_lease_expired")
     if stale_jobs:
         session.flush()
 
@@ -135,6 +177,7 @@ def _fail_jobs_with_failed_dependencies(session: Session, now: datetime) -> None
             artifact_run = session.get(ArtifactRun, job.artifact_run_id)
             if artifact_run is not None:
                 artifact_run.status = "failed"
+            _mark_media_task_failed(session, job.media_task_id, "dependency_failed")
         session.flush()
 
 
@@ -144,7 +187,7 @@ def claim_next_job(
     worker_id: str,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
 ) -> ClaimedJob | None:
-    if resource_class != MODEL_IO:
+    if resource_class not in {MODEL_IO, MEDIA_CPU}:
         raise ValueError("Unsupported worker resource class")
     if not worker_id or len(worker_id) > 160:
         raise ValueError("Worker ID must contain 1 to 160 characters")
@@ -222,11 +265,26 @@ def claim_next_job(
     if job is None:
         session.rollback()
         raise RuntimeError("Claimed job disappeared")
-    user_run = session.get(ArtifactRun, job.artifact_run_id)
-    if user_run is None:
+    user_run = (
+        session.get(ArtifactRun, job.artifact_run_id) if job.artifact_run_id is not None else None
+    )
+    if job.job_type == ARTIFACT_GENERATION:
+        if user_run is None:
+            session.rollback()
+            raise RuntimeError("Claimed artifact job has no artifact run")
+        user_run.status = "running"
+    elif job.job_type == MEDIA_TASK:
+        media_task = session.get(MediaTask, job.media_task_id)
+        if media_task is None:
+            session.rollback()
+            raise RuntimeError("Claimed media job has no media task")
+        media_task.status = "running"
+        render = session.get(MediaRender, media_task.render_id)
+        if render is not None and render.status not in {"partial_failure", "failed"}:
+            render.status = "rendering"
+    else:
         session.rollback()
-        raise RuntimeError("Claimed job has no artifact run")
-    user_run.status = "running"
+        raise RuntimeError("Claimed job has an unsupported type")
     session.commit()
     return ClaimedJob(claimed_id, attempt_number, worker_id)
 

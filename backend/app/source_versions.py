@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.transformation import SOURCE_TEXT_MAX_LENGTH
 from app.models import (
+    MediaRightsRecord,
     Source,
     SourceAsset,
     SourcePack,
@@ -20,11 +21,26 @@ from app.models import (
     source_content_hash,
     utc_now,
 )
-from app.private_asset_storage import PrivateAssetStore, get_private_asset_store
+from app.private_asset_storage import (
+    MAX_PRIVATE_ASSET_BYTES,
+    MAX_RENDERED_MEDIA_BYTES,
+    PrivateAssetStore,
+    get_private_asset_store,
+)
 from app.source_roles import SourceRole, validate_source_role
 
-SourceKind = Literal["text", "file", "url"]
-ExtractionCoverage = Literal["complete", "partial"]
+SourceKind = Literal["text", "file", "url", "image", "audio", "video"]
+ExtractionCoverage = Literal["complete", "partial", "unavailable"]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRegionInput:
+    locator: str
+    region_type: str
+    locator_kind: str
+    text: str | None
+    locator_metadata: dict[str, object] | None = None
+    page_number: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +54,9 @@ class SourceAssetInput:
     extraction_profile: str = "text"
     extraction_profile_version: int = 1
     extraction_coverage: ExtractionCoverage = "complete"
+    extraction_details: dict[str, object] | None = None
+    storage_max_bytes: int = MAX_PRIVATE_ASSET_BYTES
+    source_regions: tuple[SourceRegionInput, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,12 +172,19 @@ def create_source_pack_version(
     if asset_input.extraction_profile_version < 1 or asset_input.extraction_coverage not in {
         "complete",
         "partial",
+        "unavailable",
     }:
         raise ValueError("Source asset extraction metadata is invalid")
-    if asset_input.source_kind == "file" and asset_input.raw_bytes is None:
+    has_upload = asset_input.source_kind in {"file", "image", "audio", "video"}
+    if has_upload and asset_input.raw_bytes is None:
         raise ValueError("Uploaded source assets require their original bytes")
-    if asset_input.source_kind != "file" and asset_input.raw_bytes is not None:
+    if not has_upload and asset_input.raw_bytes is not None:
         raise ValueError("Raw bytes are only supported for uploaded source assets")
+    if (
+        asset_input.storage_max_bytes < 1
+        or asset_input.storage_max_bytes > MAX_RENDERED_MEDIA_BYTES
+    ):
+        raise ValueError("Source asset byte limit is invalid")
     if asset_input.source_kind == "url" and not asset_input.provenance_url:
         raise ValueError("URL source assets require validated provenance")
     if asset_input.source_kind != "url" and asset_input.provenance_url is not None:
@@ -272,7 +298,10 @@ def create_source_pack_version(
         if asset_input.raw_bytes is not None:
             if store is None:
                 raise ValueError("Private storage is required for uploaded source assets")
-            stored = store.store(asset_input.raw_bytes)
+            if asset_input.storage_max_bytes == MAX_PRIVATE_ASSET_BYTES:
+                stored = store.store(asset_input.raw_bytes)
+            else:
+                stored = store.store(asset_input.raw_bytes, max_bytes=asset_input.storage_max_bytes)
             content_hash = stored.content_hash
             byte_size = stored.byte_size
             storage_key = stored.storage_key
@@ -296,35 +325,77 @@ def create_source_pack_version(
             extraction_profile=asset_input.extraction_profile,
             extraction_profile_version=asset_input.extraction_profile_version,
             extraction_coverage=asset_input.extraction_coverage,
+            extraction_details=asset_input.extraction_details,
             created_at=created_at,
         )
         session.add(asset)
         session.flush()
+        if asset_input.source_kind in {"image", "audio", "video"}:
+            session.add(
+                MediaRightsRecord(
+                    owner_id=owner_id,
+                    source_asset_id=asset.id,
+                    rights_basis="unknown",
+                    consent_state="unknown",
+                    consent_required=False,
+                )
+            )
 
+        if asset_input.source_regions is None:
+            region_inputs = [
+                SourceRegionInput(
+                    locator=locator,
+                    region_type=_locator_details(locator)[0],
+                    locator_kind=_locator_details(locator)[0],
+                    text=segment_text,
+                    page_number=_locator_details(locator)[1],
+                )
+                for locator, segment_text in segment_source_text(canonical_text)
+            ]
+        else:
+            region_inputs = list(asset_input.source_regions)
+        seen_locators: set[str] = set()
+        for region in region_inputs:
+            if (
+                not region.locator
+                or len(region.locator) > 255
+                or len(region.region_type) > 32
+                or len(region.locator_kind) > 32
+                or region.locator in seen_locators
+                or (region.page_number is not None and region.page_number < 1)
+            ):
+                raise ValueError("Source region locator metadata is invalid")
+            seen_locators.add(region.locator)
         segments = [
             SourceSegment(
                 source_version_id=source_version.id,
                 ordinal=ordinal,
-                locator=locator,
-                segment_text=segment_text,
+                locator=region.locator,
+                segment_text=region.text,
             )
-            for ordinal, (locator, segment_text) in enumerate(
-                segment_source_text(canonical_text), 1
-            )
+            for ordinal, region in enumerate(region_inputs, 1)
+            if region.text is not None
         ]
         session.add_all(segments)
         session.flush()
+        segment_by_locator = {segment.locator: segment for segment in segments}
         session.add_all(
             SourceRegion(
                 source_asset_id=asset.id,
-                source_segment_id=segment.id,
-                ordinal=segment.ordinal,
-                locator=segment.locator,
-                region_type=_locator_details(segment.locator)[0],
-                page_number=_locator_details(segment.locator)[1],
-                text=segment.segment_text,
+                source_segment_id=(
+                    segment_by_locator[region.locator].id
+                    if region.locator in segment_by_locator
+                    else None
+                ),
+                ordinal=ordinal,
+                locator=region.locator,
+                region_type=region.region_type,
+                page_number=region.page_number,
+                text=region.text,
+                locator_kind=region.locator_kind,
+                locator_metadata=region.locator_metadata,
             )
-            for segment in segments
+            for ordinal, region in enumerate(region_inputs, 1)
         )
         session.flush()
 

@@ -634,11 +634,24 @@ def _worker_id() -> str:
 def main() -> None:
     parser = ArgumentParser(description="Run one bounded AxiomWeave model I/O worker")
     parser.add_argument("--once", action="store_true", help="Process at most one queued job")
+    parser.add_argument(
+        "--resource-class",
+        choices=("model_io", "media_cpu"),
+        default="model_io",
+        help="Use one bounded worker resource class per process (default: model_io)",
+    )
     args = parser.parse_args()
     engine = create_database_engine(get_settings().database_url)
     session_factory = create_session_factory(engine)
     try:
-        asyncio.run(run_worker(session_factory, get_generation_provider(), _worker_id(), args.once))
+        if args.resource_class == "media_cpu":
+            from app.media_worker import media_worker_id, run_media_worker
+
+            asyncio.run(run_media_worker(session_factory, media_worker_id(), args.once))
+        else:
+            asyncio.run(
+                run_worker(session_factory, get_generation_provider(), _worker_id(), args.once)
+            )
     finally:
         engine.dispose()
 

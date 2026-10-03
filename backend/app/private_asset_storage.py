@@ -9,6 +9,7 @@ from typing import Protocol
 from uuid import uuid4
 
 MAX_PRIVATE_ASSET_BYTES = 8 * 1024 * 1024
+MAX_RENDERED_MEDIA_BYTES = 256 * 1024 * 1024
 _STORAGE_KEY = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -27,9 +28,11 @@ class StoredPrivateAsset:
 
 
 class PrivateAssetStore(Protocol):
-    def store(self, content: bytes) -> StoredPrivateAsset: ...
+    def store(
+        self, content: bytes, *, max_bytes: int = MAX_PRIVATE_ASSET_BYTES
+    ) -> StoredPrivateAsset: ...
 
-    def read(self, storage_key: str) -> bytes: ...
+    def read(self, storage_key: str, *, max_bytes: int = MAX_PRIVATE_ASSET_BYTES) -> bytes: ...
 
     def delete(self, storage_key: str) -> None: ...
 
@@ -40,8 +43,10 @@ class LocalPrivateAssetStore:
     def __init__(self, root: Path) -> None:
         self.root = root.expanduser().resolve()
 
-    def store(self, content: bytes) -> StoredPrivateAsset:
-        if len(content) > MAX_PRIVATE_ASSET_BYTES:
+    def store(
+        self, content: bytes, *, max_bytes: int = MAX_PRIVATE_ASSET_BYTES
+    ) -> StoredPrivateAsset:
+        if max_bytes <= 0 or max_bytes > MAX_RENDERED_MEDIA_BYTES or len(content) > max_bytes:
             raise AssetStorageError()
         storage_key = uuid4().hex
         directory = self.root / storage_key[:2]
@@ -69,7 +74,7 @@ class LocalPrivateAssetStore:
             raise AssetStorageError() from None
         return StoredPrivateAsset(storage_key, sha256(content).hexdigest(), len(content))
 
-    def read(self, storage_key: str) -> bytes:
+    def read(self, storage_key: str, *, max_bytes: int = MAX_PRIVATE_ASSET_BYTES) -> bytes:
         target = self._path_for(storage_key)
         try:
             if target.is_symlink() or not target.is_file():
@@ -77,7 +82,7 @@ class LocalPrivateAssetStore:
             content = target.read_bytes()
         except OSError:
             raise AssetStorageError() from None
-        if len(content) > MAX_PRIVATE_ASSET_BYTES:
+        if max_bytes <= 0 or max_bytes > MAX_RENDERED_MEDIA_BYTES or len(content) > max_bytes:
             raise AssetStorageError()
         return content
 

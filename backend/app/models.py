@@ -3,6 +3,7 @@ from hashlib import sha256
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -231,11 +232,12 @@ class SourceAsset(Base):
             name="ck_source_assets_authority_role",
         ),
         CheckConstraint(
-            "source_kind IN ('text', 'file', 'url')", name="ck_source_assets_source_kind"
+            "source_kind IN ('text', 'file', 'url', 'image', 'audio', 'video')",
+            name="ck_source_assets_source_kind",
         ),
         CheckConstraint("byte_size >= 0", name="ck_source_assets_nonnegative_byte_size"),
         CheckConstraint(
-            "extraction_coverage IN ('complete', 'partial')",
+            "extraction_coverage IN ('complete', 'partial', 'unavailable')",
             name="ck_source_assets_extraction_coverage",
         ),
         CheckConstraint(
@@ -266,6 +268,7 @@ class SourceAsset(Base):
     extraction_profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
     # Coverage is completeness for this extraction profile, not semantic correctness.
     extraction_coverage: Mapped[str] = mapped_column(String(16), nullable=False)
+    extraction_details: Mapped[dict[str, object] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -295,6 +298,8 @@ class SourceRegion(Base):
     region_type: Mapped[str] = mapped_column(String(32), nullable=False)
     page_number: Mapped[int | None] = mapped_column(Integer)
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    locator_kind: Mapped[str | None] = mapped_column(String(32))
+    locator_metadata: Mapped[dict[str, object] | None] = mapped_column(JSON)
 
 
 class TransformationRun(Base):
@@ -619,11 +624,212 @@ class ArtifactReviewDecision(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class MediaRender(Base):
+    __tablename__ = "media_renders"
+    __table_args__ = (
+        CheckConstraint(
+            "artifact_family IN ('infographic', 'video_package')",
+            name="ck_media_renders_artifact_family",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'rendering', 'partial_failure', 'ready_for_review', "
+            "'approved', 'rejected', 'failed')",
+            name="ck_media_renders_status",
+        ),
+        UniqueConstraint("id", "artifact_version_id", name="uq_media_renders_id_version"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    artifact_version_id: Mapped[int] = mapped_column(
+        ForeignKey("artifact_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    artifact_family: Mapped[str] = mapped_column(String(32), nullable=False)
+    renderer_profile: Mapped[str] = mapped_column(String(80), nullable=False)
+    renderer_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    render_plan: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    render_plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    dependency_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    # The exact final asset is checked against MediaAsset.owner_id in the service boundary.
+    primary_asset_id: Mapped[int | None] = mapped_column(Integer)
+    failure_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MediaTask(Base):
+    __tablename__ = "media_tasks"
+    __table_args__ = (
+        CheckConstraint(
+            "task_kind IN ('infographic_render', 'video_scene_render', 'video_compose')",
+            name="ck_media_tasks_kind",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'succeeded', 'failed')",
+            name="ck_media_tasks_status",
+        ),
+        UniqueConstraint("render_id", "task_key", name="uq_media_tasks_render_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    render_id: Mapped[int] = mapped_column(
+        ForeignKey("media_renders.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    task_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    task_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    dependency_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    ordinal: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    failure_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MediaAsset(Base):
+    __tablename__ = "media_assets"
+    __table_args__ = (
+        CheckConstraint("byte_size >= 0", name="ck_media_assets_nonnegative_bytes"),
+        CheckConstraint("width IS NULL OR width > 0", name="ck_media_assets_positive_width"),
+        CheckConstraint("height IS NULL OR height > 0", name="ck_media_assets_positive_height"),
+        CheckConstraint(
+            "duration_ms IS NULL OR duration_ms >= 0",
+            name="ck_media_assets_nonnegative_duration",
+        ),
+        UniqueConstraint("storage_key", name="uq_media_assets_storage_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    render_id: Mapped[int | None] = mapped_column(
+        ForeignKey("media_renders.id", ondelete="RESTRICT"), index=True
+    )
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("media_tasks.id", ondelete="RESTRICT"), index=True
+    )
+    source_asset_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_assets.id", ondelete="RESTRICT"), index=True
+    )
+    parent_media_asset_id: Mapped[int | None] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="RESTRICT"), index=True
+    )
+    purpose: Mapped[str] = mapped_column(String(40), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(127), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    storage_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    width: Mapped[int | None] = mapped_column(Integer)
+    height: Mapped[int | None] = mapped_column(Integer)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    renderer_profile: Mapped[str | None] = mapped_column(String(80))
+    renderer_version: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class MediaRightsRecord(Base):
+    __tablename__ = "media_rights_records"
+    __table_args__ = (
+        CheckConstraint(
+            "(source_asset_id IS NOT NULL AND media_asset_id IS NULL) OR "
+            "(source_asset_id IS NULL AND media_asset_id IS NOT NULL)",
+            name="ck_media_rights_exactly_one_asset",
+        ),
+        CheckConstraint(
+            "rights_basis IN ('user_owned', 'permission_confirmed', 'public_domain', "
+            "'system_generated', 'derived', 'not_applicable', 'unknown')",
+            name="ck_media_rights_basis",
+        ),
+        CheckConstraint(
+            "consent_state IN ('confirmed', 'not_applicable', 'unknown')",
+            name="ck_media_rights_consent",
+        ),
+        UniqueConstraint("source_asset_id", name="uq_media_rights_source_asset"),
+        UniqueConstraint("media_asset_id", name="uq_media_rights_media_asset"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_asset_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_assets.id", ondelete="RESTRICT")
+    )
+    media_asset_id: Mapped[int | None] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="RESTRICT")
+    )
+    rights_basis: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    consent_state: Mapped[str] = mapped_column(String(24), nullable=False, default="unknown")
+    consent_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    attribution: Mapped[str | None] = mapped_column(String(500))
+    confirmed_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT")
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MediaReviewDecision(Base):
+    __tablename__ = "media_review_decisions"
+    __table_args__ = (
+        CheckConstraint("decision IN ('approved', 'rejected')", name="ck_media_review_decision"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    media_render_id: Mapped[int] = mapped_column(
+        ForeignKey("media_renders.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    primary_asset_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    note: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class MediaOperationMetric(Base):
+    __tablename__ = "media_operation_metrics"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    render_id: Mapped[int] = mapped_column(
+        ForeignKey("media_renders.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("media_tasks.id", ondelete="RESTRICT"), index=True
+    )
+    operation_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    elapsed_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_duration_ms: Mapped[int | None] = mapped_column(Integer)
+    tool_version: Mapped[str] = mapped_column(String(120), nullable=False)
+    external_api_cost: Mapped[float | None] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class Job(Base):
     __tablename__ = "jobs"
     __table_args__ = (
-        CheckConstraint("job_type IN ('artifact_generation')", name="ck_jobs_type"),
-        CheckConstraint("resource_class IN ('model_io')", name="ck_jobs_resource_class"),
+        CheckConstraint("job_type IN ('artifact_generation', 'media_task')", name="ck_jobs_type"),
+        CheckConstraint(
+            "resource_class IN ('model_io', 'media_cpu')", name="ck_jobs_resource_class"
+        ),
+        CheckConstraint(
+            "(job_type = 'artifact_generation' AND artifact_run_id IS NOT NULL "
+            "AND media_task_id IS NULL AND resource_class = 'model_io') OR "
+            "(job_type = 'media_task' AND artifact_run_id IS NULL "
+            "AND media_task_id IS NOT NULL AND resource_class = 'media_cpu')",
+            name="ck_jobs_target_matches_type",
+        ),
         CheckConstraint(
             "status IN ('queued', 'running', 'succeeded', 'failed')", name="ck_jobs_status"
         ),
@@ -645,14 +851,28 @@ class Job(Base):
             "uq_jobs_active_artifact_run",
             "artifact_run_id",
             unique=True,
-            sqlite_where=text("status IN ('queued', 'running')"),
-            postgresql_where=text("status IN ('queued', 'running')"),
+            sqlite_where=text(
+                "job_type = 'artifact_generation' AND status IN ('queued', 'running')"
+            ),
+            postgresql_where=text(
+                "job_type = 'artifact_generation' AND status IN ('queued', 'running')"
+            ),
+        ),
+        Index(
+            "uq_jobs_active_media_task",
+            "media_task_id",
+            unique=True,
+            sqlite_where=text("job_type = 'media_task' AND status IN ('queued', 'running')"),
+            postgresql_where=text("job_type = 'media_task' AND status IN ('queued', 'running')"),
         ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    artifact_run_id: Mapped[int] = mapped_column(
-        ForeignKey("artifact_runs.id", ondelete="RESTRICT"), nullable=False, index=True
+    artifact_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("artifact_runs.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    media_task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("media_tasks.id", ondelete="RESTRICT"), index=True
     )
     source_version_id: Mapped[int] = mapped_column(
         ForeignKey("source_versions.id", ondelete="RESTRICT"), nullable=False, index=True

@@ -1,4 +1,11 @@
-import type { EvidenceState, TransformationRequest } from "./types";
+import type {
+  EvidenceState,
+  MediaAsset,
+  MediaRender,
+  MediaRights,
+  SourcePackInspection,
+  TransformationRequest,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -50,6 +57,28 @@ export const api = {
   logout: () => requestJson("/api/auth/logout", { method: "POST" }),
   transformations: () => requestJson("/api/transformations"),
   sourceVersion: (id: number) => requestJson("/api/source-versions/" + id),
+  sourcePack: (transformationId: number) =>
+    requestJson(
+      `/api/transformations/${transformationId}/source-pack`,
+    ) as Promise<SourcePackInspection>,
+  updateSourceMediaRights: (
+    assetId: number,
+    rights: {
+      rights_basis:
+        | "user_owned"
+        | "permission_confirmed"
+        | "public_domain"
+        | "not_applicable"
+        | "unknown";
+      consent_state: "confirmed" | "not_applicable" | "unknown";
+      consent_required: boolean;
+      attribution?: string;
+    },
+  ) =>
+    requestJson(
+      `/api/source-assets/${assetId}/rights`,
+      jsonInit("PATCH", rights),
+    ) as Promise<MediaRights>,
   transformation: (id: number) => requestJson("/api/transformations/" + id),
   revisionImpact: (id: number) =>
     requestJson("/api/transformations/" + id + "/revision-impact"),
@@ -99,6 +128,66 @@ export const api = {
       "/api/artifact-versions/" + artifactVersionId + "/review",
       jsonInit("PATCH", { review_status: reviewStatus }),
     ),
+  startMediaRender: (
+    artifactVersionId: number,
+    body: {
+      scene_durations_ms?: (number | null)[];
+      scene_media?: {
+        scene_index: number;
+        visual_asset_id?: number;
+        audio_asset_id?: number;
+      }[];
+    } = {},
+  ) =>
+    requestJson(
+      `/api/artifact-versions/${artifactVersionId}/media-renders`,
+      jsonInit("POST", body),
+    ) as Promise<MediaRender>,
+  listMediaRenders: (artifactVersionId: number) =>
+    requestJson(
+      `/api/artifact-versions/${artifactVersionId}/media-renders`,
+    ) as Promise<MediaRender[]>,
+  getMediaRender: (renderId: number) =>
+    requestJson(`/api/media-renders/${renderId}`) as Promise<MediaRender>,
+  retryMediaTask: (renderId: number) =>
+    requestJson(`/api/media-renders/${renderId}/retry-failed`, {
+      method: "POST",
+    }) as Promise<MediaRender>,
+  reviewMediaRender: (renderId: number, decision: "approved" | "rejected") =>
+    requestJson(
+      `/api/media-renders/${renderId}/review`,
+      jsonInit("PATCH", { decision }),
+    ) as Promise<MediaRender>,
+  uploadSceneAsset: (
+    file: File,
+    purpose: "scene_visual_upload" | "scene_audio_upload",
+  ) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("purpose", purpose);
+    return requestJson("/api/media-assets/upload", {
+      method: "POST",
+      body: formData,
+    }) as Promise<MediaAsset>;
+  },
+  updateMediaRights: (
+    assetId: number,
+    rights: {
+      rights_basis:
+        | "user_owned"
+        | "permission_confirmed"
+        | "public_domain"
+        | "not_applicable"
+        | "unknown";
+      consent_state: "confirmed" | "not_applicable" | "unknown";
+      consent_required: boolean;
+      attribution?: string;
+    },
+  ) =>
+    requestJson(
+      `/api/media-assets/${assetId}/rights`,
+      jsonInit("PATCH", rights),
+    ) as Promise<MediaRights>,
   evidence: (artifactVersionId: number) =>
     requestJson("/api/artifact-versions/" + artifactVersionId + "/evidence"),
   lineage: (artifactVersionId: number) =>

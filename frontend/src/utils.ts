@@ -171,6 +171,8 @@ export function isExtractedText(value: unknown): value is {
   character_count: number;
   source_text: string;
   ocr_used: boolean;
+  extraction_coverage?: "complete" | "partial" | "unavailable";
+  extraction_details?: Record<string, unknown> | null;
   source_version_id?: number;
 } {
   return (
@@ -179,6 +181,13 @@ export function isExtractedText(value: unknown): value is {
     typeof value.media_type === "string" &&
     typeof value.source_text === "string" &&
     typeof value.ocr_used === "boolean" &&
+    (value.extraction_coverage === undefined ||
+      ["complete", "partial", "unavailable"].includes(
+        String(value.extraction_coverage),
+      )) &&
+    (value.extraction_details === undefined ||
+      value.extraction_details === null ||
+      isRecord(value.extraction_details)) &&
     (value.source_version_id === undefined ||
       Number.isInteger(value.source_version_id)) &&
     value.source_text.trim().length > 0 &&

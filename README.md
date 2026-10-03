@@ -14,7 +14,9 @@ Teams often rewrite the same authoritative material for several audiences and fo
 - Paste source text, upload `.txt`, `.md`, `.docx`, or `.pdf`, or import one public HTTP/HTTPS article URL; keep supporting context separate. DOCX paragraphs, headings, and tables are extracted. PDFs use native text extraction first; scanned pages use OCR/Vision only when native text is unavailable. URL import reads one public page without login, JavaScript rendering, or crawling.
 - Set audience, tone, language, detail, objective, and style.
 - Generate Executive Summary, Professional / LinkedIn Post, X Post, Formal Advisory, Presentation, Infographic, and Video Package artifacts. Each selected family runs as its own durable Job with independent failure, retry, regeneration, and version history. X Post currently uses the single-post contract, capped at 280 Unicode code points.
-- Infographic produces an editable structured specification; Video Package produces editable scenes, narration, and on-screen text. Neither family renders an image or produces an MP4 in this phase.
+- Infographic and Video Package keep editable, immutable specs and render finished private SVG/PNG or MP4/VTT derivatives for the exact selected artifact version. Deterministic scene cards and captions work without an image/video-generation or TTS provider; absent narration audio, the MP4 contains silence.
+- Bounded PNG/JPEG, WAV/MP3/M4A, and MP4 source uploads retain their original bytes privately, with explicit extraction coverage and image/audio/video region locators. No live Vision or ASR provider is selected; unavailable extraction stays visible and is not treated as factual evidence.
+- External scene images and narration audio remain excluded until the owner records an eligible rights basis and applicable consent. Media review covers layout, legibility, timing, and media quality; factual evidence review stays separate.
 - Review and edit immutable artifact versions; accept or reject drafts.
 - Inspect exact source quotations and unsupported claims. Compare sibling outputs for possible discrepancies, then dismiss a finding without changing artifact text.
 - Save source V2, inspect a deterministic paragraph diff and potentially affected evidence, run a targeted update, or regenerate fully from V2.
@@ -24,13 +26,15 @@ Teams often rewrite the same authoritative material for several audiences and fo
 
 ## Architecture
 
-The application is a React/Vite frontend and a FastAPI/SQLAlchemy modular monolith backed by SQLite for local use. Artifact generation is queued as durable database Jobs and executed by a separate, statically scoped `model_io` worker with concurrency one per process. Job attempts and terminal state are stored in the same database; a lease expiry fails uncertain in-flight work for explicit retry. SQLite supports local demo use, while production-scale queue concurrency has not been demonstrated. AxiomWeave uses first-party username/password authentication for the Tier-A MVP. Password authentication is not phishing-resistant; it is the selected demo authentication method. Phase 1B adds owner-scoped Source Packs with immutable versions and role-bearing source memberships (`PRIMARY`, `SUPPORTING`, `STYLE`, `REFERENCE`, `OPERATOR_CONTEXT`), plus addressable regions. The current Tier-A client still submits one primary text source; membership snapshots can preserve additional same-owner sources while retaining the SourceVersion projection required by existing generation and review code. Uploaded bytes use a private local storage directory configured by `SIH_PRIVATE_ASSET_DIR`; production object storage, semantic conflict resolution, and multimodal processing are not implemented. The seven output families have server-owned versioned contracts. Presentation, Infographic, and Video Package use bounded structured schemas; infographic and video media rendering remains Phase 5 work. Claim scanning and discrepancy analysis use deterministic human-readable projections for structured artifacts. `docs/architecture.md` gives the data and request flow.
+The application is a React/Vite frontend and a FastAPI/SQLAlchemy modular monolith backed by SQLite for local use. Artifact generation and media rendering use durable database Jobs with separate `model_io` and `media_cpu` worker processes, one claimed job per process at a time. Job attempts, dependency edges, leases, and terminal state are stored in the database. SQLite supports local demo use; production-scale queue concurrency has not been demonstrated. Source uploads and rendered media use the owner-scoped private local directory configured by `SIH_PRIVATE_ASSET_DIR`; production object storage is not implemented. Image/audio/video extraction interfaces are bounded and retain exact source regions and coverage; no live Vision or ASR provider is selected. The seven output families use server-owned versioned contracts. Claim scanning and discrepancy analysis use deterministic human-readable projections for structured artifacts. `docs/architecture.md` gives the data and request flow.
+
+Phase 5 operational limits: source images 10 MiB, audio 16 MiB / 60 seconds, and MP4 video 100 MiB / 180 seconds (sampled at five-second intervals, up to 36 frames). Scene uploads use 10 MiB images capped at 4,000 pixels per edge and 16 megapixels, or 16 MiB audio capped at 60 seconds. Rendered MP4 output is capped at 256 MiB / 180 seconds and uses 1280×720 at 30 fps. These are resource bounds, not quality thresholds. Local media workers and the fixture generator require FFmpeg and ffprobe on `PATH`; run them with `uv run python -m app.job_worker --resource-class media_cpu` and `uv run python scripts/create_phase5_bundle.py --output-dir .phase5-human-review` from `backend`.
 
 Primary artifact generation uses `gpt-6-luna`; evidence and discrepancy analysis plus scanned-page OCR use `gpt-5-nano` by default. The server applies code-owned output-token limits and disables Responses API storage. Set `SIH_OPENAI_UTILITY_MODEL` to override the utility model. Only `OPENAI_API_KEY` configures model access. The provider cannot be selected by request data.
 
 ## Quick start
 
-Prerequisites: Python 3.13, [uv](https://docs.astral.sh/uv/), Node.js 22 or newer, and npm.
+Prerequisites: Python 3.13, [uv](https://docs.astral.sh/uv/), Node.js 22 or newer, and npm. Media rendering additionally requires FFmpeg and ffprobe on `PATH`.
 
 Create a local `.env` from `.env.example`, configure registration and the OpenAI key as described below, then run the backend:
 
@@ -49,6 +53,13 @@ uv run python -m app.job_worker
 ```
 
 The default worker polls every second while idle; `--once` makes one claim attempt, processes at most one job, and exits.
+
+For media rendering, run a separate CPU worker:
+
+```powershell
+cd backend
+uv run python -m app.job_worker --resource-class media_cpu
+```
 
 In a third terminal, run the frontend:
 
@@ -124,7 +135,7 @@ Source revision impact uses exact-content SourceRegion alignment and content-add
 
 ## Scope and limitations
 
-PDF OCR is a model-assisted fallback for scanned pages with little usable native text. It is not guaranteed to be perfect. PDF uploads are limited to 8 MiB and 20 pages; no more than 8 pages are sent for OCR. URL import supports public HTTP/HTTPS text and HTML pages up to 2 MiB, with at most three validated redirects; extracted text is limited to 20,000 characters without truncation. It does not log in, execute JavaScript, or crawl. Evidence analysis proposes claims with a model, but the application verifies each proposed quotation against the exact selected manifest region; this is traceability support, not a guarantee that every claim is complete or true. Discrepancy findings are review prompts. Legacy source-segment diffs remain display information; deterministic source-region alignments and validated block dependencies govern revision impact. Standalone image input, video input, RAG, infographic rendering, and video package rendering are not implemented. The local SQLite setup is for development and demonstration, not a production deployment recipe.
+PDF OCR is a model-assisted fallback for scanned pages with little usable native text. It is not guaranteed to be perfect. PDF uploads are limited to 8 MiB and 20 pages; no more than 8 pages are sent for OCR. URL import supports public HTTP/HTTPS text and HTML pages up to 2 MiB, with at most three validated redirects; extracted text is limited to 20,000 characters without truncation. It does not log in, execute JavaScript, or crawl. Evidence analysis proposes claims with a model, but the application verifies each proposed quotation against the exact selected manifest region; this is traceability support, not a guarantee that every claim is complete or true. Discrepancy findings are review prompts. Legacy source-segment diffs remain display information; deterministic source-region alignments and validated block dependencies govern revision impact. Phase 5 adds bounded source image/audio/video ingestion, provider-neutral multimodal extraction interfaces, deterministic infographic/video rendering, private media previews, and an explicit human review gate; operational limits and provider constraints are described above. The local SQLite setup is for development and demonstration, not a production deployment recipe.
 
 ## SIH deliverables
 

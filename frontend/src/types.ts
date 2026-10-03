@@ -330,6 +330,137 @@ export type SourceFileMetadata = {
   character_count: number;
   ocr_used: boolean;
   source_version_id?: number;
+  extraction_coverage?: "complete" | "partial" | "unavailable";
+  extraction_details?: Record<string, unknown> | null;
+};
+
+export type SourceRegionInspection = {
+  id: number;
+  source_segment_id: number | null;
+  ordinal: number;
+  locator: string;
+  region_type: string;
+  page_number: number | null;
+  text: string | null;
+  locator_kind: string | null;
+  locator_metadata: Record<string, unknown> | null;
+};
+
+export type SourceAssetInspection = {
+  id: number;
+  source_kind: "text" | "file" | "url" | "image" | "audio" | "video";
+  media_type: string;
+  original_filename: string | null;
+  byte_size: number;
+  content_hash: string;
+  provenance_url: string | null;
+  extraction_method: string;
+  extraction_profile: string;
+  extraction_profile_version: number;
+  extraction_coverage: "complete" | "partial" | "unavailable";
+  extraction_details: Record<string, unknown> | null;
+  preview_url: string | null;
+  download_url: string | null;
+  rights_basis: string | null;
+  consent_state: string | null;
+  consent_required: boolean | null;
+  attribution: string | null;
+  regions: SourceRegionInspection[];
+};
+
+export type SourcePackInspection = {
+  id: number;
+  title: string | null;
+  created_at: string;
+  versions: {
+    id: number;
+    source_version_id: number;
+    version_number: number;
+    parent_source_pack_version_id: number | null;
+    content_hash: string;
+    created_at: string;
+    assets: SourceAssetInspection[];
+    memberships: {
+      id: number;
+      source_version_id: number;
+      source_asset_id: number;
+      ordinal: number;
+      role: string;
+      asset: SourceAssetInspection;
+    }[];
+  }[];
+};
+
+export type MediaAsset = {
+  id: number;
+  purpose: string;
+  media_type: string;
+  byte_size: number;
+  content_hash: string;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+  created_at: string;
+  preview_url: string;
+  download_url: string;
+};
+
+export type MediaRights = {
+  rights_basis: string;
+  consent_state: string;
+  consent_required: boolean;
+  attribution: string | null;
+  eligible_for_composition: boolean;
+};
+
+export type MediaTaskAsset = MediaAsset;
+
+export type MediaTask = {
+  id: number;
+  task_key: string;
+  task_kind: string;
+  ordinal: number | null;
+  status: string;
+  failure_code: string | null;
+  job_status: string | null;
+  attempts: number;
+  assets: MediaTaskAsset[];
+};
+
+export type MediaMetric = {
+  operation_type: string;
+  elapsed_ms: number;
+  input_bytes: number;
+  output_bytes: number;
+  output_duration_ms: number | null;
+  tool_version: string;
+  external_api_cost: number | null;
+};
+
+export type MediaReview = {
+  reviewer_user_id: number;
+  primary_asset_hash: string;
+  decision: "approved" | "rejected";
+  note: string | null;
+  created_at: string;
+};
+
+export type MediaRender = {
+  id: number;
+  artifact_version_id: number;
+  artifact_family: "infographic" | "video_package";
+  renderer_profile: string;
+  renderer_version: string;
+  render_plan: Record<string, unknown>;
+  status: string;
+  failure_code: string | null;
+  created_at: string;
+  completed_at: string | null;
+  primary_asset: MediaAsset | null;
+  tasks: MediaTask[];
+  metrics: MediaMetric[];
+  reviews: MediaReview[];
+  review_copy: string;
 };
 
 export type PresentationSlide = {

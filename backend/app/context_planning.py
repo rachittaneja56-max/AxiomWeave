@@ -85,6 +85,8 @@ def plan_context_manifest(
         coverage_states.append(asset.extraction_coverage)
         if asset.extraction_coverage == "partial":
             warnings.append(f"partial_extraction:asset:{asset.id}")
+        elif asset.extraction_coverage == "unavailable":
+            warnings.append(f"extraction_unavailable:asset:{asset.id}")
         regions = list(
             session.scalars(
                 select(SourceRegion)

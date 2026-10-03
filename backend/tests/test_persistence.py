@@ -79,6 +79,12 @@ EXPECTED_TABLES = {
     "artifact_block_dependencies",
     "source_region_alignments",
     "artifact_review_decisions",
+    "media_renders",
+    "media_tasks",
+    "media_assets",
+    "media_rights_records",
+    "media_review_decisions",
+    "media_operation_metrics",
 }
 
 
@@ -140,7 +146,7 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert set(inspector.get_table_names()) == EXPECTED_TABLES | {"alembic_version"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "c4a91b0d7e22"
+        assert revision == "f5a127bb64d0"
         asset_columns = {
             column["name"]: column for column in inspector.get_columns("source_assets")
         }
@@ -158,6 +164,91 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert artifact_version_columns["artifact_schema_version"]["nullable"] is True
         claim_scan_columns = {column["name"] for column in inspector.get_columns("claim_scans")}
         assert "text_projection" in claim_scan_columns
+    finally:
+        engine.dispose()
+
+
+def test_phase_five_migration_preserves_phase_four_artifacts_and_jobs(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'phase-five-populated.sqlite3').as_posix()}"
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "c4a91b0d7e22")
+    engine = create_database_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, username, password_hash, created_at) "
+                    "VALUES (1, 'phase-five-user', '!disabled-test!', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO sources (id, owner_id, title, created_at) "
+                    "VALUES (1, 1, 'Phase five source', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO source_versions "
+                    "(id, source_id, version_number, source_text, content_hash, created_at) "
+                    "VALUES (1, 1, 1, 'Doors open Friday.', :hash, CURRENT_TIMESTAMP)"
+                ),
+                {"hash": source_content_hash("Doors open Friday.")},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO transformation_runs "
+                    "(id, owner_id, source_version_id, supporting_context, audience, tone, "
+                    "language, detail_level, objective, style, selected_output_types, created_at) "
+                    "VALUES (1, 1, 1, '', 'Community', 'Clear', 'English', 'standard', "
+                    "'Inform', 'Plain language', '[\"infographic\"]', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO artifact_runs "
+                    "(id, transformation_run_id, output_type, status, created_at) "
+                    "VALUES (1, 1, 'infographic', 'succeeded', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO artifact_versions "
+                    "(id, artifact_run_id, version_number, source_version_id, content, "
+                    "review_status, created_at) VALUES "
+                    "(1, 1, 1, 1, '{\"title\":\"Legacy\"}', 'draft', CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO jobs "
+                    "(id, artifact_run_id, source_version_id, job_type, resource_class, status, "
+                    "created_at, terminal_at) VALUES "
+                    "(1, 1, 1, 'artifact_generation', 'model_io', 'succeeded', "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                )
+            )
+
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            version = connection.execute(
+                text(
+                    "SELECT artifact_run_id, version_number, review_status FROM artifact_versions "
+                    "WHERE id = 1"
+                )
+            ).one()
+            job = connection.execute(
+                text(
+                    "SELECT artifact_run_id, job_type, resource_class, status "
+                    "FROM jobs WHERE id = 1"
+                )
+            ).one()
+            migration = connection.scalar(text("SELECT version_num FROM alembic_version"))
+        assert version == (1, 1, "draft")
+        assert job == (1, "artifact_generation", "model_io", "succeeded")
+        assert migration == "f5a127bb64d0"
     finally:
         engine.dispose()
 
@@ -180,7 +271,53 @@ def test_durable_jobs_migration_preserves_populated_current_sqlite_data(
         source = Source(owner_id=owner.id, title="Existing source")
         session.add(source)
         session.flush()
-        source_version = create_source_version(session, source, "Existing source text")
+        source_text = "Existing source text"
+        source_version = SourceVersion(
+            source_id=source.id,
+            version_number=1,
+            source_text=source_text,
+            content_hash=source_content_hash(source_text),
+        )
+        session.add(source_version)
+        session.flush()
+        source_pack = SourcePack(source_id=source.id, owner_id=owner.id, title="Existing pack")
+        session.add(source_pack)
+        session.flush()
+        pack_version = SourcePackVersion(
+            source_pack_id=source_pack.id,
+            source_version_id=source_version.id,
+            version_number=1,
+            content_hash=source_version.content_hash,
+        )
+        session.add(pack_version)
+        session.flush()
+        source_asset_id = session.scalar(
+            text(
+                "INSERT INTO source_assets "
+                "(source_pack_version_id, authority_role, source_kind, media_type, "
+                "original_filename, byte_size, content_hash, storage_key, provenance_url, "
+                "extraction_method, extraction_profile, extraction_profile_version, "
+                "extraction_coverage, created_at) VALUES "
+                "(:pack_version_id, 'authoritative', 'text', 'text/plain', NULL, :byte_size, "
+                ":content_hash, NULL, NULL, 'pasted_text', 'text', 1, 'complete', "
+                "CURRENT_TIMESTAMP) RETURNING id"
+            ),
+            {
+                "pack_version_id": pack_version.id,
+                "byte_size": len(source_text.encode("utf-8")),
+                "content_hash": source_content_hash(source_text),
+            },
+        )
+        assert source_asset_id is not None
+        session.add(
+            SourcePackMembership(
+                source_pack_version_id=pack_version.id,
+                source_version_id=source_version.id,
+                source_asset_id=source_asset_id,
+                ordinal=1,
+                role="PRIMARY",
+            )
+        )
         source_pack = session.scalar(select(SourcePack).where(SourcePack.source_id == source.id))
         assert source_pack is not None
         transformation = _make_transformation(session, owner, source_version)
