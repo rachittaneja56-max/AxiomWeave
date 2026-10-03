@@ -1,6 +1,6 @@
 import asyncio
 import time
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.audit import record_audit_event
 from app.auth import require_current_user
+from app.commands import UpdateSourceAssetRightsCommand, dispatch_manual_application_command
 from app.database import get_db_session
 from app.document_extraction import (
     DocumentExtractionError,
@@ -471,6 +472,29 @@ def update_source_media_rights(
     session: Annotated[Session, Depends(get_db_session)],
     request: Request,
 ) -> dict[str, object]:
+    result = dispatch_manual_application_command(
+        UpdateSourceAssetRightsCommand(
+            source_asset_id=source_asset_id,
+            rights_basis=body.rights_basis,
+            consent_state=body.consent_state,
+            consent_required=body.consent_required,
+            attribution=body.attribution,
+        ),
+        session=session,
+        user=user,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return cast(dict[str, object], result)
+
+
+def execute_update_source_asset_rights(
+    command: UpdateSourceAssetRightsCommand,
+    *,
+    user: User,
+    session: Session,
+    request_id: str | None,
+) -> dict[str, object]:
+    source_asset_id = command.source_asset_id
     asset = _owned_media_source(session, source_asset_id, user.id)
     if asset is None:
         raise HTTPException(status_code=404, detail="Source media not found")
@@ -479,10 +503,10 @@ def update_source_media_rights(
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Source media rights record not found")
-    record.rights_basis = body.rights_basis
-    record.consent_state = body.consent_state
-    record.consent_required = body.consent_required
-    record.attribution = body.attribution.strip() if body.attribution else None
+    record.rights_basis = command.rights_basis
+    record.consent_state = command.consent_state
+    record.consent_required = command.consent_required
+    record.attribution = command.attribution.strip() if command.attribution else None
     if rights_are_eligible(record):
         record.confirmed_by_user_id = user.id
         record.confirmed_at = utc_now()
@@ -495,7 +519,7 @@ def update_source_media_rights(
         action_type="source_media.rights_updated",
         target_type="source_asset",
         target_id=asset.id,
-        request_id=getattr(request.state, "request_id", None),
+        request_id=request_id,
         safe_metadata={"eligible_for_composition": rights_are_eligible(record)},
     )
     session.commit()

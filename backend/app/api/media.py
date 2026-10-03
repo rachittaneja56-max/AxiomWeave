@@ -14,7 +14,9 @@ from app.commands import (
     RetryFailedMediaTaskCommand,
     ReviewMediaRenderCommand,
     SceneMediaAction,
+    UpdateMediaAssetRightsCommand,
     dispatch_application_command,
+    dispatch_manual_application_command,
 )
 from app.database import get_db_session
 from app.media_renderer import MediaRenderError, probe_media_bytes, validate_image_bytes
@@ -641,16 +643,39 @@ def update_media_asset_rights(
     session: Annotated[Session, Depends(get_db_session)],
     request: Request,
 ) -> RightsResponse:
+    result = dispatch_manual_application_command(
+        UpdateMediaAssetRightsCommand(
+            asset_id=asset_id,
+            rights_basis=body.rights_basis,
+            consent_state=body.consent_state,
+            consent_required=body.consent_required,
+            attribution=body.attribution,
+        ),
+        session=session,
+        user=user,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return cast(RightsResponse, result)
+
+
+def execute_update_media_asset_rights(
+    command: UpdateMediaAssetRightsCommand,
+    *,
+    user: User,
+    session: Session,
+    request_id: str | None,
+) -> RightsResponse:
+    asset_id = command.asset_id
     asset = _owned_asset(session, asset_id, user.id)
     if asset is None:
         raise HTTPException(status_code=404, detail="Media asset not found")
     record = _rights_record(session, asset.id)
     if record is None:
         raise HTTPException(status_code=404, detail="Media rights record not found")
-    record.rights_basis = body.rights_basis
-    record.consent_state = body.consent_state
-    record.consent_required = body.consent_required
-    record.attribution = body.attribution.strip() if body.attribution else None
+    record.rights_basis = command.rights_basis
+    record.consent_state = command.consent_state
+    record.consent_required = command.consent_required
+    record.attribution = command.attribution.strip() if command.attribution else None
     if rights_are_eligible(record):
         record.confirmed_by_user_id = user.id
         record.confirmed_at = utc_now()
@@ -663,7 +688,7 @@ def update_media_asset_rights(
         action_type="media_asset.rights_updated",
         target_type="media_asset",
         target_id=asset.id,
-        request_id=getattr(request.state, "request_id", None),
+        request_id=request_id,
         safe_metadata={"eligible_for_composition": rights_are_eligible(record)},
     )
     session.commit()

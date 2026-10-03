@@ -12,7 +12,12 @@ from app.artifact_lineage import persist_artifact_blocks
 from app.audit import record_audit_event
 from app.auth import require_current_user
 from app.claim_scanning import create_or_get_claim_scan
-from app.commands import ReviewArtifactVersionCommand, dispatch_application_command
+from app.commands import (
+    ReviewArtifactVersionCommand,
+    SaveArtifactVersionCommand,
+    dispatch_application_command,
+    dispatch_manual_application_command_async,
+)
 from app.database import get_db_session
 from app.domain.transformation import OutputType
 from app.generation import StructuredGenerationProvider
@@ -89,6 +94,25 @@ async def create_edited_artifact_version(
     provider: Annotated[StructuredGenerationProvider | None, Depends(get_analysis_provider)],
     http_request: Request,
 ) -> ArtifactVersionResponse:
+    result = await dispatch_manual_application_command_async(
+        SaveArtifactVersionCommand(artifact_run_id=artifact_run_id, content=request.content),
+        user=user,
+        session=session,
+        provider=provider,
+        request_id=getattr(http_request.state, "request_id", None),
+    )
+    return cast(ArtifactVersionResponse, result)
+
+
+async def execute_save_artifact_version(
+    command: SaveArtifactVersionCommand,
+    *,
+    user: User,
+    session: Session,
+    provider: StructuredGenerationProvider | None,
+    request_id: str | None,
+) -> ArtifactVersionResponse:
+    artifact_run_id = command.artifact_run_id
     artifact_run = _owned_artifact_run(session, user, artifact_run_id)
     if artifact_run is None:
         raise HTTPException(status_code=404, detail="Artifact run not found")
@@ -100,7 +124,7 @@ async def create_edited_artifact_version(
     if previous is None:
         raise HTTPException(status_code=409, detail="Generate this artifact before editing it")
 
-    content = request.content.strip()
+    content = command.content.strip()
     if not content:
         raise HTTPException(
             status_code=422,
@@ -144,7 +168,7 @@ async def create_edited_artifact_version(
         action_type="artifact_version.edited",
         target_type="artifact_version",
         target_id=version.id,
-        request_id=getattr(http_request.state, "request_id", None),
+        request_id=request_id,
         safe_metadata={"artifact_run_id": artifact_run.id},
     )
     persist_artifact_blocks(

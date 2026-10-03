@@ -10,6 +10,7 @@ from app.artifact_contracts import ARTIFACT_CONTRACTS
 from app.audit import record_audit_event
 from app.auth import require_current_user
 from app.claim_scanning import claim_scan_coverage
+from app.commands import CreateTransformationCommand, dispatch_manual_application_command
 from app.database import get_db_session
 from app.domain.transformation import (
     CreateTransformationRequest,
@@ -648,6 +649,22 @@ def save_transformation(
     session: Annotated[Session, Depends(get_db_session)],
     request: Request,
 ) -> SavedTransformation:
+    result = dispatch_manual_application_command(
+        CreateTransformationCommand(request=transformation_request),
+        session=session,
+        user=user,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return cast(SavedTransformation, result)
+
+
+def execute_create_transformation(
+    transformation_request: CreateTransformationRequest,
+    *,
+    user: User,
+    session: Session,
+    request_id: str | None,
+) -> SavedTransformation:
     try:
         if transformation_request.source_version_id is None:
             write = create_source_pack_version(session, user.id, transformation_request.source_text)
@@ -690,7 +707,7 @@ def save_transformation(
             action_type="transformation.created",
             target_type="transformation",
             target_id=run.id,
-            request_id=getattr(request.state, "request_id", None),
+            request_id=request_id,
             safe_metadata={"output_type_count": len(transformation_request.output_types)},
         )
         segment_count = (

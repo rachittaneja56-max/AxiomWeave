@@ -20,7 +20,17 @@ from app.claim_scanning import (
     create_or_get_claim_scan,
     refresh_scan_status,
 )
-from app.commands import AnalyzeArtifactEvidenceCommand, dispatch_application_command_async
+from app.commands import (
+    AnalyzeArtifactEvidenceCommand,
+    AnalyzeSiblingConsistencyCommand,
+    ResumeClaimScanCommand,
+    ReviewDiscrepancyFindingCommand,
+    ReviewEvidenceAssessmentCommand,
+    VerifyArtifactEvidenceCommand,
+    dispatch_application_command_async,
+    dispatch_manual_application_command,
+    dispatch_manual_application_command_async,
+)
 from app.context_planning import ContextPlanNeedsReview, context_text_from_manifest
 from app.database import get_db_session
 from app.domain.transformation import OutputType
@@ -597,6 +607,27 @@ def review_claim_evidence(
     session: Annotated[Session, Depends(get_db_session)],
     http_request: Request,
 ) -> EvidenceAssessmentResponse:
+    result = dispatch_manual_application_command(
+        ReviewEvidenceAssessmentCommand(
+            assessment_id=assessment_id,
+            review_state=request.review_state,
+            adjudicated_state=request.adjudicated_state,
+        ),
+        session=session,
+        user=user,
+        request_id=getattr(http_request.state, "request_id", None),
+    )
+    return cast(EvidenceAssessmentResponse, result)
+
+
+def execute_review_claim_evidence(
+    command: ReviewEvidenceAssessmentCommand,
+    *,
+    user: User,
+    session: Session,
+    request_id: str | None,
+) -> EvidenceAssessmentResponse:
+    assessment_id = command.assessment_id
     assessment = session.scalar(
         select(ClaimEvidenceAssessment)
         .join(ArtifactVersion, ArtifactVersion.id == ClaimEvidenceAssessment.artifact_version_id)
@@ -610,8 +641,8 @@ def review_claim_evidence(
     )
     if assessment is None:
         raise HTTPException(status_code=404, detail="Evidence assessment not found")
-    assessment.review_state = request.review_state
-    assessment.adjudicated_state = request.adjudicated_state
+    assessment.review_state = command.review_state
+    assessment.adjudicated_state = command.adjudicated_state
     assessment.reviewed_by = user.id
     assessment.reviewed_at = utc_now()
     record_audit_event(
@@ -620,7 +651,7 @@ def review_claim_evidence(
         action_type="evidence_assessment.reviewed",
         target_type="evidence_assessment",
         target_id=assessment.id,
-        request_id=getattr(http_request.state, "request_id", None),
+        request_id=request_id,
         safe_metadata={"review_state": assessment.review_state},
     )
     session.commit()
@@ -1400,6 +1431,25 @@ async def verify_artifact_evidence(
     provider: Annotated[StructuredGenerationProvider | None, Depends(get_analysis_provider)],
     request: Request,
 ) -> list[EvidenceAssessmentResponse]:
+    result = await dispatch_manual_application_command_async(
+        VerifyArtifactEvidenceCommand(artifact_version_id=artifact_version_id),
+        user=user,
+        session=session,
+        provider=provider,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return cast(list[EvidenceAssessmentResponse], result)
+
+
+async def execute_verify_artifact_evidence(
+    command: VerifyArtifactEvidenceCommand,
+    *,
+    user: User,
+    session: Session,
+    provider: StructuredGenerationProvider | None,
+    request_id: str | None,
+) -> list[EvidenceAssessmentResponse]:
+    artifact_version_id = command.artifact_version_id
     owned = _owned_artifact_version(session, user, artifact_version_id)
     if owned is None:
         raise HTTPException(status_code=404, detail="Artifact version not found")
@@ -1453,7 +1503,7 @@ async def verify_artifact_evidence(
         action_type="evidence_assessment.completed",
         target_type="artifact_version",
         target_id=artifact_version_id,
-        request_id=getattr(request.state, "request_id", None),
+        request_id=request_id,
     )
     session.commit()
     return [_assessment_response(item) for item in assessments]
@@ -1568,6 +1618,25 @@ async def resume_claim_scan(
     provider: Annotated[StructuredGenerationProvider | None, Depends(get_analysis_provider)],
     request: Request,
 ) -> ClaimScanCoverage:
+    result = await dispatch_manual_application_command_async(
+        ResumeClaimScanCommand(claim_scan_id=claim_scan_id),
+        user=user,
+        session=session,
+        provider=provider,
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return cast(ClaimScanCoverage, result)
+
+
+async def execute_resume_claim_scan(
+    command: ResumeClaimScanCommand,
+    *,
+    user: User,
+    session: Session,
+    provider: StructuredGenerationProvider | None,
+    request_id: str | None,
+) -> ClaimScanCoverage:
+    claim_scan_id = command.claim_scan_id
     scan = session.scalar(
         select(ClaimScan).where(
             ClaimScan.id == claim_scan_id,
@@ -1611,7 +1680,7 @@ async def resume_claim_scan(
         action_type="claim_scan.resumed",
         target_type="claim_scan",
         target_id=scan.id,
-        request_id=getattr(request.state, "request_id", None),
+        request_id=request_id,
     )
     session.commit()
     return _claim_scan_response(session, scan)
@@ -1629,10 +1698,31 @@ async def analyze_sibling_discrepancy(
     provider: Annotated[StructuredGenerationProvider | None, Depends(get_analysis_provider)],
     http_request: Request,
 ) -> DiscrepancyAnalysisResponse:
-    if request.artifact_version_a_id == request.artifact_version_b_id:
+    result = await dispatch_manual_application_command_async(
+        AnalyzeSiblingConsistencyCommand(
+            artifact_version_a_id=request.artifact_version_a_id,
+            artifact_version_b_id=request.artifact_version_b_id,
+        ),
+        user=user,
+        session=session,
+        provider=provider,
+        request_id=getattr(http_request.state, "request_id", None),
+    )
+    return cast(DiscrepancyAnalysisResponse, result)
+
+
+async def execute_analyze_sibling_consistency(
+    command: AnalyzeSiblingConsistencyCommand,
+    *,
+    user: User,
+    session: Session,
+    provider: StructuredGenerationProvider | None,
+    request_id: str | None,
+) -> DiscrepancyAnalysisResponse:
+    if command.artifact_version_a_id == command.artifact_version_b_id:
         raise HTTPException(status_code=422, detail="Choose two different artifact versions")
-    row_a = _owned_artifact_version(session, user, request.artifact_version_a_id)
-    row_b = _owned_artifact_version(session, user, request.artifact_version_b_id)
+    row_a = _owned_artifact_version(session, user, command.artifact_version_a_id)
+    row_b = _owned_artifact_version(session, user, command.artifact_version_b_id)
     if row_a is None or row_b is None:
         raise HTTPException(status_code=404, detail="Artifact version not found")
     version_a, run_a, _transformation_a = row_a
@@ -1808,7 +1898,7 @@ async def analyze_sibling_discrepancy(
         action_type="consistency_analysis.completed",
         target_type="source_version",
         target_id=source_version.id,
-        request_id=getattr(http_request.state, "request_id", None),
+        request_id=request_id,
         safe_metadata={"artifact_version_count": 2},
     )
     session.commit()
@@ -1914,22 +2004,41 @@ def dismiss_discrepancy(
     session: Annotated[Session, Depends(get_db_session)],
     http_request: Request,
 ) -> DiscrepancyFindingResponse:
+    result = dispatch_manual_application_command(
+        ReviewDiscrepancyFindingCommand(
+            finding_id=finding_id,
+            review_status=request.review_status,
+        ),
+        session=session,
+        user=user,
+        request_id=getattr(http_request.state, "request_id", None),
+    )
+    return cast(DiscrepancyFindingResponse, result)
+
+
+def execute_review_discrepancy_finding(
+    command: ReviewDiscrepancyFindingCommand,
+    *,
+    user: User,
+    session: Session,
+    request_id: str | None,
+) -> DiscrepancyFindingResponse:
     finding = session.scalar(
         select(DiscrepancyFinding)
         .join(SourceVersion, SourceVersion.id == DiscrepancyFinding.source_version_id)
         .join(Source, Source.id == SourceVersion.source_id)
-        .where(DiscrepancyFinding.id == finding_id, Source.owner_id == user.id)
+        .where(DiscrepancyFinding.id == command.finding_id, Source.owner_id == user.id)
     )
     if finding is None:
         raise HTTPException(status_code=404, detail="Discrepancy finding not found")
-    finding.review_status = request.review_status
+    finding.review_status = command.review_status
     record_audit_event(
         session,
         owner_id=user.id,
         action_type="discrepancy.reviewed",
         target_type="discrepancy_finding",
         target_id=finding.id,
-        request_id=getattr(http_request.state, "request_id", None),
+        request_id=request_id,
         safe_metadata={"review_status": finding.review_status},
     )
     session.commit()

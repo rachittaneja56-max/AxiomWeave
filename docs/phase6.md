@@ -1,6 +1,6 @@
 # Phase 6 implementation status
 
-Phase 6 adds bounded ActionPlan chat, shared typed handlers for the current chat command set, request security, task-based model policy, audit/usage records, rate limits, readiness reporting, SQLite recovery tooling, and final-release evaluation materials.
+Phase 6 adds bounded ActionPlan chat, a shared typed command layer for chat and important manual mutations, request security, task-based model policy, audit/usage records, rate limits, readiness reporting, SQLite recovery tooling, and final-release evaluation materials.
 
 ## Current manual/chat command parity
 
@@ -16,7 +16,20 @@ Phase 6 adds bounded ActionPlan chat, shared typed handlers for the current chat
 | Retry failed media task | `POST /api/media-renders/{id}/retry-failed` | `RetryFailedMediaTaskCommand` | `retry_failed_media_task` | owner and failed-task state checked at proposal and execution |
 | Review media render | `PATCH /api/media-renders/{id}/review` | `ReviewMediaRenderCommand` | `review_media_render` | exact owner/render asset and current state checked |
 
-Other existing mutations such as source revision, manual artifact edits, evidence adjudication, consistency dismissal, and media/source rights updates remain on their existing owner-scoped APIs and are not currently exposed as chat commands. Chat covers the listed command set; extending it to those operations would require additional product decisions about which content may be proposed conversationally. No ActionPlan can invoke arbitrary tools or select a model/provider.
+These additional owner-scoped manual mutations also enter typed handlers, but are not offered as chat commands:
+
+| Manual operation | API entry point | Typed handler |
+|---|---|---|
+| Create transformation | `POST /api/transformations` | `CreateTransformationCommand` |
+| Create source revision | `POST /api/transformations/{id}/source-versions` | `CreateSourceRevisionCommand` |
+| Save edited artifact version | `POST /api/artifact-runs/{id}/versions` | `SaveArtifactVersionCommand` |
+| Review evidence assessment | `PATCH /api/claim-evidence-assessments/{id}/review` | `ReviewEvidenceAssessmentCommand` |
+| Verify evidence / resume claim scan | `POST /api/artifact-versions/{id}/evidence/verify`, `POST /api/claim-scans/{id}/resume` | `VerifyArtifactEvidenceCommand`, `ResumeClaimScanCommand` |
+| Analyze consistency | `POST /api/discrepancies/analyze` | `AnalyzeSiblingConsistencyCommand` |
+| Dismiss discrepancy | `PATCH /api/discrepancies/{id}` | `ReviewDiscrepancyFindingCommand` |
+| Update source or rendered media rights | `PATCH /api/source-assets/{id}/rights`, `PATCH /api/media-assets/{id}/rights` | `UpdateSourceAssetRightsCommand`, `UpdateMediaAssetRightsCommand` |
+
+No ActionPlan can invoke arbitrary tools or select a model/provider.
 
 ## Evaluation and human gates
 

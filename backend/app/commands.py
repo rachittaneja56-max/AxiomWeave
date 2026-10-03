@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit_event
+from app.domain.transformation import CreateTransformationRequest
 from app.generation import StructuredGenerationProvider
 from app.models import User
 
@@ -75,6 +76,100 @@ class ReviewArtifactVersionCommand(BaseModel):
     artifact_version_id: int = Field(gt=0)
     review_status: Literal["accepted", "rejected"]
     note: str | None = Field(default=None, max_length=500)
+
+
+EvidenceReviewState = Literal[
+    "quote_located",
+    "supported",
+    "partial",
+    "contradicted",
+    "missing",
+    "ambiguous",
+    "conflict",
+    "non_factual",
+]
+
+
+class CreateTransformationCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    request: CreateTransformationRequest
+
+
+class CreateSourceRevisionCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    transformation_run_id: int = Field(gt=0)
+    source_text: str = Field(min_length=1, max_length=20_000)
+
+
+class SaveArtifactVersionCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    artifact_run_id: int = Field(gt=0)
+    content: str = Field(min_length=1, max_length=100_000)
+
+
+class ReviewEvidenceAssessmentCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    assessment_id: int = Field(gt=0)
+    review_state: Literal["reviewed"] = "reviewed"
+    adjudicated_state: EvidenceReviewState | None = None
+
+
+class VerifyArtifactEvidenceCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    artifact_version_id: int = Field(gt=0)
+
+
+class ResumeClaimScanCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    claim_scan_id: int = Field(gt=0)
+
+
+class AnalyzeSiblingConsistencyCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    artifact_version_a_id: int = Field(gt=0)
+    artifact_version_b_id: int = Field(gt=0)
+
+
+class ReviewDiscrepancyFindingCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    finding_id: int = Field(gt=0)
+    review_status: Literal["dismissed"] = "dismissed"
+
+
+class UpdateMediaAssetRightsCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    asset_id: int = Field(gt=0)
+    rights_basis: Literal[
+        "user_owned", "permission_confirmed", "public_domain", "not_applicable", "unknown"
+    ]
+    consent_state: Literal["confirmed", "not_applicable", "unknown"]
+    consent_required: bool = False
+    attribution: str | None = Field(default=None, max_length=500)
+
+
+class UpdateSourceAssetRightsCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    source_asset_id: int = Field(gt=0)
+    rights_basis: Literal[
+        "user_owned", "permission_confirmed", "public_domain", "not_applicable", "unknown"
+    ]
+    consent_state: Literal["confirmed", "not_applicable", "unknown"]
+    consent_required: bool = False
+    attribution: str | None = Field(default=None, max_length=500)
+
+
+type ManualApplicationCommand = (
+    CreateTransformationCommand
+    | CreateSourceRevisionCommand
+    | SaveArtifactVersionCommand
+    | ReviewEvidenceAssessmentCommand
+    | VerifyArtifactEvidenceCommand
+    | ResumeClaimScanCommand
+    | AnalyzeSiblingConsistencyCommand
+    | ReviewDiscrepancyFindingCommand
+    | UpdateMediaAssetRightsCommand
+    | UpdateSourceAssetRightsCommand
+)
 
 
 type ApplicationCommand = Annotated[
@@ -281,3 +376,89 @@ async def dispatch_application_command_async(
     )
     session.commit()
     return result
+
+
+def dispatch_manual_application_command(
+    command: ManualApplicationCommand,
+    *,
+    session: Session,
+    user: User,
+    request_id: str | None,
+) -> object:
+    if isinstance(command, CreateTransformationCommand):
+        from app.api.transformations import execute_create_transformation
+
+        return execute_create_transformation(
+            command.request, user=user, session=session, request_id=request_id
+        )
+    if isinstance(command, CreateSourceRevisionCommand):
+        from app.api.revisions import execute_create_source_revision
+
+        return execute_create_source_revision(
+            command, user=user, session=session, request_id=request_id
+        )
+    if isinstance(command, ReviewEvidenceAssessmentCommand):
+        from app.api.evidence import execute_review_claim_evidence
+
+        return execute_review_claim_evidence(
+            command, user=user, session=session, request_id=request_id
+        )
+    if isinstance(command, ReviewDiscrepancyFindingCommand):
+        from app.api.evidence import execute_review_discrepancy_finding
+
+        return execute_review_discrepancy_finding(
+            command, user=user, session=session, request_id=request_id
+        )
+    if isinstance(command, UpdateMediaAssetRightsCommand):
+        from app.api.media import execute_update_media_asset_rights
+
+        return execute_update_media_asset_rights(
+            command, user=user, session=session, request_id=request_id
+        )
+    if isinstance(command, UpdateSourceAssetRightsCommand):
+        from app.api.sources import execute_update_source_asset_rights
+
+        return execute_update_source_asset_rights(
+            command, user=user, session=session, request_id=request_id
+        )
+    raise TypeError("Manual command requires async dispatch")
+
+
+async def dispatch_manual_application_command_async(
+    command: ManualApplicationCommand,
+    *,
+    session: Session,
+    user: User,
+    request_id: str | None,
+    provider: StructuredGenerationProvider | None = None,
+) -> object:
+    if isinstance(command, SaveArtifactVersionCommand):
+        from app.api.reviews import execute_save_artifact_version
+
+        return await execute_save_artifact_version(
+            command, user=user, session=session, provider=provider, request_id=request_id
+        )
+    if isinstance(command, VerifyArtifactEvidenceCommand):
+        from app.api.evidence import execute_verify_artifact_evidence
+
+        return await execute_verify_artifact_evidence(
+            command, user=user, session=session, provider=provider, request_id=request_id
+        )
+    if isinstance(command, ResumeClaimScanCommand):
+        from app.api.evidence import execute_resume_claim_scan
+
+        return await execute_resume_claim_scan(
+            command, user=user, session=session, provider=provider, request_id=request_id
+        )
+    if isinstance(command, AnalyzeSiblingConsistencyCommand):
+        from app.api.evidence import execute_analyze_sibling_consistency
+
+        return await execute_analyze_sibling_consistency(
+            command, user=user, session=session, provider=provider, request_id=request_id
+        )
+    return dispatch_manual_application_command(
+        command,
+        session=session,
+        user=user,
+        request_id=request_id,
+    )

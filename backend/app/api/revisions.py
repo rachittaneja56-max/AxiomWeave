@@ -9,7 +9,12 @@ from sqlalchemy.orm import Session
 
 from app.audit import record_audit_event
 from app.auth import require_current_user
-from app.commands import TargetedUpdateArtifactCommand, dispatch_application_command
+from app.commands import (
+    CreateSourceRevisionCommand,
+    TargetedUpdateArtifactCommand,
+    dispatch_application_command,
+    dispatch_manual_application_command,
+)
 from app.database import get_db_session
 from app.job_queue import enqueue_artifact_job
 from app.models import (
@@ -147,6 +152,26 @@ def create_transformation_source_version(
     session: Annotated[Session, Depends(get_db_session)],
     http_request: Request,
 ) -> SourceRevisionStatus:
+    result = dispatch_manual_application_command(
+        CreateSourceRevisionCommand(
+            transformation_run_id=transformation_run_id,
+            source_text=request.source_text,
+        ),
+        session=session,
+        user=user,
+        request_id=getattr(http_request.state, "request_id", None),
+    )
+    return cast(SourceRevisionStatus, result)
+
+
+def execute_create_source_revision(
+    command: CreateSourceRevisionCommand,
+    *,
+    user: User,
+    session: Session,
+    request_id: str | None,
+) -> SourceRevisionStatus:
+    transformation_run_id = command.transformation_run_id
     transformation = _owned_transformation(session, user, transformation_run_id)
     if transformation is None:
         raise HTTPException(status_code=404, detail="Transformation not found")
@@ -160,7 +185,7 @@ def create_transformation_source_version(
         new_source = create_source_version(
             session,
             source,
-            request.source_text,
+            command.source_text,
             parent_source_version_id=old_source.id,
         )
         align_source_versions(session, old_source, new_source)
@@ -171,7 +196,7 @@ def create_transformation_source_version(
             action_type="source_version.created",
             target_type="source_version",
             target_id=new_source.id,
-            request_id=getattr(http_request.state, "request_id", None),
+            request_id=request_id,
             safe_metadata={"transformation_id": transformation.id},
         )
         session.commit()
