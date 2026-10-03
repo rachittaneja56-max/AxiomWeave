@@ -45,7 +45,7 @@ cd backend
 uv run python -m app.job_worker
 ```
 
-Use `uv run python -m app.job_worker --once` to process at most one queued job and exit.
+The default worker polls every second while idle; `--once` makes one claim attempt, processes at most one job, and exits.
 
 In a third terminal, run the frontend:
 

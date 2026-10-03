@@ -37,6 +37,8 @@ from app.provider_factory import get_generation_provider
 from app.settings import get_settings
 from app.source_revisions import diff_source_versions
 
+DEFAULT_POLL_SECONDS = 1.0
+
 
 def _record_failure(
     session_factory: sessionmaker[Session], claim: ClaimedJob, failure_code: str
@@ -285,9 +287,10 @@ async def run_worker(
 ) -> None:
     while True:
         processed = await process_one_job(session_factory, provider, worker_id)
-        if once or not processed:
+        if once:
             return
-        await asyncio.sleep(1)
+        if not processed:
+            await asyncio.sleep(DEFAULT_POLL_SECONDS)
 
 
 def _worker_id() -> str:
