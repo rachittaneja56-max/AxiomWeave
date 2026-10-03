@@ -55,6 +55,8 @@ Set-Location backend
 uv run python -m app.job_worker --resource-class media_cpu
 ```
 
+A single worker may run in `combined` mode for constrained/demo deployments; production-scale deployments may run separate `model_io` and `media_cpu` workers.
+
 Run the frontend in a third terminal:
 
 ```powershell

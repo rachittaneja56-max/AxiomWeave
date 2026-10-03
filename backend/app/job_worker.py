@@ -37,6 +37,7 @@ from app.generation import (
 )
 from app.job_queue import (
     DEFAULT_LEASE_SECONDS,
+    MEDIA_CPU,
     MODEL_IO,
     ClaimedJob,
     claim_next_job,
@@ -746,18 +747,52 @@ async def run_worker(
             await asyncio.sleep(DEFAULT_POLL_SECONDS)
 
 
+async def run_combined_worker(
+    session_factory: sessionmaker[Session],
+    provider: GenerationProvider | None,
+    worker_id: str,
+    once: bool = False,
+) -> None:
+    from app.media_worker import process_one_media_job
+
+    await _resume_incomplete_claim_scans(session_factory, provider)
+    preferred_resource = MODEL_IO
+    while True:
+        resources = (
+            (preferred_resource, MEDIA_CPU)
+            if preferred_resource == MODEL_IO
+            else (preferred_resource, MODEL_IO)
+        )
+        processed_resource: str | None = None
+        for resource in resources:
+            if resource == MODEL_IO:
+                processed = await process_one_job(session_factory, provider, worker_id)
+            else:
+                processed = process_one_media_job(session_factory, worker_id)
+            if processed:
+                processed_resource = resource
+                break
+
+        if once:
+            return
+        if processed_resource is None:
+            await asyncio.sleep(DEFAULT_POLL_SECONDS)
+        else:
+            preferred_resource = MEDIA_CPU if processed_resource == MODEL_IO else MODEL_IO
+
+
 def _worker_id() -> str:
     return f"{socket.gethostname()}:{uuid4().hex[:12]}"
 
 
 def main() -> None:
-    parser = ArgumentParser(description="Run one bounded AxiomWeave model I/O worker")
+    parser = ArgumentParser(description="Run one bounded AxiomWeave background worker")
     parser.add_argument("--once", action="store_true", help="Process at most one queued job")
     parser.add_argument(
         "--resource-class",
-        choices=("model_io", "media_cpu"),
+        choices=("model_io", "media_cpu", "combined"),
         default="model_io",
-        help="Use one bounded worker resource class per process (default: model_io)",
+        help="Select a resource class or one-at-a-time combined mode (default: model_io)",
     )
     args = parser.parse_args()
     engine = create_database_engine(get_settings().database_url)
@@ -767,6 +802,12 @@ def main() -> None:
             from app.media_worker import media_worker_id, run_media_worker
 
             asyncio.run(run_media_worker(session_factory, media_worker_id(), args.once))
+        elif args.resource_class == "combined":
+            asyncio.run(
+                run_combined_worker(
+                    session_factory, get_generation_provider(), _worker_id(), args.once
+                )
+            )
         else:
             asyncio.run(
                 run_worker(session_factory, get_generation_provider(), _worker_id(), args.once)
