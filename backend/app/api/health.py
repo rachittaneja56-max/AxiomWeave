@@ -13,6 +13,7 @@ from app.auth import require_current_user
 from app.database import get_db_session
 from app.model_policy import current_model_registry
 from app.models import ArtifactRun, Job, MediaRender, MediaTask, TransformationRun, User
+from app.private_asset_storage import private_asset_store_is_configured
 from app.settings import get_settings
 
 router = APIRouter()
@@ -62,16 +63,23 @@ def readiness(session: Annotated[Session, Depends(get_db_session)]) -> Readiness
         migration_state = "current" if revision == EXPECTED_SCHEMA_REVISION else "outdated"
     except Exception:
         session.rollback()
-    asset_dir: Path = settings.private_asset_dir
-    asset_parent = asset_dir if asset_dir.exists() else asset_dir.parent
-    storage_state = "usable" if asset_parent.exists() and asset_parent.is_dir() else "missing"
-    if storage_state == "usable" and not os.access(asset_parent, os.W_OK):
-        storage_state = "not_writable"
+    if not private_asset_store_is_configured():
+        storage_state = "missing"
+    elif settings.private_asset_backend.strip().lower() == "local":
+        asset_dir: Path = settings.private_asset_dir
+        asset_parent = asset_dir if asset_dir.exists() else asset_dir.parent
+        storage_state = "usable" if asset_parent.exists() and asset_parent.is_dir() else "missing"
+        if storage_state == "usable" and not os.access(asset_parent, os.W_OK):
+            storage_state = "not_writable"
+    else:
+        storage_state = "configured"
     ffmpeg_available = shutil.which("ffmpeg") is not None
     ffprobe_available = shutil.which("ffprobe") is not None
     profiles = current_model_registry(settings)
     degraded = (
-        database == "unavailable" or migration_state != "current" or storage_state != "usable"
+        database == "unavailable"
+        or migration_state != "current"
+        or storage_state not in {"usable", "configured"}
     )
     return ReadinessResponse(
         status="degraded" if degraded else "ready",

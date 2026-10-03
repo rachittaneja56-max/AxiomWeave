@@ -26,6 +26,7 @@ def test_settings_use_safe_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.host == "127.0.0.1"
     assert settings.port == 8000
     assert settings.database_url == "sqlite:///./axiomweave.db"
+    assert settings.private_asset_backend == "local"
     assert settings.allow_registration is False
     assert settings.openai_api_key is None
     assert settings.openai_model == "gpt-6-luna"

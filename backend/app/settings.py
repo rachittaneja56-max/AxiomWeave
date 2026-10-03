@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     private_asset_dir: Path = Field(
         default_factory=lambda: Path(__file__).resolve().parents[1] / ".private-assets"
     )
+    private_asset_backend: str = "local"
+    s3_bucket: str | None = None
+    s3_endpoint: str | None = None
+    s3_region: str | None = None
     allow_registration: bool = False
     allowed_frontend_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     rate_limit_enabled: bool = True

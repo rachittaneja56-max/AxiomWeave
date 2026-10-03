@@ -16,7 +16,7 @@ AxiomWeave turns one source and communication brief into a set of audience-ready
 
 ## Architecture
 
-The frontend is React and Vite. The backend is a FastAPI and SQLAlchemy modular monolith. SQLite is the local default; PostgreSQL migrations and runtime behavior are covered by integration tests. Artifact generation and media rendering run in separate database-backed workers. Original uploads and rendered files stay in a private local asset directory. See [docs/architecture.md](docs/architecture.md) for data flow, security boundaries, and rendering details.
+The frontend is React and Vite. The backend is a FastAPI and SQLAlchemy modular monolith. SQLite is the local default; PostgreSQL migrations and runtime behavior are covered by integration tests. Artifact generation and media rendering run in separate database-backed workers. Original uploads and rendered files use a private local asset directory by default, with optional S3-compatible private storage for shared production assets. See [docs/architecture.md](docs/architecture.md) for data flow, security boundaries, and rendering details.
 
 ## Setup
 
@@ -28,7 +28,7 @@ Create the local environment file from the example and set `OPENAI_API_KEY` to e
 Copy-Item .env.example .env
 ```
 
-`SIH_DATABASE_URL` defaults to `sqlite:///./axiomweave.db`; `SIH_PRIVATE_ASSET_DIR` selects private file storage. Registration is disabled by default. For a local demo, set `SIH_ALLOW_REGISTRATION=true` while creating accounts, then disable it. The configured model defaults are `gpt-6-luna` for generation and analysis and `gpt-5-nano` for scanned-page OCR. Task-specific environment variables can override these defaults. Requests cannot select a provider or model.
+`SIH_DATABASE_URL` defaults to `sqlite:///./axiomweave.db`; `SIH_PRIVATE_ASSET_DIR` selects private file storage, and `SIH_PRIVATE_ASSET_BACKEND` defaults to `local`. Production can select `s3` and set `SIH_S3_BUCKET`, `SIH_S3_ENDPOINT`, and `SIH_S3_REGION`, with credentials supplied through `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Registration is disabled by default. For a local demo, set `SIH_ALLOW_REGISTRATION=true` while creating accounts, then disable it. The configured model defaults are `gpt-6-luna` for generation and analysis and `gpt-5-nano` for scanned-page OCR. Task-specific environment variables can override these defaults. Requests cannot select a provider or model.
 
 ## Run the application
 
@@ -92,6 +92,6 @@ npm run build
 
 ## Current limitations
 
-Vision, audio transcription, speech synthesis, and generated image or video providers are not configured. Scanned-page OCR is model-assisted, and evidence analysis supports review rather than proving that claims are true or complete. URL import reads bounded public pages; it does not sign in, execute JavaScript, or crawl. SQLite and local file storage support development and demonstrations; production-scale queue concurrency and object storage are not implemented.
+Vision, audio transcription, speech synthesis, and generated image or video providers are not configured. Scanned-page OCR is model-assisted, and evidence analysis supports review rather than proving that claims are true or complete. URL import reads bounded public pages; it does not sign in, execute JavaScript, or crawl. SQLite and local file storage remain the development defaults; PostgreSQL and the optional S3-compatible backend support shared production services.
 
 The SQLite backup utility supports local demo data and checks database integrity and private-asset hashes. From `backend`, use `uv run python -m scripts.sqlite_recovery backup <database> <assets> <new-backup-directory>`.
