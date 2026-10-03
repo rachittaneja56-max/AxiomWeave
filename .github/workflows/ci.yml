@@ -65,6 +65,7 @@ jobs:
           name: phase5-media-review-${{ github.sha }}
           path: backend/.phase5-human-review/
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 14
 
   frontend:
