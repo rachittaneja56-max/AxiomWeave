@@ -1,0 +1,49 @@
+{
+  "benchmark_version": "phase2-fts-v1",
+  "fixture_version": "phase2-retrieval-fixtures-v1",
+  "profile": "postgres_fts",
+  "profile_version": 1,
+  "profile_disposition": "CANDIDATE",
+  "quality_status": "INSUFFICIENT",
+  "language_configuration": "postgresql-simple-v1",
+  "pack_unit": "SourcePack",
+  "pack_count": 4,
+  "query_count": 6,
+  "top_k": 2,
+  "r0": {
+    "required_region_recall": { "numerator": 7, "denominator": 7 },
+    "qualifier_region_recall": { "numerator": 4, "denominator": 4 },
+    "region_text_character_units": 785,
+    "status": "BASELINE_FULL_CONTEXT"
+  },
+  "fts": {
+    "required_region_recall": { "numerator": 2, "denominator": 7 },
+    "qualifier_region_recall": { "numerator": 1, "denominator": 4 },
+    "top_k_fully_covered_tasks": { "numerator": 2, "denominator": 6 },
+    "misses": [
+      "library_holiday_hours",
+      "rainfall_schedule_qualifier",
+      "cleanup_packaging_exception",
+      "grant_conflict_both_values"
+    ],
+    "region_text_character_units": 117,
+    "context_reduction_fraction": 0.8509554140127388,
+    "latency_ms": {
+      "count": 6,
+      "mean": 10.185433357643584,
+      "total": 61.11260014586151,
+      "environment": "local PostgreSQL 17 + pgvector 0.8.6 loopback"
+    },
+    "status": "NOT_PROMOTED"
+  },
+  "vector_quality": "NOT EVALUATED — NO APPROVED SEMANTIC EMBEDDING PROFILE",
+  "hybrid_quality": "NOT EVALUATED — NO APPROVED SEMANTIC EMBEDDING PROFILE",
+  "generated_output_quality": "NOT CERTIFIED IN THIS IMPLEMENTATION GATE",
+  "limitations": [
+    "Four synthetic source packs do not establish general retrieval quality.",
+    "PostgreSQL simple configuration uses no language-specific stemming.",
+    "Context units count original region text only and exclude role labels and provider schema overhead.",
+    "Latency is a local loopback measurement, not a production latency estimate.",
+    "No generated-output quality or factuality comparison was run."
+  ]
+}

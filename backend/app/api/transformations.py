@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.auth import require_current_user
+from app.claim_scanning import claim_scan_coverage
 from app.database import get_db_session
 from app.domain.transformation import (
     CreateTransformationRequest,
@@ -16,6 +17,10 @@ from app.domain.transformation import (
 from app.models import (
     ArtifactRun,
     ArtifactVersion,
+    ClaimScan,
+    ContextManifest,
+    ContextManifestEntry,
+    Job,
     Source,
     SourceAsset,
     SourcePack,
@@ -49,6 +54,31 @@ class DashboardArtifactState(BaseModel):
     review_status: Literal["draft", "accepted", "rejected"] | None
 
 
+class ContextManifestSummary(BaseModel):
+    id: int
+    source_version_id: int
+    source_pack_version_id: int
+    route: str
+    context_profile: str
+    state: str
+    extraction_coverage: str
+    estimated_context_units: int
+    context_budget_units: int
+    region_count: int
+    warnings: list[str]
+    created_at: datetime
+
+
+class ClaimScanSummary(BaseModel):
+    id: int
+    status: Literal["pending", "running", "complete", "failed", "needs_review"]
+    total_batches: int
+    completed_batches: int
+    failed_batches: int
+    needs_review_batches: int
+    claims_found: int
+
+
 class TransformationCard(BaseModel):
     transformation_run_id: int
     source_version: SourceVersionSummary
@@ -71,6 +101,8 @@ class ArtifactVersionHistory(BaseModel):
     prompt_hash: str | None
     review_status: Literal["draft", "accepted", "rejected"]
     created_at: datetime
+    context_manifest: ContextManifestSummary | None = None
+    claim_scan: ClaimScanSummary | None = None
 
 
 class ArtifactRunHistory(BaseModel):
@@ -78,6 +110,7 @@ class ArtifactRunHistory(BaseModel):
     output_type: Literal["executive_summary", "linkedin_post", "x_post", "advisory", "presentation"]
     status: Literal["pending", "running", "succeeded", "failed"]
     versions: list[ArtifactVersionHistory]
+    context_manifest: ContextManifestSummary | None = None
 
 
 class TransformationDetail(BaseModel):
@@ -270,8 +303,18 @@ def _artifact_history(
                 prompt_hash=version.prompt_hash,
                 review_status=cast(Literal["draft", "accepted", "rejected"], version.review_status),
                 created_at=version.created_at,
+                context_manifest=_context_manifest_summary(
+                    session, user, version.context_manifest_id
+                ),
+                claim_scan=_claim_scan_summary(session, user, version.id),
             )
         )
+    latest_job = session.scalar(
+        select(Job)
+        .where(Job.artifact_run_id == artifact_run.id)
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(1)
+    )
     return ArtifactRunHistory(
         artifact_run_id=artifact_run.id,
         output_type=cast(
@@ -280,6 +323,74 @@ def _artifact_history(
         ),
         status=cast(Literal["pending", "running", "succeeded", "failed"], artifact_run.status),
         versions=history,
+        context_manifest=(
+            _context_manifest_summary(session, user, latest_job.context_manifest_id)
+            if latest_job is not None
+            else None
+        ),
+    )
+
+
+def _context_manifest_summary(
+    session: Session, user: User, manifest_id: int | None
+) -> ContextManifestSummary | None:
+    if manifest_id is None:
+        return None
+    manifest = session.scalar(
+        select(ContextManifest).where(
+            ContextManifest.id == manifest_id,
+            ContextManifest.owner_id == user.id,
+        )
+    )
+    if manifest is None:
+        return None
+    region_count = (
+        session.scalar(
+            select(func.count(ContextManifestEntry.id)).where(
+                ContextManifestEntry.context_manifest_id == manifest.id,
+                ContextManifestEntry.selected.is_(True),
+            )
+        )
+        or 0
+    )
+    return ContextManifestSummary(
+        id=manifest.id,
+        source_version_id=manifest.source_version_id,
+        source_pack_version_id=manifest.source_pack_version_id,
+        route=manifest.route,
+        context_profile=manifest.context_profile,
+        state=manifest.state,
+        extraction_coverage=manifest.extraction_coverage,
+        estimated_context_units=manifest.estimated_context_units,
+        context_budget_units=manifest.context_budget_units,
+        region_count=region_count,
+        warnings=manifest.warnings,
+        created_at=manifest.created_at,
+    )
+
+
+def _claim_scan_summary(
+    session: Session, user: User, artifact_version_id: int
+) -> ClaimScanSummary | None:
+    scan = session.scalar(
+        select(ClaimScan).where(
+            ClaimScan.artifact_version_id == artifact_version_id,
+            ClaimScan.owner_id == user.id,
+        )
+    )
+    if scan is None:
+        return None
+    coverage = claim_scan_coverage(session, scan)
+    return ClaimScanSummary(
+        id=scan.id,
+        status=cast(
+            Literal["pending", "running", "complete", "failed", "needs_review"], scan.status
+        ),
+        total_batches=int(coverage["total_batches"]),
+        completed_batches=int(coverage["completed_batches"]),
+        failed_batches=int(coverage["failed_batches"]),
+        needs_review_batches=int(coverage["needs_review_batches"]),
+        claims_found=int(coverage["claims_found"]),
     )
 
 

@@ -13,6 +13,7 @@ from app.artifact_generators import (
     generate_artifact,
     generate_targeted_update,
 )
+from app.context_planning import ContextPlanNeedsReview, context_text_from_manifest
 from app.database import create_database_engine, create_session_factory
 from app.domain.transformation import OutputType
 from app.executive_summary import ExecutiveSummaryGenerationError
@@ -27,6 +28,7 @@ from app.job_queue import (
 from app.models import (
     ArtifactRun,
     ArtifactVersion,
+    ContextManifest,
     Job,
     JobAttempt,
     SourceVersion,
@@ -125,6 +127,7 @@ def _persist_success(
                     artifact_run_id=artifact_run.id,
                     version_number=(latest_version_number or 0) + 1,
                     source_version_id=job.source_version_id,
+                    context_manifest_id=job.context_manifest_id,
                     content=content,
                     provider=provider_name,
                     model=model_name,
@@ -155,6 +158,7 @@ def _artifact_inputs(
     ArtifactVersion | None,
     SourceVersion | None,
     str | None,
+    str,
 ]:
     with session_factory() as session:
         job = session.get(Job, claim.job_id)
@@ -169,6 +173,14 @@ def _artifact_inputs(
         source_version = session.get(SourceVersion, job.source_version_id)
         if artifact_run is None or transformation is None or source_version is None:
             raise RuntimeError("Claimed job input is unavailable")
+        if job.context_manifest_id is None:
+            # Compatibility for jobs that were already persisted before this migration.
+            context_source_text = source_version.source_text
+        else:
+            manifest = session.get(ContextManifest, job.context_manifest_id)
+            if manifest is None or manifest.owner_id != transformation.owner_id:
+                raise RuntimeError("Claimed job context manifest is unavailable")
+            context_source_text = context_text_from_manifest(session, manifest)
         base_version = (
             session.get(ArtifactVersion, job.base_artifact_version_id)
             if job.base_artifact_version_id is not None
@@ -207,6 +219,7 @@ def _artifact_inputs(
             base_version,
             prior_source,
             changed_material,
+            context_source_text,
         )
 
 
@@ -229,16 +242,15 @@ async def process_one_job(
         (
             artifact_run,
             transformation,
-            source_version,
+            _source_version,
             base_version,
             prior_source,
             changed_material,
+            context_source_text,
         ) = _artifact_inputs(session_factory, claim)
         output_type = OutputType(artifact_run.output_type)
         if base_version is None:
-            request = build_artifact_request(
-                transformation, source_version.source_text, output_type
-            )
+            request = build_artifact_request(transformation, context_source_text, output_type)
             draft = await generate_artifact(
                 provider,
                 request,
@@ -251,12 +263,15 @@ async def process_one_job(
             request = build_targeted_update_request(
                 transformation,
                 output_type,
-                source_version.source_text,
+                context_source_text,
                 prior_source.source_text,
                 changed_material,
                 base_version.content,
             )
             draft = await generate_targeted_update(provider, request, output_type)
+    except ContextPlanNeedsReview:
+        _record_failure(session_factory, claim, "context_requires_review")
+        return True
     except (ValueError, TypeError, ExecutiveSummaryGenerationError):
         _record_failure(session_factory, claim, "invalid_output")
         return True

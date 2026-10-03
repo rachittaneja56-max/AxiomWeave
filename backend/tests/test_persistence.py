@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -16,15 +17,22 @@ from app.models import (
     ArtifactVersion,
     AuthSession,
     Base,
+    ContextManifest,
+    ContextManifestEntry,
     Job,
     JobAttempt,
     Source,
+    SourceAsset,
     SourcePack,
+    SourcePackMembership,
+    SourcePackVersion,
+    SourceRegion,
     SourceSegment,
     SourceVersion,
     TransformationRun,
     User,
     source_content_hash,
+    utc_now,
 )
 from app.source_versions import create_source_version
 
@@ -49,6 +57,15 @@ EXPECTED_TABLES = {
     "evidence_links",
     "discrepancy_findings",
     "login_throttles",
+    "knowledge_assertions",
+    "knowledge_relations",
+    "claim_scans",
+    "claim_batches",
+    "material_claims",
+    "context_manifests",
+    "context_manifest_entries",
+    "text_embedding_profiles",
+    "region_embeddings",
 }
 
 
@@ -110,7 +127,7 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert set(inspector.get_table_names()) == EXPECTED_TABLES | {"alembic_version"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "d9a32ce14f60"
+        assert revision == "f2c6a19b5d40"
         asset_columns = {
             column["name"]: column for column in inspector.get_columns("source_assets")
         }
@@ -155,18 +172,21 @@ def test_durable_jobs_migration_preserves_populated_current_sqlite_data(
         )
         session.add(artifact_run)
         session.flush()
-        artifact_version = ArtifactVersion(
-            artifact_run_id=artifact_run.id,
-            version_number=1,
-            source_version_id=source_version.id,
-            content="Existing immutable artifact.",
+        artifact_version_id = session.scalar(
+            text(
+                "INSERT INTO artifact_versions "
+                "(artifact_run_id, version_number, source_version_id, content, "
+                "review_status, created_at) "
+                "VALUES (:run_id, 1, :source_id, 'Existing immutable artifact.', "
+                "'draft', CURRENT_TIMESTAMP) RETURNING id"
+            ),
+            {"run_id": artifact_run.id, "source_id": source_version.id},
         )
-        session.add(artifact_version)
+        assert artifact_version_id is not None
         session.commit()
         source_version_id = source_version.id
         source_pack_id = source_pack.id
         artifact_run_id = artifact_run.id
-        artifact_version_id = artifact_version.id
     engine.dispose()
 
     command.upgrade(config, "head")
@@ -184,6 +204,103 @@ def test_durable_jobs_migration_preserves_populated_current_sqlite_data(
             assert list(session.scalars(select(JobAttempt))) == []
     finally:
         upgraded_engine.dispose()
+
+
+def test_phase_two_sqlite_migration_enforces_context_manifest_immutability(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'phase-two-immutable.sqlite3').as_posix()}"
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "head")
+    engine = create_database_engine(database_url)
+    factory = create_session_factory(engine)
+    try:
+        with factory() as session:
+            owner = User(username="sqlite_manifest_owner", password_hash="!disabled!")
+            session.add(owner)
+            session.flush()
+            source = Source(owner_id=owner.id, title="Immutable source")
+            session.add(source)
+            session.flush()
+            source_version = create_source_version(session, source, "Immutable source text.")
+            pack_version = session.scalar(
+                select(SourcePackVersion).where(
+                    SourcePackVersion.source_version_id == source_version.id
+                )
+            )
+            assert pack_version is not None
+            pack = session.get(SourcePack, pack_version.source_pack_id)
+            membership = session.scalar(
+                select(SourcePackMembership).where(
+                    SourcePackMembership.source_pack_version_id == pack_version.id
+                )
+            )
+            assert pack is not None and membership is not None
+            asset = session.get(SourceAsset, membership.source_asset_id)
+            region = session.scalar(
+                select(SourceRegion).where(
+                    SourceRegion.source_asset_id == membership.source_asset_id
+                )
+            )
+            assert asset is not None and region is not None and region.text is not None
+            manifest = ContextManifest(
+                owner_id=owner.id,
+                source_pack_id=pack.id,
+                source_pack_version_id=pack_version.id,
+                source_version_id=source_version.id,
+                task_class="artifact_generation",
+                artifact_family="advisory",
+                route="R0_FULL_CONTEXT",
+                context_profile="r0_full_context",
+                context_profile_version=1,
+                query_construction_version=1,
+                budget_policy_version="context-chars-v1",
+                estimation_method="unicode-codepoint-count-v1",
+                context_budget_units=20_000,
+                available_input_budget=25_000,
+                estimated_context_units=len(region.text),
+                reserved_margin=5_000,
+                extraction_coverage="complete",
+                state="ready",
+                warnings=[],
+                created_at=utc_now(),
+            )
+            session.add(manifest)
+            session.flush()
+            entry = ContextManifestEntry(
+                context_manifest_id=manifest.id,
+                source_region_id=region.id,
+                source_asset_id=asset.id,
+                membership_id=membership.id,
+                role="PRIMARY",
+                selected=True,
+                locator=region.locator,
+                content_hash=sha256(region.text.encode("utf-8")).hexdigest(),
+                estimated_context_units=len(region.text),
+                reason="r0_all_eligible_factual_regions",
+                profile_metadata={"profile": "r0_full_context", "version": 1},
+            )
+            session.add(entry)
+            session.commit()
+
+            with pytest.raises(IntegrityError, match="Context manifests are immutable"):
+                session.execute(
+                    text("UPDATE context_manifests SET route = 'R1' WHERE id = :id"),
+                    {"id": manifest.id},
+                )
+                session.commit()
+            session.rollback()
+            with pytest.raises(IntegrityError, match="Context manifests are immutable"):
+                session.execute(
+                    text("UPDATE context_manifest_entries SET locator = 'changed' WHERE id = :id"),
+                    {"id": entry.id},
+                )
+                session.commit()
+            session.rollback()
+    finally:
+        engine.dispose()
 
 
 def test_extraction_contract_backfill_marks_only_known_methods_complete(tmp_path: Path) -> None:

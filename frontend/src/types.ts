@@ -106,6 +106,33 @@ export type DashboardItem = {
 export type ReviewArtifactVersion = GeneratedArtifactVersion & {
   review_status: ReviewStatus;
   created_at: string;
+  context_manifest: ContextManifestSummary | null;
+  claim_scan: ClaimScanSummary | null;
+};
+
+export type ContextManifestSummary = {
+  id: number;
+  source_version_id: number;
+  source_pack_version_id: number;
+  route: string;
+  context_profile: string;
+  state: string;
+  extraction_coverage: string;
+  estimated_context_units: number;
+  context_budget_units: number;
+  region_count: number;
+  warnings: string[];
+  created_at: string;
+};
+
+export type ClaimScanSummary = {
+  id: number;
+  status: "pending" | "running" | "complete" | "failed" | "needs_review";
+  total_batches: number;
+  completed_batches: number;
+  failed_batches: number;
+  needs_review_batches: number;
+  claims_found: number;
 };
 
 export type ReviewArtifactRun = {
@@ -113,6 +140,7 @@ export type ReviewArtifactRun = {
   output_type: OutputType;
   status: ArtifactRunStatus;
   versions: ReviewArtifactVersion[];
+  context_manifest: ContextManifestSummary | null;
 };
 
 export type TransformationDetail = {

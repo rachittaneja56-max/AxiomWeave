@@ -44,7 +44,7 @@ jobs:
       - name: Verify PostgreSQL integration URL
         run: test -n "$AXIOMWEAVE_TEST_POSTGRES_URL"
       - name: Run PostgreSQL integration tests
-        run: uv run pytest tests/test_postgres_migrations.py
+        run: uv run pytest -s tests/test_postgres_migrations.py
         working-directory: backend
       - run: uv run pytest
         working-directory: backend

@@ -18,6 +18,8 @@ Teams often rewrite the same authoritative material for several audiences and fo
 - Inspect exact source quotations and unsupported claims. Compare sibling outputs for possible discrepancies, then dismiss a finding without changing artifact text.
 - Save source V2, inspect a deterministic paragraph diff and potentially affected evidence, run a targeted update, or regenerate fully from V2.
 - Copy artifact text or download Markdown. Presentations also export as editable PowerPoint slides with speaker notes.
+- Queue generation with an immutable context manifest. Sources that fit the budget use R0 full context; PostgreSQL FTS remains an inspectable candidate path and is not the default.
+- Scan material claims in bounded, resumable batches with visible coverage. Candidate assertions retain exact source provenance and stay marked for review.
 
 ## Architecture
 
@@ -104,6 +106,14 @@ docker stop axiomweave-postgres-test
 ```
 
 The PostgreSQL tests create uniquely named databases, apply the migration chain, exercise ORM persistence, and verify that pgvector 0.8.6 can be enabled. The disposable local test instance uses trust authentication and must remain bound to loopback.
+
+## Phase 2 retrieval and evidence
+
+Every new generation Job records the exact source pack version, selected factual regions, role, locator, content hash, budget estimate, coverage state, and warnings in an immutable `ContextManifest`. The worker reconstructs context from that manifest instead of rerunning selection. R0 includes all eligible PRIMARY and SUPPORTING text when it fits the versioned 20,000-character context budget; partial extraction stays visible, and over-budget work waits for review because no R1 profile is admitted for generation.
+
+PostgreSQL native full-text search uses the `simple` configuration and is called PostgreSQL FTS, not BM25. On the four-pack, six-task fixture, top-2 FTS recalled 2/7 required regions and 1/4 qualifier regions, missing four tasks. It used 117 of R0's 785 source-region characters, an 85.1% reduction, but remains an unpromoted candidate. Exact pgvector and reciprocal-rank fusion are mechanics-only; no semantic embedding profile is selected. See [`backend/evals/retrieval/README.md`](backend/evals/retrieval/README.md) for denominators, latency, and limitations.
+
+Claim scans have no global claim-count ceiling. Their visible completion state derives from every persisted batch. An exact source quote proves only that the quotation occurs in that source; a `KnowledgeAssertion` is a provenance-bearing candidate, not a verified fact.
 
 ## Scope and limitations
 

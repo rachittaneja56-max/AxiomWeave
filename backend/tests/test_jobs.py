@@ -16,15 +16,16 @@ from app.job_worker import process_one_job
 from app.models import (
     ArtifactRun,
     ArtifactVersion,
+    ContextManifest,
     Job,
     JobAttempt,
     Source,
     SourceVersion,
     TransformationRun,
     User,
-    source_content_hash,
     utc_now,
 )
+from app.source_versions import SourceAssetInput, create_source_pack_version, create_source_version
 
 
 class FakeProvider:
@@ -50,14 +51,7 @@ def _queued_job(
         source = Source(owner_id=owner.id, title="Job source")
         session.add(source)
         session.flush()
-        source_version = SourceVersion(
-            source_id=source.id,
-            version_number=1,
-            source_text=source_text,
-            content_hash=source_content_hash(source_text),
-        )
-        session.add(source_version)
-        session.flush()
+        source_version = create_source_version(session, source, source_text)
         transformation = TransformationRun(
             owner_id=owner.id,
             source_version_id=source_version.id,
@@ -241,6 +235,19 @@ def test_queued_job_survives_request_session_and_uses_source_snapshot(
 ) -> None:
     _client, _engine, factory = auth_database
     job_id, artifact_run_id, source_version_id = _queued_job(factory, "Exact source V1")
+    with factory() as session:
+        source_version = session.get(SourceVersion, source_version_id)
+        assert source_version is not None
+        source = session.get(Source, source_version.source_id)
+        assert source is not None
+        v2 = create_source_version(
+            session,
+            source,
+            "Different source V2 created after the job was queued.",
+            parent_source_version_id=source_version.id,
+        )
+        session.commit()
+        v2_id = v2.id
     provider = FakeProvider()
 
     assert asyncio.run(process_one_job(factory, provider, "fresh-worker")) is True
@@ -251,8 +258,21 @@ def test_queued_job_survives_request_session_and_uses_source_snapshot(
             select(ArtifactVersion).where(ArtifactVersion.artifact_run_id == artifact_run_id)
         )
         assert job is not None and job.status == "succeeded"
+        assert job.context_manifest_id is not None
         assert version is not None and version.source_version_id == source_version_id
+        assert version.source_version_id != v2_id
+        assert version.context_manifest_id == job.context_manifest_id
         assert version.content == "A generated artifact."
+        manifest = session.get(ContextManifest, job.context_manifest_id)
+        assert manifest is not None
+        assert manifest.source_version_id == source_version_id
+        assert manifest.route == "R0_FULL_CONTEXT"
+        assert manifest.state == "ready"
+        assert manifest.estimated_context_units <= manifest.context_budget_units
+        manifest.route = "R1_CHANGED_AFTER_QUEUE"
+        with pytest.raises(ValueError, match="immutable"):
+            session.flush()
+        session.rollback()
 
 
 def test_unconfigured_worker_fails_safely_without_an_artifact_version(
@@ -274,3 +294,72 @@ def test_unconfigured_worker_fails_safely_without_an_artifact_version(
         assert job.failure_code == "generation_not_configured"
         assert attempt is not None and attempt.failure_code == "generation_not_configured"
         assert versions == []
+
+
+def test_over_budget_context_is_recorded_and_generation_is_not_silently_truncated(
+    auth_database: tuple[Any, Engine, sessionmaker[Session]],
+) -> None:
+    _client, _engine, factory = auth_database
+    job_id, artifact_run_id, _source_version_id = _queued_job(factory, "x" * 20_000)
+    provider = FakeProvider()
+
+    assert asyncio.run(process_one_job(factory, provider, "bounded-worker")) is True
+    assert provider.requests == []
+    with factory() as session:
+        job = session.get(Job, job_id)
+        manifest = session.get(ContextManifest, job.context_manifest_id if job else None)
+        versions = list(
+            session.scalars(
+                select(ArtifactVersion).where(ArtifactVersion.artifact_run_id == artifact_run_id)
+            )
+        )
+        assert job is not None and job.status == "failed"
+        assert job.failure_code == "context_requires_review"
+        assert manifest is not None and manifest.state == "needs_review"
+        assert "context_over_budget_no_admitted_r1_profile" in manifest.warnings
+        assert manifest.estimated_context_units > manifest.context_budget_units
+        assert versions == []
+
+
+def test_partial_source_coverage_remains_visible_in_r0_manifest(
+    auth_database: tuple[Any, Engine, sessionmaker[Session]],
+) -> None:
+    _client, _engine, factory = auth_database
+    with factory() as session:
+        owner = User(username="partial-context-owner", password_hash="!test!")
+        session.add(owner)
+        session.flush()
+        source_write = create_source_pack_version(
+            session,
+            owner.id,
+            "Partially extracted source remains usable under compatibility policy.",
+            asset_input=SourceAssetInput(extraction_coverage="partial"),
+        )
+        transformation = TransformationRun(
+            owner_id=owner.id,
+            source_version_id=source_write.source_version.id,
+            supporting_context="",
+            audience="Readers",
+            tone="Clear",
+            language="English",
+            detail_level="standard",
+            objective="Inform",
+            style="Plain",
+            selected_output_types=["advisory"],
+        )
+        session.add(transformation)
+        session.flush()
+        artifact_run = ArtifactRun(
+            transformation_run_id=transformation.id,
+            output_type="advisory",
+            status="pending",
+        )
+        session.add(artifact_run)
+        session.flush()
+        job = enqueue_artifact_job(session, artifact_run, source_write.source_version)
+        session.commit()
+        manifest = session.get(ContextManifest, job.context_manifest_id)
+        assert manifest is not None
+        assert manifest.state == "ready"
+        assert manifest.extraction_coverage == "partial"
+        assert any(warning.startswith("partial_extraction:") for warning in manifest.warnings)

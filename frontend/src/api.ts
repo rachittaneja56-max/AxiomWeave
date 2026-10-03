@@ -106,6 +106,10 @@ export const api = {
       "/api/artifact-versions/" + versionId + "/evidence/analyze",
       jsonInit("POST", { source_version_id: sourceVersionId }),
     ),
+  resumeClaimScan: (scanId: number) =>
+    requestJson("/api/claim-scans/" + scanId + "/resume", {
+      method: "POST",
+    }),
   analyzeDiscrepancy: (versionAId: number, versionBId: number) =>
     requestJson(
       "/api/discrepancies/analyze",

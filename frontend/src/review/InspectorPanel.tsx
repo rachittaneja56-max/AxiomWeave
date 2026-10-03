@@ -27,6 +27,7 @@ function EvidencePanel({
   busy,
   onLoad,
   onAnalyze,
+  onResumeClaimScan,
   onViewSource,
 }: {
   version: ReviewArtifactVersion | null;
@@ -34,6 +35,7 @@ function EvidencePanel({
   busy: boolean;
   onLoad: () => void;
   onAnalyze: () => void;
+  onResumeClaimScan: (scanId: number) => void;
   onViewSource: (sourceVersionId: number, quote: string | null) => void;
 }) {
   if (!version) {
@@ -54,6 +56,75 @@ function EvidencePanel({
           <h3>Source support</h3>
           <p>Review the passages linked to this artifact’s claims.</p>
         </div>
+      </div>
+      <div className="context-coverage" aria-label="Context and claim coverage">
+        <section>
+          <strong>Context used</strong>
+          {version.context_manifest ? (
+            <>
+              <p>
+                {version.context_manifest.route === "R0_FULL_CONTEXT"
+                  ? "Full source context (R0)"
+                  : "Retrieved candidate (R1)"}
+                {" · Pack V"}
+                {version.context_manifest.source_pack_version_id}
+                {" · "}
+                {version.context_manifest.region_count} regions
+              </p>
+              <p>
+                {version.context_manifest.extraction_coverage === "partial"
+                  ? "Partial extraction"
+                  : "Extraction marked complete"}
+                {" · "}
+                {version.context_manifest.estimated_context_units.toLocaleString()}
+                {" / "}
+                {version.context_manifest.context_budget_units.toLocaleString()}
+                {" character units"}
+              </p>
+              {version.context_manifest.warnings.length > 0 && (
+                <p className="context-coverage__warning">
+                  Context warning:{" "}
+                  {version.context_manifest.warnings.join(", ")}
+                </p>
+              )}
+            </>
+          ) : (
+            <p>No context manifest was stored for this historical version.</p>
+          )}
+        </section>
+        <section>
+          <strong>Claim coverage</strong>
+          {version.claim_scan ? (
+            <>
+              <p>
+                {version.claim_scan.status === "complete"
+                  ? "Complete"
+                  : version.claim_scan.status === "running"
+                    ? "In progress"
+                    : "Needs review"}
+                {" · "}
+                {version.claim_scan.completed_batches.toLocaleString()}
+                {" / "}
+                {version.claim_scan.total_batches.toLocaleString()}
+                {" batches · "}
+                {version.claim_scan.claims_found.toLocaleString()}
+                {" material claims"}
+              </p>
+              {version.claim_scan.status !== "complete" && (
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => onResumeClaimScan(version.claim_scan!.id)}
+                  disabled={busy}
+                >
+                  Retry incomplete batches
+                </button>
+              )}
+            </>
+          ) : (
+            <p>No material-claim scan has been run for this version.</p>
+          )}
+        </section>
       </div>
       <div className="inspector-actions">
         <button
@@ -96,7 +167,7 @@ function EvidencePanel({
                 {link.status === "linked" ? (
                   <>
                     <span className="evidence-status evidence-status--linked">
-                      Linked to Source V{version.source_version_number}
+                      Quote located in Source V{version.source_version_number}
                     </span>
                     {quote && (
                       <blockquote className="evidence-quote">
@@ -122,7 +193,7 @@ function EvidencePanel({
                     <span>
                       <strong>Source support not located</strong>
                       <small>
-                        No exact supporting passage was verified for this claim.
+                        No exact quotation was located for this claim.
                       </small>
                     </span>
                   </div>
@@ -433,6 +504,7 @@ export function InspectorPanel({
   busy,
   onLoadEvidence,
   onAnalyzeEvidence,
+  onResumeClaimScan,
   onViewSource,
   onCheckWarnings,
   onDismissWarning,
@@ -453,6 +525,7 @@ export function InspectorPanel({
   busy: boolean;
   onLoadEvidence: () => void;
   onAnalyzeEvidence: () => void;
+  onResumeClaimScan: (scanId: number) => void;
   onViewSource: (sourceVersionId: number, quote: string | null) => void;
   onCheckWarnings: () => void;
   onDismissWarning: (finding: DiscrepancyFinding) => void;
@@ -523,6 +596,7 @@ export function InspectorPanel({
             busy={busy}
             onLoad={onLoadEvidence}
             onAnalyze={onAnalyzeEvidence}
+            onResumeClaimScan={onResumeClaimScan}
             onViewSource={onViewSource}
           />
         )}

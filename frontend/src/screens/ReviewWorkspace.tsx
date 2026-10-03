@@ -369,8 +369,24 @@ export function ReviewWorkspace({
         ...current,
         [version.id]: body as EvidenceLink[],
       }));
+      await refreshReview();
     } catch {
       setActionError("Claims could not be analyzed. Please retry.");
+      setReload((value) => value + 1);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resumeClaimScan(scanId: number) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.resumeClaimScan(scanId);
+      await refreshReview();
+    } catch {
+      setActionError("Incomplete claim batches could not be resumed.");
+      setReload((value) => value + 1);
     } finally {
       setBusy(false);
     }
@@ -563,6 +579,26 @@ export function ReviewWorkspace({
             {detail.artifact_runs.length === 1 ? "" : "s"}
           </span>
         </div>
+        {activeArtifact?.context_manifest && (
+          <span
+            className={
+              activeArtifact.context_manifest.state === "needs_review"
+                ? "review-context__plan review-context__plan--warning"
+                : "review-context__plan"
+            }
+            role="status"
+          >
+            Latest context plan: {activeArtifact.context_manifest.route}
+            {" · Pack V"}
+            {activeArtifact.context_manifest.source_pack_version_id}
+            {" · "}
+            {activeArtifact.context_manifest.region_count} regions
+            {activeArtifact.context_manifest.state === "needs_review" &&
+              " · Needs review"}
+            {activeArtifact.context_manifest.extraction_coverage ===
+              "partial" && " · Partial extraction"}
+          </span>
+        )}
         <StatusBadge
           status={
             detail.status === "Partial Failure"
@@ -712,6 +748,7 @@ export function ReviewWorkspace({
                   onAnalyzeEvidence={() =>
                     selectedVersion && void analyzeEvidence(selectedVersion)
                   }
+                  onResumeClaimScan={(scanId) => void resumeClaimScan(scanId)}
                   onViewSource={(sourceVersionId, quote) =>
                     void openSourceViewer(sourceVersionId, quote)
                   }

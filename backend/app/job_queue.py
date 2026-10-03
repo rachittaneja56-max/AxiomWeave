@@ -4,7 +4,16 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import exists, func, select, update
 from sqlalchemy.orm import Session, aliased
 
-from app.models import ArtifactRun, Job, JobAttempt, JobDependency, SourceVersion, utc_now
+from app.context_planning import plan_context_manifest
+from app.models import (
+    ArtifactRun,
+    Job,
+    JobAttempt,
+    JobDependency,
+    SourceVersion,
+    TransformationRun,
+    utc_now,
+)
 
 MODEL_IO = "model_io"
 ARTIFACT_GENERATION = "artifact_generation"
@@ -24,10 +33,15 @@ def enqueue_artifact_job(
     source_version: SourceVersion,
     base_artifact_version_id: int | None = None,
 ) -> Job:
+    transformation = session.get(TransformationRun, artifact_run.transformation_run_id)
+    if transformation is None:
+        raise ValueError("An artifact job requires its transformation run")
+    manifest = plan_context_manifest(session, transformation, artifact_run, source_version)
     job = Job(
         artifact_run_id=artifact_run.id,
         source_version_id=source_version.id,
         base_artifact_version_id=base_artifact_version_id,
+        context_manifest_id=manifest.id,
         job_type=ARTIFACT_GENERATION,
         resource_class=MODEL_IO,
         status="queued",

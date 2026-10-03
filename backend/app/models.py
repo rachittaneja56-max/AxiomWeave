@@ -11,9 +11,43 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     text,
 )
+from sqlalchemy.engine import Dialect
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import UserDefinedType
+
+
+class Vector(UserDefinedType[list[float]]):
+    """PostgreSQL pgvector value with a SQLite TEXT representation for local tests."""
+
+    cache_ok = True
+
+    def get_col_spec(self, **_kw: object) -> str:
+        return "vector"
+
+    def bind_processor(self, dialect: Dialect):
+        def process(value: list[float] | None) -> str | None:
+            if value is None:
+                return None
+            return "[" + ",".join(format(float(item), ".9g") for item in value) + "]"
+
+        return process
+
+    def result_processor(self, dialect: Dialect, coltype: object):
+        def process(value: str | None) -> list[float] | None:
+            if value is None:
+                return None
+            return [float(item) for item in value.strip("[]").split(",") if item]
+
+        return process
+
+
+@compiles(Vector, "sqlite")
+def _compile_vector_sqlite(_type: Vector, _compiler: object, **_kw: object) -> str:
+    return "TEXT"
 
 
 def utc_now() -> datetime:
@@ -325,6 +359,9 @@ class ArtifactVersion(Base):
     source_version_id: Mapped[int] = mapped_column(
         ForeignKey("source_versions.id", ondelete="RESTRICT"), nullable=False, index=True
     )
+    context_manifest_id: Mapped[int | None] = mapped_column(
+        ForeignKey("context_manifests.id", ondelete="RESTRICT"), index=True
+    )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     provider: Mapped[str | None] = mapped_column(String(120))
     model: Mapped[str | None] = mapped_column(String(120))
@@ -374,6 +411,9 @@ class Job(Base):
     )
     base_artifact_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("artifact_versions.id", ondelete="RESTRICT")
+    )
+    context_manifest_id: Mapped[int | None] = mapped_column(
+        ForeignKey("context_manifests.id", ondelete="RESTRICT"), index=True
     )
     job_type: Mapped[str] = mapped_column(String(40), nullable=False, default="artifact_generation")
     resource_class: Mapped[str] = mapped_column(String(40), nullable=False, default="model_io")
@@ -444,6 +484,15 @@ class EvidenceLink(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    claim_batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("claim_batches.id", ondelete="RESTRICT")
+    )
+    material_claim_id: Mapped[int | None] = mapped_column(
+        ForeignKey("material_claims.id", ondelete="RESTRICT"), unique=True
+    )
+    knowledge_assertion_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_assertions.id", ondelete="RESTRICT"), unique=True
+    )
     artifact_version_id: Mapped[int] = mapped_column(
         ForeignKey("artifact_versions.id", ondelete="RESTRICT"), nullable=False, index=True
     )
@@ -494,3 +543,335 @@ class DiscrepancyFinding(Base):
     explanation: Mapped[str] = mapped_column(Text, nullable=False)
     review_status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class KnowledgeAssertion(Base):
+    """A candidate proposition whose exact source provenance is recorded mechanically."""
+
+    __tablename__ = "knowledge_assertions"
+    __table_args__ = (
+        CheckConstraint(
+            "provenance_state IN ('validated', 'unresolved')",
+            name="ck_knowledge_assertions_provenance_state",
+        ),
+        CheckConstraint(
+            "review_state IN ('needs_review', 'reviewed')",
+            name="ck_knowledge_assertions_review_state",
+        ),
+        CheckConstraint(
+            "(quote_start IS NULL AND quote_end IS NULL) OR "
+            "(quote_start >= 0 AND quote_end >= quote_start)",
+            name="ck_knowledge_assertions_quote_offsets",
+        ),
+        UniqueConstraint(
+            "source_region_id",
+            "normalized_hash",
+            "extraction_profile",
+            "extraction_profile_version",
+            name="uq_knowledge_assertions_exact_input",
+        ),
+        Index("ix_knowledge_assertions_owner_pack", "owner_id", "source_pack_version_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_pack_version_id: Mapped[int] = mapped_column(
+        ForeignKey("source_pack_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_region_id: Mapped[int] = mapped_column(
+        ForeignKey("source_regions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_quote: Mapped[str | None] = mapped_column(Text)
+    quote_start: Mapped[int | None] = mapped_column(Integer)
+    quote_end: Mapped[int | None] = mapped_column(Integer)
+    proposition: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject: Mapped[str | None] = mapped_column(Text)
+    predicate: Mapped[str | None] = mapped_column(Text)
+    object_value: Mapped[str | None] = mapped_column(Text)
+    date_value: Mapped[str | None] = mapped_column(String(80))
+    unit: Mapped[str | None] = mapped_column(String(80))
+    qualifier: Mapped[str | None] = mapped_column(Text)
+    attribution: Mapped[str | None] = mapped_column(Text)
+    polarity: Mapped[str | None] = mapped_column(String(24))
+    extraction_profile: Mapped[str] = mapped_column(String(80), nullable=False)
+    extraction_profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    provenance_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    review_state: Mapped[str] = mapped_column(String(20), nullable=False, default="needs_review")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class KnowledgeRelation(Base):
+    __tablename__ = "knowledge_relations"
+    __table_args__ = (
+        CheckConstraint(
+            "source_assertion_id != target_assertion_id", name="ck_knowledge_relations_distinct"
+        ),
+        CheckConstraint(
+            "review_state IN ('needs_review', 'reviewed')",
+            name="ck_knowledge_relations_review_state",
+        ),
+        Index("ix_knowledge_relations_owner", "owner_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_assertion_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_assertions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    target_assertion_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_assertions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    relation_kind: Mapped[str] = mapped_column(String(80), nullable=False)
+    extraction_profile: Mapped[str] = mapped_column(String(80), nullable=False)
+    extraction_profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    review_state: Mapped[str] = mapped_column(String(20), nullable=False, default="needs_review")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ClaimScan(Base):
+    __tablename__ = "claim_scans"
+    __table_args__ = (
+        UniqueConstraint("artifact_version_id", name="uq_claim_scans_artifact_version"),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'complete', 'failed', 'needs_review')",
+            name="ck_claim_scans_status",
+        ),
+        Index("ix_claim_scans_owner", "owner_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    artifact_version_id: Mapped[int] = mapped_column(
+        ForeignKey("artifact_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    source_version_id: Mapped[int] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    extraction_profile: Mapped[str] = mapped_column(String(80), nullable=False)
+    extraction_profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ClaimBatch(Base):
+    __tablename__ = "claim_batches"
+    __table_args__ = (
+        UniqueConstraint("claim_scan_id", "ordinal", name="uq_claim_batches_scan_ordinal"),
+        CheckConstraint("ordinal > 0", name="ck_claim_batches_positive_ordinal"),
+        CheckConstraint(
+            "text_start >= 0 AND text_end >= text_start", name="ck_claim_batches_text_range"
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_claim_batches_attempt_count"),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'complete', 'failed', 'needs_review')",
+            name="ck_claim_batches_status",
+        ),
+        Index("ix_claim_batches_scan_status", "claim_scan_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    claim_scan_id: Mapped[int] = mapped_column(
+        ForeignKey("claim_scans.id", ondelete="RESTRICT"), nullable=False
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    text_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    text_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    extraction_profile: Mapped[str] = mapped_column(String(80), nullable=False)
+    extraction_profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MaterialClaim(Base):
+    __tablename__ = "material_claims"
+    __table_args__ = (
+        CheckConstraint(
+            "artifact_start >= 0 AND artifact_end >= artifact_start",
+            name="ck_material_claims_offsets",
+        ),
+        UniqueConstraint(
+            "claim_batch_id",
+            "artifact_start",
+            "artifact_end",
+            "normalized_hash",
+            name="uq_material_claims_exact_span",
+        ),
+        Index("ix_material_claims_scan", "claim_scan_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    claim_scan_id: Mapped[int] = mapped_column(
+        ForeignKey("claim_scans.id", ondelete="RESTRICT"), nullable=False
+    )
+    claim_batch_id: Mapped[int] = mapped_column(
+        ForeignKey("claim_batches.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    knowledge_assertion_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_assertions.id", ondelete="RESTRICT"), unique=True
+    )
+    artifact_quote: Mapped[str] = mapped_column(Text, nullable=False)
+    artifact_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    artifact_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    proposition: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    claim_type: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ContextManifest(Base):
+    __tablename__ = "context_manifests"
+    __table_args__ = (
+        CheckConstraint("context_budget_units >= 0", name="ck_context_manifests_budget"),
+        CheckConstraint("estimated_context_units >= 0", name="ck_context_manifests_estimated"),
+        CheckConstraint("available_input_budget >= 0", name="ck_context_manifests_available"),
+        CheckConstraint("reserved_margin >= 0", name="ck_context_manifests_reserved"),
+        Index("ix_context_manifests_owner", "owner_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_pack_id: Mapped[int] = mapped_column(
+        ForeignKey("source_packs.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_pack_version_id: Mapped[int] = mapped_column(
+        ForeignKey("source_pack_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_version_id: Mapped[int] = mapped_column(
+        ForeignKey("source_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    task_class: Mapped[str] = mapped_column(String(40), nullable=False)
+    artifact_family: Mapped[str] = mapped_column(String(40), nullable=False)
+    route: Mapped[str] = mapped_column(String(40), nullable=False)
+    context_profile: Mapped[str] = mapped_column(String(80), nullable=False)
+    context_profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    query_construction_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    query_text: Mapped[str | None] = mapped_column(Text)
+    budget_policy_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    estimation_method: Mapped[str] = mapped_column(String(80), nullable=False)
+    context_budget_units: Mapped[int] = mapped_column(Integer, nullable=False)
+    available_input_budget: Mapped[int] = mapped_column(Integer, nullable=False)
+    estimated_context_units: Mapped[int] = mapped_column(Integer, nullable=False)
+    reserved_margin: Mapped[int] = mapped_column(Integer, nullable=False)
+    extraction_coverage: Mapped[str] = mapped_column(String(24), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    warnings: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ContextManifestEntry(Base):
+    __tablename__ = "context_manifest_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "context_manifest_id", "source_region_id", name="uq_context_manifest_region"
+        ),
+        CheckConstraint(
+            "estimated_context_units >= 0", name="ck_context_manifest_entries_estimated"
+        ),
+        CheckConstraint(
+            "candidate_rank IS NULL OR candidate_rank > 0", name="ck_context_manifest_entries_rank"
+        ),
+        CheckConstraint(
+            "lexical_rank IS NULL OR lexical_rank > 0",
+            name="ck_context_manifest_entries_lexical_rank",
+        ),
+        CheckConstraint(
+            "vector_rank IS NULL OR vector_rank > 0", name="ck_context_manifest_entries_vector_rank"
+        ),
+        CheckConstraint(
+            "fused_rank IS NULL OR fused_rank > 0", name="ck_context_manifest_entries_fused_rank"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    context_manifest_id: Mapped[int] = mapped_column(
+        ForeignKey("context_manifests.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_region_id: Mapped[int] = mapped_column(
+        ForeignKey("source_regions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_asset_id: Mapped[int] = mapped_column(
+        ForeignKey("source_assets.id", ondelete="RESTRICT"), nullable=False
+    )
+    membership_id: Mapped[int] = mapped_column(
+        ForeignKey("source_pack_memberships.id", ondelete="RESTRICT"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(24), nullable=False)
+    selected: Mapped[bool] = mapped_column(nullable=False, default=True)
+    candidate_rank: Mapped[int | None] = mapped_column(Integer)
+    lexical_rank: Mapped[int | None] = mapped_column(Integer)
+    lexical_score: Mapped[float | None] = mapped_column()
+    vector_rank: Mapped[int | None] = mapped_column(Integer)
+    vector_score: Mapped[float | None] = mapped_column()
+    fused_rank: Mapped[int | None] = mapped_column(Integer)
+    fused_score: Mapped[float | None] = mapped_column()
+    locator: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_hash: Mapped[str | None] = mapped_column(String(64))
+    estimated_context_units: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String(80), nullable=False)
+    profile_metadata: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class TextEmbeddingProfile(Base):
+    __tablename__ = "text_embedding_profiles"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_name", "profile_version", name="uq_text_embedding_profiles_version"
+        ),
+        CheckConstraint("dimension > 0", name="ck_text_embedding_profiles_dimension"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    profile_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider: Mapped[str] = mapped_column(String(100), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_construction_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    privacy_classification: Mapped[str] = mapped_column(String(80), nullable=False)
+    quality_disposition: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="MECHANICS_ONLY"
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class RegionEmbedding(Base):
+    __tablename__ = "region_embeddings"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_region_id", "embedding_profile_id", name="uq_region_embeddings_dependency"
+        ),
+        Index("ix_region_embeddings_profile", "embedding_profile_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_region_id: Mapped[int] = mapped_column(
+        ForeignKey("source_regions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    embedding_profile_id: Mapped[int] = mapped_column(
+        ForeignKey("text_embedding_profiles.id", ondelete="RESTRICT"), nullable=False
+    )
+    source_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+@event.listens_for(ContextManifest, "before_update")
+@event.listens_for(ContextManifest, "before_delete")
+@event.listens_for(ContextManifestEntry, "before_update")
+@event.listens_for(ContextManifestEntry, "before_delete")
+def _immutable_manifest_record(_mapper: object, _connection: object, _target: object) -> None:
+    raise ValueError("Context manifests and entries are immutable snapshots")
