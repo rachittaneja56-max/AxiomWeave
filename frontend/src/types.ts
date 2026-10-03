@@ -180,6 +180,104 @@ export type EvidenceLink = {
   created_at: string;
 };
 
+export type EvidenceState =
+  | "quote_located"
+  | "supported"
+  | "partial"
+  | "contradicted"
+  | "missing"
+  | "ambiguous"
+  | "conflict"
+  | "non_factual";
+
+export type EvidenceAssessment = {
+  id: number;
+  artifact_version_id: number;
+  material_claim_id: number;
+  context_manifest_id: number | null;
+  knowledge_assertion_id: number | null;
+  source_region_id: number | null;
+  evidence_state: EvidenceState;
+  source_quote: string | null;
+  quote_start: number | null;
+  quote_end: number | null;
+  assessment_method: "mechanical" | "semantic_verifier" | "human";
+  verifier_profile: string;
+  verifier_profile_version: string;
+  reason_code: string | null;
+  review_state: "needs_review" | "reviewed";
+  adjudicated_state: EvidenceState | null;
+  reviewed_at: string | null;
+  created_at: string;
+};
+
+export type ArtifactBlockDependency = {
+  id: number;
+  source_region_id: number;
+  source_content_hash: string;
+  dependency_hash: string;
+  dependency_kind: "quote" | "assertion" | "lineage";
+  origin: "proposal" | "evidence" | "carried_forward";
+};
+
+export type ArtifactBlockLineage = {
+  id: number;
+  block_key: string;
+  ordinal: number;
+  block_type: string;
+  visible_text: string;
+  content_hash: string;
+  material_claim_ids: number[];
+  dependencies: ArtifactBlockDependency[];
+};
+
+export type MaterialClaimLineage = {
+  id: number;
+  proposition: string;
+  artifact_quote: string;
+  block_mapping_state: "validated" | "ambiguous" | "unmapped" | null;
+  block_keys: string[];
+};
+
+export type LineageProposal = {
+  id: number;
+  block_key: string;
+  claim_text: string;
+  material_claim_id: number | null;
+  source_region_id: number | null;
+  knowledge_assertion_id: number | null;
+  source_quote: string;
+  validation_state:
+    | "validated"
+    | "invalid_scope"
+    | "invalid_region"
+    | "invalid_assertion"
+    | "invalid_span"
+    | "ambiguous"
+    | "unresolved";
+  rejection_reason: string | null;
+  validated_quote_start: number | null;
+  validated_quote_end: number | null;
+};
+
+export type ArtifactReviewDecision = {
+  id: number;
+  artifact_version_id: number;
+  decision: "accepted" | "rejected";
+  note: string | null;
+  created_at: string;
+};
+
+export type ArtifactLineage = {
+  artifact_version_id: number;
+  lineage_available: boolean;
+  blocks: ArtifactBlockLineage[];
+  claims: MaterialClaimLineage[];
+  proposals: LineageProposal[];
+  assessments: EvidenceAssessment[];
+  review_decisions: ArtifactReviewDecision[];
+};
+
 export type SourceVersionContent = SourceVersion & {
   source_text: string;
 };
@@ -189,6 +287,8 @@ export type DiscrepancyFinding = {
   source_version_id: number;
   artifact_version_a_id: number;
   artifact_version_b_id: number;
+  material_claim_a_id: number | null;
+  material_claim_b_id: number | null;
   statement_a: string;
   statement_b: string;
   discrepancy_type: string;
@@ -210,6 +310,11 @@ export type AffectedArtifact = {
   output_type: string;
   artifact_version_number: number;
   evidence_claims: string[];
+  impact_state?: "unaffected" | "affected" | "needs_review" | "unknown";
+  affected_block_keys?: string[];
+  review_block_keys?: string[];
+  unknown_block_keys?: string[];
+  targeted_update_available?: boolean;
 };
 
 export type SourceRevisionStatus = {

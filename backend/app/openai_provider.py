@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 
 class OpenAIGenerationProvider:
+    supports_phase4_lineage = True
+    supports_phase4_automatic_claim_scan = True
+
     def __init__(self, api_key: str, model: str, timeout_seconds: float = 60) -> None:
         self._model = model
         self._client = AsyncOpenAI(api_key=api_key, timeout=timeout_seconds, max_retries=0)

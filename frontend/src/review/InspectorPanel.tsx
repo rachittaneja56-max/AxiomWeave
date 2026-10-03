@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   AlertTriangle,
   BookOpenCheck,
@@ -8,6 +9,8 @@ import {
 } from "lucide-react";
 import type {
   DiscrepancyFinding,
+  ArtifactLineage,
+  EvidenceState,
   EvidenceLink,
   InspectorTab,
   ReviewArtifactRun,
@@ -24,20 +27,29 @@ type WarningItem = {
 function EvidencePanel({
   version,
   evidence,
+  lineage,
   busy,
   onLoad,
   onAnalyze,
+  onVerify,
+  onReviewEvidence,
   onResumeClaimScan,
   onViewSource,
 }: {
   version: ReviewArtifactVersion | null;
   evidence: EvidenceLink[] | undefined;
+  lineage: ArtifactLineage | undefined;
   busy: boolean;
   onLoad: () => void;
   onAnalyze: () => void;
+  onVerify: () => void;
+  onReviewEvidence: (assessmentId: number, state: EvidenceState) => void;
   onResumeClaimScan: (scanId: number) => void;
   onViewSource: (sourceVersionId: number, quote: string | null) => void;
 }) {
+  const [adjudicatedStates, setAdjudicatedStates] = useState<
+    Record<number, EvidenceState>
+  >({});
   if (!version) {
     return (
       <div className="inspector-empty">
@@ -138,6 +150,24 @@ function EvidencePanel({
         </button>
         <button
           type="button"
+          className="button-secondary button-primary--small"
+          onClick={onVerify}
+          disabled={
+            busy ||
+            version.claim_scan?.status !== "complete" ||
+            (lineage?.claims.length ?? 0) === 0
+          }
+          title={
+            version.claim_scan?.status !== "complete"
+              ? "Complete the independent claim scan first."
+              : undefined
+          }
+        >
+          <ShieldCheck aria-hidden="true" />
+          Assess evidence
+        </button>
+        <button
+          type="button"
           className="text-button"
           onClick={onLoad}
           disabled={busy}
@@ -203,6 +233,117 @@ function EvidencePanel({
           })}
         </ul>
       )}
+      {lineage?.lineage_available ? (
+        <section className="lineage-inventory">
+          <h4>Block and claim lineage</h4>
+          <p>
+            {lineage.blocks.length} immutable blocks · {lineage.claims.length}{" "}
+            material claims
+          </p>
+          <ul>
+            {lineage.blocks.map((block) => (
+              <li key={block.id}>
+                <strong>{block.block_key}</strong>
+                <span>{block.visible_text}</span>
+                <small>
+                  {block.material_claim_ids.length} claims ·{" "}
+                  {block.dependencies.length} source dependencies
+                </small>
+              </li>
+            ))}
+          </ul>
+          {lineage.claims.map((claim) => (
+            <p key={claim.id} className="lineage-claim">
+              <strong>{claim.proposition}</strong>
+              <span>
+                Block mapping: {claim.block_mapping_state ?? "not available"}
+                {claim.block_keys.length
+                  ? " · " + claim.block_keys.join(", ")
+                  : ""}
+              </span>
+            </p>
+          ))}
+        </section>
+      ) : lineage ? (
+        <p className="inspector-note">
+          Lineage is not available for this historical version.
+        </p>
+      ) : null}
+      {lineage?.assessments.length ? (
+        <section className="evidence-assessments">
+          <h4>Evidence assessments</h4>
+          <p>
+            Semantic verifier output is a review suggestion. It does not
+            establish factual truth.
+          </p>
+          <ul>
+            {lineage.assessments.map((assessment) => {
+              const claim = lineage.claims.find(
+                (item) => item.id === assessment.material_claim_id,
+              );
+              const selectedState =
+                adjudicatedStates[assessment.id] ??
+                assessment.adjudicated_state ??
+                assessment.evidence_state;
+              return (
+                <li key={assessment.id}>
+                  <strong>{claim?.proposition ?? "Material claim"}</strong>
+                  <span>
+                    {assessment.evidence_state.replaceAll("_", " ")} ·{" "}
+                    {assessment.assessment_method.replaceAll("_", " ")} ·{" "}
+                    {assessment.review_state.replaceAll("_", " ")}
+                  </span>
+                  {assessment.source_quote && (
+                    <blockquote>{assessment.source_quote}</blockquote>
+                  )}
+                  {assessment.review_state === "needs_review" && (
+                    <div className="evidence-assessment-review">
+                      <label>
+                        Human assessment
+                        <select
+                          value={selectedState}
+                          onChange={(event) =>
+                            setAdjudicatedStates((current) => ({
+                              ...current,
+                              [assessment.id]: event.target
+                                .value as EvidenceState,
+                            }))
+                          }
+                        >
+                          {[
+                            "quote_located",
+                            "supported",
+                            "partial",
+                            "contradicted",
+                            "missing",
+                            "ambiguous",
+                            "conflict",
+                            "non_factual",
+                          ].map((state) => (
+                            <option key={state} value={state}>
+                              {state.replaceAll("_", " ")}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="text-button"
+                        disabled={busy}
+                        onClick={() =>
+                          onReviewEvidence(assessment.id, selectedState)
+                        }
+                      >
+                        Record human review
+                      </button>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
       <p className="inspector-disclaimer">
         A linked quotation shows where the wording appears. It does not confirm
         that a claim is complete or correct.
@@ -284,6 +425,16 @@ function WarningsPanel({
                 </div>
               </div>
               <p>{finding.explanation}</p>
+              <small>
+                Claims:{" "}
+                {finding.material_claim_a_id === null
+                  ? "unmapped"
+                  : `#${finding.material_claim_a_id}`}{" "}
+                /{" "}
+                {finding.material_claim_b_id === null
+                  ? "unmapped"
+                  : `#${finding.material_claim_b_id}`}
+              </small>
               <dl>
                 <div>
                   <dt>{labelA}</dt>
@@ -497,6 +648,7 @@ export function InspectorPanel({
   version,
   selectedVersionId,
   evidence,
+  lineage,
   warnings,
   warningsChecked,
   partialWarnings,
@@ -504,6 +656,8 @@ export function InspectorPanel({
   busy,
   onLoadEvidence,
   onAnalyzeEvidence,
+  onVerifyEvidence,
+  onReviewEvidence,
   onResumeClaimScan,
   onViewSource,
   onCheckWarnings,
@@ -518,6 +672,7 @@ export function InspectorPanel({
   version: ReviewArtifactVersion | null;
   selectedVersionId: number | null;
   evidence: EvidenceLink[] | undefined;
+  lineage: ArtifactLineage | undefined;
   warnings: WarningItem[];
   warningsChecked: boolean;
   partialWarnings: boolean;
@@ -525,6 +680,8 @@ export function InspectorPanel({
   busy: boolean;
   onLoadEvidence: () => void;
   onAnalyzeEvidence: () => void;
+  onVerifyEvidence: () => void;
+  onReviewEvidence: (assessmentId: number, state: EvidenceState) => void;
   onResumeClaimScan: (scanId: number) => void;
   onViewSource: (sourceVersionId: number, quote: string | null) => void;
   onCheckWarnings: () => void;
@@ -593,9 +750,12 @@ export function InspectorPanel({
           <EvidencePanel
             version={version}
             evidence={evidence}
+            lineage={lineage}
             busy={busy}
             onLoad={onLoadEvidence}
             onAnalyze={onAnalyzeEvidence}
+            onVerify={onVerifyEvidence}
+            onReviewEvidence={onReviewEvidence}
             onResumeClaimScan={onResumeClaimScan}
             onViewSource={onViewSource}
           />

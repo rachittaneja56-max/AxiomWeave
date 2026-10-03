@@ -13,20 +13,26 @@ from sqlalchemy.orm import Session
 from alembic import command
 from app.database import create_database_engine, create_session_factory
 from app.models import (
+    ArtifactBlock,
+    ArtifactBlockDependency,
+    ArtifactReviewDecision,
     ArtifactRun,
     ArtifactVersion,
     AuthSession,
     Base,
+    ClaimEvidenceAssessment,
     ContextManifest,
     ContextManifestEntry,
     Job,
     JobAttempt,
+    LineageProposal,
     Source,
     SourceAsset,
     SourcePack,
     SourcePackMembership,
     SourcePackVersion,
     SourceRegion,
+    SourceRegionAlignment,
     SourceSegment,
     SourceVersion,
     TransformationRun,
@@ -66,6 +72,13 @@ EXPECTED_TABLES = {
     "context_manifest_entries",
     "text_embedding_profiles",
     "region_embeddings",
+    "artifact_blocks",
+    "material_claim_blocks",
+    "lineage_proposals",
+    "claim_evidence_assessments",
+    "artifact_block_dependencies",
+    "source_region_alignments",
+    "artifact_review_decisions",
 }
 
 
@@ -127,7 +140,7 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert set(inspector.get_table_names()) == EXPECTED_TABLES | {"alembic_version"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "a3f709e62b14"
+        assert revision == "c4a91b0d7e22"
         asset_columns = {
             column["name"]: column for column in inspector.get_columns("source_assets")
         }
@@ -207,8 +220,64 @@ def test_durable_jobs_migration_preserves_populated_current_sqlite_data(
             assert preserved_version is not None
             assert preserved_version.content == "Existing immutable artifact."
             assert preserved_version.artifact_schema_version is None
+            assert preserved_version.origin == "legacy"
+            preserved_blocks = list(
+                session.scalars(
+                    select(ArtifactBlock).where(
+                        ArtifactBlock.artifact_version_id == artifact_version_id
+                    )
+                )
+            )
+            assert preserved_blocks == []
+            assert (
+                list(
+                    session.scalars(
+                        select(LineageProposal).where(
+                            LineageProposal.artifact_version_id == artifact_version_id
+                        )
+                    )
+                )
+                == []
+            )
+            assert (
+                list(
+                    session.scalars(
+                        select(ClaimEvidenceAssessment).where(
+                            ClaimEvidenceAssessment.artifact_version_id == artifact_version_id
+                        )
+                    )
+                )
+                == []
+            )
+            assert (
+                list(
+                    session.scalars(
+                        select(ArtifactBlockDependency)
+                        .join(ArtifactBlock)
+                        .where(ArtifactBlock.artifact_version_id == artifact_version_id)
+                    )
+                )
+                == []
+            )
+            assert (
+                list(
+                    session.scalars(
+                        select(ArtifactReviewDecision).where(
+                            ArtifactReviewDecision.artifact_version_id == artifact_version_id
+                        )
+                    )
+                )
+                == []
+            )
+            assert list(session.scalars(select(SourceRegionAlignment))) == []
             assert list(session.scalars(select(Job))) == []
             assert list(session.scalars(select(JobAttempt))) == []
+        with upgraded_engine.begin() as connection:
+            with pytest.raises(IntegrityError, match="artifact version snapshot is immutable"):
+                connection.execute(
+                    text("UPDATE artifact_versions SET content = 'mutated' WHERE id = :id"),
+                    {"id": artifact_version_id},
+                )
     finally:
         upgraded_engine.dispose()
 

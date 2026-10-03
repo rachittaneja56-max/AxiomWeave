@@ -20,6 +20,7 @@ from alembic import command
 from app.database import create_database_engine, create_session_factory
 from app.job_queue import MODEL_IO, add_job_dependency, claim_next_job, enqueue_artifact_job
 from app.models import (
+    ArtifactBlock,
     ArtifactRun,
     ArtifactVersion,
     AuthSession,
@@ -296,11 +297,18 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
             "text_embedding_profiles",
             "region_embeddings",
             "login_throttles",
+            "artifact_blocks",
+            "material_claim_blocks",
+            "lineage_proposals",
+            "claim_evidence_assessments",
+            "artifact_block_dependencies",
+            "source_region_alignments",
+            "artifact_review_decisions",
             "alembic_version",
         } <= set(inspector.get_table_names())
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "a3f709e62b14"
+        assert revision == "c4a91b0d7e22"
         asset_columns = {
             column["name"]: column for column in inspector.get_columns("source_assets")
         }
@@ -386,6 +394,16 @@ def test_postgres_durable_jobs_migration_preserves_populated_current_data(
             assert persisted_version is not None
             assert persisted_version.content == "Existing PG artifact."
             assert persisted_version.artifact_schema_version is None
+            assert (
+                list(
+                    session.scalars(
+                        select(ArtifactBlock).where(
+                            ArtifactBlock.artifact_version_id == artifact_version_id
+                        )
+                    )
+                )
+                == []
+            )
             assert list(session.scalars(select(Job))) == []
             assert list(session.scalars(select(JobAttempt))) == []
     finally:

@@ -52,19 +52,26 @@ Material-claim scans split immutable artifact communication text into determinis
 
 The PostgreSQL retrieval repository filters by owner, exact SourcePackVersion, membership role, source-version pairing, asset extraction state, and exact SourceRegion. PostgreSQL native FTS uses the language-neutral `simple` configuration and is not described as BM25. The predeclared four-pack/six-task fixture measured top-2 FTS recall of 2/7 required regions and 1/4 qualifiers, with four task misses. FTS used 117 of R0's 785 source-region characters, an 85.1% reduction, and remains an unpromoted candidate. Character counts cover original region text only; they exclude role labels and provider schema overhead. Exact pgvector and fixed RRF verify ranking and manifest mechanics only; without an approved semantic embedding profile, vector/hybrid quality is not evaluated. Full fixture metrics and limitations are in `backend/evals/retrieval/README.md`.
 
-## Review, evidence, and discrepancies
+## Phase 4 lineage, evidence, review, and consistency
 
-Review APIs return owner-scoped artifact versions and provenance. Every family can be edited through family validation, and edits append an immutable version carrying the family schema version and ContextManifest lineage. Evidence analysis proposes claim/quote pairs; deterministic application code checks each quote against the exact source version and records a source segment locator only for a verified match. Unlocated proposals remain explicitly unsupported. Discrepancy analysis compares sibling outputs from one transformation using readable projections and stores possible conflicts as review findings. Dismissal updates the finding's review status without rewriting artifacts.
+Every new artifact version receives deterministic addressable ArtifactBlocks, a durable independent ClaimScan, and optional generation-time lineage proposals. Model-supplied IDs and quotes remain untrusted until the server checks exact ownership, SourcePackVersion, ContextManifest membership and role, assertion scope, and source offsets. Validated `MaterialClaimBlock` mappings can drive content-addressed ArtifactBlock dependencies. Legacy EvidenceLinks remain compatibility records; they do not mean semantic support.
+
+Claim coverage and evidence state are separate. Mechanical `quote_located` records exact quotation location only. A bounded structured verifier can assess `supported`, `partial`, `contradicted`, `missing`, `ambiguous`, `conflict`, or `non_factual` for exact claims and manifest regions. Verifier output is not ground truth; all assessments start reviewable and human adjudication is stored separately. Cross-artifact findings reference exact sibling versions and claims and never select a winning version or rewrite content. Artifact review decisions are historical records attached to exact immutable versions; user acceptance does not certify factual accuracy.
+
+Historical artifact versions remain lineage-unavailable until re-analysis. The Phase 4 migration does not invent historical blocks, lineage proposals, evidence assessments, review decisions, or source-region alignments. Existing EvidenceLink and DiscrepancyFinding data remain in place.
 
 ## Source revision, update, and export
 
 ```text
 SourcePackVersion V1 / SourceVersion V1
   -> append immutable SourcePackVersion V2 / SourceVersion V2
-  -> deterministic segment diff + evidence impact
-   -> targeted update (prior artifact + V1 + changed material + authoritative V2)
-   -> new ArtifactVersion linked to V2, or full regeneration from V2
+  -> deterministic SourceRegion alignment + validated block dependencies
+  -> affected / needs-review / unknown impact per artifact block
+  -> server-authorized block replacements + exact preservation of other blocks
+  -> new draft ArtifactVersion linked to V2, or full regeneration from V2
 ```
+
+Exact content uniquely aligned across versions may be unchanged or moved. Changed and removed dependency regions affect their linked blocks; duplicate, split, and merged matches require review, and additions keep artifact impact unknown where the new material may matter. Legacy segment diffs remain display information. Missing or unresolved dependencies do not authorize targeted editing. A completed claim scan with no mapped material claims can mark non-claim blocks unaffected; unresolved claim coverage or mappings remain unknown.
 
 The transformation's current source pointer moves to V2; V1 and existing artifact versions remain intact. Targeted updates preserve the prior artifact as input but identify V2 as authoritative. Copy and Markdown download format structured artifacts as readable content projections and preserve plain text families as text. Infographic and Video Package exports are content/specification only; PNG/SVG/PDF rendering and MP4/audio production remain Phase 5 work. Editable PowerPoint export maps each validated `PresentationSpec` slide to editable text and shape objects with matching speaker notes using PptxGenJS; it does not generate imagery.
 

@@ -6,11 +6,24 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.evidence import get_analysis_provider, process_claim_scan
 from app.artifact_contracts import ARTIFACT_CONTRACTS, validate_artifact_content
+from app.artifact_lineage import persist_artifact_blocks
 from app.auth import require_current_user
+from app.claim_scanning import create_or_get_claim_scan
 from app.database import get_db_session
 from app.domain.transformation import OutputType
-from app.models import ArtifactRun, ArtifactVersion, TransformationRun, User
+from app.generation import StructuredGenerationProvider
+from app.models import (
+    ArtifactReviewDecision,
+    ArtifactRun,
+    ArtifactVersion,
+    ClaimScan,
+    SourceVersion,
+    TransformationRun,
+    User,
+    utc_now,
+)
 
 router = APIRouter()
 
@@ -21,6 +34,7 @@ class EditArtifactRequest(BaseModel):
 
 class ReviewArtifactRequest(BaseModel):
     review_status: Literal["accepted", "rejected"]
+    note: str | None = Field(default=None, max_length=500)
 
 
 class ArtifactVersionResponse(BaseModel):
@@ -64,11 +78,12 @@ def _version_response(version: ArtifactVersion) -> ArtifactVersionResponse:
 
 
 @router.post("/artifact-runs/{artifact_run_id}/versions", response_model=ArtifactVersionResponse)
-def create_edited_artifact_version(
+async def create_edited_artifact_version(
     artifact_run_id: int,
     request: EditArtifactRequest,
     user: Annotated[User, Depends(require_current_user)],
     session: Annotated[Session, Depends(get_db_session)],
+    provider: Annotated[StructuredGenerationProvider | None, Depends(get_analysis_provider)],
 ) -> ArtifactVersionResponse:
     artifact_run = _owned_artifact_run(session, user, artifact_run_id)
     if artifact_run is None:
@@ -115,9 +130,28 @@ def create_edited_artifact_version(
         prompt_hash=edit_prompt_hash,
         artifact_schema_version=contract.schema_version,
         review_status="draft",
+        origin="manual_edit",
     )
     session.add(version)
+    session.flush()
+    persist_artifact_blocks(
+        session,
+        version,
+        output_type,
+        parent_version=previous,
+        origin="manual_edit",
+    )
+    create_or_get_claim_scan(session, user.id, version)
     session.commit()
+    if provider is not None:
+        scan = session.scalar(select(ClaimScan).where(ClaimScan.artifact_version_id == version.id))
+        source_version = session.get(SourceVersion, version.source_version_id)
+        if scan is not None and source_version is not None:
+            try:
+                await process_claim_scan(session, user, scan, version, source_version, provider)
+            except Exception:
+                # The immutable edit remains successful; its persisted scan state stays visible.
+                session.rollback()
     session.refresh(version)
     return _version_response(version)
 
@@ -156,6 +190,15 @@ def set_artifact_review_status(
         )
 
     version.review_status = request.review_status
+    session.add(
+        ArtifactReviewDecision(
+            owner_id=user.id,
+            artifact_version_id=version.id,
+            decision=request.review_status,
+            note=request.note.strip() if request.note else None,
+            created_at=utc_now(),
+        )
+    )
     session.commit()
     session.refresh(version)
     return _version_response(version)

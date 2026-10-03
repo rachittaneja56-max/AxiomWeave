@@ -19,6 +19,7 @@ from app.models import (
     TransformationRun,
     User,
 )
+from app.source_alignment import align_source_versions
 from app.source_revisions import (
     AffectedArtifactEvidence,
     SourceSegmentChange,
@@ -61,6 +62,11 @@ class AffectedArtifactResponse(BaseModel):
     output_type: str
     artifact_version_number: int
     evidence_claims: list[str]
+    impact_state: Literal["unaffected", "affected", "needs_review", "unknown"]
+    affected_block_keys: list[str]
+    review_block_keys: list[str]
+    unknown_block_keys: list[str]
+    targeted_update_available: bool
 
 
 class SourceRevisionStatus(BaseModel):
@@ -119,6 +125,11 @@ def _affected_response(
         output_type=affected.artifact_run.output_type,
         artifact_version_number=affected.artifact_version.version_number,
         evidence_claims=[link.claim_text for link in affected.evidence_links],
+        impact_state=affected.impact_state,
+        affected_block_keys=list(affected.affected_block_keys),
+        review_block_keys=list(affected.review_block_keys),
+        unknown_block_keys=list(affected.unknown_block_keys),
+        targeted_update_available=affected.targeted_update_available,
     )
 
 
@@ -148,6 +159,7 @@ def create_transformation_source_version(
             request.source_text,
             parent_source_version_id=old_source.id,
         )
+        align_source_versions(session, old_source, new_source)
         transformation.source_version_id = new_source.id
         session.commit()
     except Exception:
@@ -258,6 +270,31 @@ def targeted_update_artifact(
                 "message": "Create a new source version before targeting an artifact update.",
             },
         )
+    impact = next(
+        (
+            item
+            for item in find_potentially_affected_artifacts(
+                session,
+                old_source,
+                new_source,
+                diff_source_versions(session, old_source, new_source),
+            )
+            if item.artifact_version.id == latest.id
+        ),
+        None,
+    )
+    if impact is None or not impact.targeted_update_available:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "targeted_update_requires_review",
+                "message": (
+                    "Safe block-level impact is unavailable. Review evidence or regenerate "
+                    "the artifact."
+                ),
+                "impact_state": impact.impact_state if impact is not None else "unknown",
+            },
+        )
     if artifact_run.status != "succeeded":
         raise HTTPException(
             status_code=409,
@@ -272,6 +309,7 @@ def targeted_update_artifact(
         artifact_run,
         new_source,
         base_artifact_version_id=latest.id,
+        targeted_block_keys=list(impact.affected_block_keys),
     )
     try:
         session.commit()

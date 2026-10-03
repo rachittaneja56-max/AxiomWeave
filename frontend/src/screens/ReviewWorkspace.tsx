@@ -9,6 +9,9 @@ import { SourceRevisionPanel } from "../review/SourceRevisionPanel";
 import { SourceViewerDialog } from "../review/SourceViewerDialog";
 import type {
   DiscrepancyFinding,
+  ArtifactLineage,
+  EvidenceAssessment,
+  EvidenceState,
   EvidenceLink,
   InspectorTab,
   OutputType,
@@ -54,6 +57,9 @@ export function ReviewWorkspace({
   const [activeTab, setActiveTab] = useState<InspectorTab>("evidence");
   const [evidenceByVersion, setEvidenceByVersion] = useState<
     Record<number, EvidenceLink[]>
+  >({});
+  const [lineageByVersion, setLineageByVersion] = useState<
+    Record<number, ArtifactLineage>
   >({});
   const [findingsByPair, setFindingsByPair] = useState<
     Record<string, DiscrepancyFinding | null>
@@ -244,6 +250,40 @@ export function ReviewWorkspace({
     ) ??
     latestVersion ??
     null;
+
+  useEffect(() => {
+    const versionId = selectedVersion?.id;
+    if (versionId === undefined) return;
+    let active = true;
+    void api
+      .lineage(versionId)
+      .then((body) => {
+        if (
+          active &&
+          isRecord(body) &&
+          Array.isArray(body.blocks) &&
+          Array.isArray(body.claims) &&
+          Array.isArray(body.assessments)
+        ) {
+          setLineageByVersion((current) => ({
+            ...current,
+            [versionId]: body as unknown as ArtifactLineage,
+          }));
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setLineageByVersion((current) => {
+            const next = { ...current };
+            delete next[versionId];
+            return next;
+          });
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedVersion?.id, reload]);
   const isLatest = Boolean(
     selectedVersion && selectedVersion.id === latestVersion?.id,
   );
@@ -372,6 +412,70 @@ export function ReviewWorkspace({
     } catch {
       setActionError("Claims could not be analyzed. Please retry.");
       setReload((value) => value + 1);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyEvidence(version: ReviewArtifactVersion) {
+    setBusy(true);
+    setError(null);
+    try {
+      const body = await api.verifyEvidence(version.id);
+      if (!Array.isArray(body))
+        throw new Error("Unexpected evidence assessment response.");
+      const assessments = body as EvidenceAssessment[];
+      setLineageByVersion((current) => {
+        const existing = current[version.id];
+        if (!existing) return current;
+        const byId = new Map(
+          [...existing.assessments, ...assessments].map((item) => [
+            item.id,
+            item,
+          ]),
+        );
+        return {
+          ...current,
+          [version.id]: {
+            ...existing,
+            assessments: [...byId.values()],
+          },
+        };
+      });
+      setMessage("Evidence assessments saved for human review.");
+    } catch {
+      setActionError(
+        "Evidence assessment could not be completed. Check claim coverage and retry.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reviewEvidence(assessmentId: number, state: EvidenceState) {
+    setBusy(true);
+    setError(null);
+    try {
+      const body = await api.reviewEvidence(assessmentId, state);
+      if (!isRecord(body) || typeof body.id !== "number")
+        throw new Error("Unexpected evidence review response.");
+      const reviewed = body as unknown as EvidenceAssessment;
+      setLineageByVersion((current) => {
+        const existing = current[reviewed.artifact_version_id];
+        if (!existing) return current;
+        return {
+          ...current,
+          [reviewed.artifact_version_id]: {
+            ...existing,
+            assessments: existing.assessments.map((item) =>
+              item.id === reviewed.id ? reviewed : item,
+            ),
+          },
+        };
+      });
+      setMessage("Human evidence review recorded for this exact version.");
+    } catch {
+      setActionError("The evidence review could not be saved. Please retry.");
     } finally {
       setBusy(false);
     }
@@ -739,6 +843,11 @@ export function ReviewWorkspace({
                       ? evidenceByVersion[selectedVersion.id]
                       : undefined
                   }
+                  lineage={
+                    selectedVersion
+                      ? lineageByVersion[selectedVersion.id]
+                      : undefined
+                  }
                   warnings={warnings}
                   warningsChecked={warningsChecked}
                   partialWarnings={partialWarnings}
@@ -749,6 +858,12 @@ export function ReviewWorkspace({
                   }
                   onAnalyzeEvidence={() =>
                     selectedVersion && void analyzeEvidence(selectedVersion)
+                  }
+                  onVerifyEvidence={() =>
+                    selectedVersion && void verifyEvidence(selectedVersion)
+                  }
+                  onReviewEvidence={(assessmentId, state) =>
+                    void reviewEvidence(assessmentId, state)
                   }
                   onResumeClaimScan={(scanId) => void resumeClaimScan(scanId)}
                   onViewSource={(sourceVersionId, quote) =>

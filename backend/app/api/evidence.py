@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from app.artifact_contracts import artifact_text_projection
+from app.artifact_lineage import add_validated_dependency, reconcile_claim_block
 from app.auth import require_current_user
 from app.claim_scanning import (
     batch_input_text,
@@ -20,21 +21,28 @@ from app.claim_scanning import (
 from app.context_planning import ContextPlanNeedsReview, context_text_from_manifest
 from app.database import get_db_session
 from app.domain.transformation import OutputType
+from app.evidence_verifier import assess_claims
 from app.generation import (
     GenerationRequest,
     StructuredGenerationProvider,
 )
 from app.models import (
+    ArtifactBlock,
+    ArtifactBlockDependency,
+    ArtifactReviewDecision,
     ArtifactRun,
     ArtifactVersion,
     ClaimBatch,
+    ClaimEvidenceAssessment,
     ClaimScan,
     ContextManifest,
     ContextManifestEntry,
     DiscrepancyFinding,
     EvidenceLink,
     KnowledgeAssertion,
+    LineageProposal,
     MaterialClaim,
+    MaterialClaimBlock,
     Source,
     SourceAsset,
     SourcePack,
@@ -105,6 +113,112 @@ class EvidenceLinkResponse(BaseModel):
     created_at: datetime
 
 
+EvidenceState = Literal[
+    "quote_located",
+    "supported",
+    "partial",
+    "contradicted",
+    "missing",
+    "ambiguous",
+    "conflict",
+    "non_factual",
+]
+
+
+class EvidenceAssessmentResponse(BaseModel):
+    id: int
+    artifact_version_id: int
+    material_claim_id: int
+    context_manifest_id: int | None
+    knowledge_assertion_id: int | None
+    source_region_id: int | None
+    evidence_state: EvidenceState
+    source_quote: str | None
+    quote_start: int | None
+    quote_end: int | None
+    assessment_method: Literal["mechanical", "semantic_verifier", "human"]
+    verifier_profile: str
+    verifier_profile_version: str
+    reason_code: str | None
+    review_state: Literal["needs_review", "reviewed"]
+    adjudicated_state: EvidenceState | None
+    reviewed_at: datetime | None
+    created_at: datetime
+
+
+class ArtifactBlockDependencyResponse(BaseModel):
+    id: int
+    source_region_id: int
+    source_content_hash: str
+    dependency_hash: str
+    dependency_kind: Literal["quote", "assertion", "lineage"]
+    origin: Literal["proposal", "evidence", "carried_forward"]
+
+
+class ArtifactBlockTraceabilityResponse(BaseModel):
+    id: int
+    block_key: str
+    ordinal: int
+    block_type: str
+    visible_text: str
+    content_hash: str
+    material_claim_ids: list[int]
+    dependencies: list[ArtifactBlockDependencyResponse]
+
+
+class MaterialClaimTraceabilityResponse(BaseModel):
+    id: int
+    proposition: str
+    artifact_quote: str
+    block_mapping_state: Literal["validated", "ambiguous", "unmapped"] | None
+    block_keys: list[str]
+
+
+class LineageProposalResponse(BaseModel):
+    id: int
+    block_key: str
+    claim_text: str
+    material_claim_id: int | None
+    source_region_id: int | None
+    knowledge_assertion_id: int | None
+    source_quote: str
+    validation_state: Literal[
+        "validated",
+        "invalid_scope",
+        "invalid_region",
+        "invalid_assertion",
+        "invalid_span",
+        "ambiguous",
+        "unresolved",
+    ]
+    rejection_reason: str | None
+    validated_quote_start: int | None
+    validated_quote_end: int | None
+
+
+class ReviewDecisionResponse(BaseModel):
+    id: int
+    artifact_version_id: int
+    decision: Literal["accepted", "rejected"]
+    note: str | None
+    created_at: datetime
+
+
+class ArtifactLineageResponse(BaseModel):
+    artifact_version_id: int
+    lineage_available: bool
+    blocks: list[ArtifactBlockTraceabilityResponse]
+    claims: list[MaterialClaimTraceabilityResponse]
+    proposals: list[LineageProposalResponse]
+    assessments: list[EvidenceAssessmentResponse]
+    review_decisions: list[ReviewDecisionResponse]
+
+
+class EvidenceReviewRequest(BaseModel):
+    review_state: Literal["reviewed"] = "reviewed"
+    adjudicated_state: EvidenceState | None = None
+
+
 class ClaimBatchCoverage(BaseModel):
     id: int
     ordinal: int
@@ -163,6 +277,8 @@ class DiscrepancyAnalysis(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     possible_discrepancy: bool
+    material_claim_a_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
+    material_claim_b_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
     statement_a: str | None = Field(default=None, max_length=1_000)
     statement_b: str | None = Field(default=None, max_length=1_000)
     discrepancy_type: str | None = Field(default=None, max_length=80)
@@ -188,6 +304,8 @@ class DiscrepancyFindingResponse(BaseModel):
     source_version_id: int
     artifact_version_a_id: int
     artifact_version_b_id: int
+    material_claim_a_id: int | None
+    material_claim_b_id: int | None
     statement_a: str
     statement_b: str
     discrepancy_type: str
@@ -250,6 +368,273 @@ def _evidence_response(link: EvidenceLink) -> EvidenceLinkResponse:
         status=cast(Literal["linked", "support_not_located"], link.status),
         created_at=link.created_at,
     )
+
+
+def _assessment_response(assessment: ClaimEvidenceAssessment) -> EvidenceAssessmentResponse:
+    return EvidenceAssessmentResponse(
+        id=assessment.id,
+        artifact_version_id=assessment.artifact_version_id,
+        material_claim_id=assessment.material_claim_id,
+        context_manifest_id=assessment.context_manifest_id,
+        knowledge_assertion_id=assessment.knowledge_assertion_id,
+        source_region_id=assessment.source_region_id,
+        evidence_state=cast(EvidenceState, assessment.evidence_state),
+        source_quote=assessment.source_quote,
+        quote_start=assessment.quote_start,
+        quote_end=assessment.quote_end,
+        assessment_method=cast(
+            Literal["mechanical", "semantic_verifier", "human"], assessment.assessment_method
+        ),
+        verifier_profile=assessment.verifier_profile,
+        verifier_profile_version=assessment.verifier_profile_version,
+        reason_code=assessment.reason_code,
+        review_state=cast(Literal["needs_review", "reviewed"], assessment.review_state),
+        adjudicated_state=(
+            cast(EvidenceState, assessment.adjudicated_state)
+            if assessment.adjudicated_state is not None
+            else None
+        ),
+        reviewed_at=assessment.reviewed_at,
+        created_at=assessment.created_at,
+    )
+
+
+@router.get(
+    "/artifact-versions/{artifact_version_id}/lineage",
+    response_model=ArtifactLineageResponse,
+)
+def get_artifact_lineage(
+    artifact_version_id: int,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> ArtifactLineageResponse:
+    owned = _owned_artifact_version(session, user, artifact_version_id)
+    if owned is None:
+        raise HTTPException(status_code=404, detail="Artifact version not found")
+    blocks = list(
+        session.scalars(
+            select(ArtifactBlock)
+            .where(ArtifactBlock.artifact_version_id == artifact_version_id)
+            .order_by(ArtifactBlock.ordinal)
+        )
+    )
+    block_responses: list[ArtifactBlockTraceabilityResponse] = []
+    for block in blocks:
+        claim_ids = list(
+            session.scalars(
+                select(MaterialClaimBlock.material_claim_id).where(
+                    MaterialClaimBlock.artifact_block_id == block.id
+                )
+            )
+        )
+        dependencies = list(
+            session.scalars(
+                select(ArtifactBlockDependency)
+                .where(ArtifactBlockDependency.artifact_block_id == block.id)
+                .order_by(ArtifactBlockDependency.id)
+            )
+        )
+        block_responses.append(
+            ArtifactBlockTraceabilityResponse(
+                id=block.id,
+                block_key=block.block_key,
+                ordinal=block.ordinal,
+                block_type=block.block_type,
+                visible_text=block.visible_text,
+                content_hash=block.content_hash,
+                material_claim_ids=claim_ids,
+                dependencies=[
+                    ArtifactBlockDependencyResponse(
+                        id=dependency.id,
+                        source_region_id=dependency.source_region_id,
+                        source_content_hash=dependency.source_content_hash,
+                        dependency_hash=dependency.dependency_hash,
+                        dependency_kind=cast(
+                            Literal["quote", "assertion", "lineage"], dependency.dependency_kind
+                        ),
+                        origin=cast(
+                            Literal["proposal", "evidence", "carried_forward"], dependency.origin
+                        ),
+                    )
+                    for dependency in dependencies
+                ],
+            )
+        )
+    proposals = list(
+        session.scalars(
+            select(LineageProposal)
+            .where(
+                LineageProposal.artifact_version_id == artifact_version_id,
+                LineageProposal.owner_id == user.id,
+            )
+            .order_by(LineageProposal.id)
+        )
+    )
+    assessments = list(
+        session.scalars(
+            select(ClaimEvidenceAssessment)
+            .where(
+                ClaimEvidenceAssessment.artifact_version_id == artifact_version_id,
+                ClaimEvidenceAssessment.owner_id == user.id,
+            )
+            .order_by(ClaimEvidenceAssessment.created_at, ClaimEvidenceAssessment.id)
+        )
+    )
+    decisions = list(
+        session.scalars(
+            select(ArtifactReviewDecision)
+            .where(
+                ArtifactReviewDecision.artifact_version_id == artifact_version_id,
+                ArtifactReviewDecision.owner_id == user.id,
+            )
+            .order_by(ArtifactReviewDecision.created_at, ArtifactReviewDecision.id)
+        )
+    )
+    version_claims = list(
+        session.scalars(
+            select(MaterialClaim)
+            .join(ClaimScan, ClaimScan.id == MaterialClaim.claim_scan_id)
+            .where(ClaimScan.artifact_version_id == artifact_version_id)
+            .order_by(MaterialClaim.artifact_start, MaterialClaim.id)
+        )
+    )
+    block_key_by_id = {block.id: block.block_key for block in blocks}
+    claim_responses: list[MaterialClaimTraceabilityResponse] = []
+    for claim in version_claims:
+        claim_block_ids = list(
+            session.scalars(
+                select(MaterialClaimBlock.artifact_block_id).where(
+                    MaterialClaimBlock.material_claim_id == claim.id
+                )
+            )
+        )
+        claim_responses.append(
+            MaterialClaimTraceabilityResponse(
+                id=claim.id,
+                proposition=claim.proposition,
+                artifact_quote=claim.artifact_quote,
+                block_mapping_state=cast(
+                    Literal["validated", "ambiguous", "unmapped"] | None,
+                    claim.block_mapping_state,
+                ),
+                block_keys=[
+                    block_key_by_id[block_id]
+                    for block_id in claim_block_ids
+                    if block_id in block_key_by_id
+                ],
+            )
+        )
+    return ArtifactLineageResponse(
+        artifact_version_id=artifact_version_id,
+        lineage_available=bool(blocks),
+        blocks=block_responses,
+        claims=claim_responses,
+        proposals=[
+            LineageProposalResponse(
+                id=item.id,
+                block_key=item.proposed_block_key,
+                claim_text=item.proposed_claim,
+                material_claim_id=item.material_claim_id,
+                source_region_id=(
+                    item.proposed_source_region_id if item.validation_state == "validated" else None
+                ),
+                knowledge_assertion_id=(
+                    item.proposed_assertion_id if item.validation_state == "validated" else None
+                ),
+                source_quote=item.proposed_quote,
+                validation_state=cast(
+                    Literal[
+                        "validated",
+                        "invalid_scope",
+                        "invalid_region",
+                        "invalid_assertion",
+                        "invalid_span",
+                        "ambiguous",
+                        "unresolved",
+                    ],
+                    item.validation_state,
+                ),
+                rejection_reason=item.rejection_reason,
+                validated_quote_start=item.validated_quote_start,
+                validated_quote_end=item.validated_quote_end,
+            )
+            for item in proposals
+        ],
+        assessments=[_assessment_response(item) for item in assessments],
+        review_decisions=[
+            ReviewDecisionResponse(
+                id=item.id,
+                artifact_version_id=item.artifact_version_id,
+                decision=cast(Literal["accepted", "rejected"], item.decision),
+                note=item.note,
+                created_at=item.created_at,
+            )
+            for item in decisions
+        ],
+    )
+
+
+@router.patch(
+    "/claim-evidence-assessments/{assessment_id}/review",
+    response_model=EvidenceAssessmentResponse,
+)
+def review_claim_evidence(
+    assessment_id: int,
+    request: EvidenceReviewRequest,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> EvidenceAssessmentResponse:
+    assessment = session.scalar(
+        select(ClaimEvidenceAssessment)
+        .join(ArtifactVersion, ArtifactVersion.id == ClaimEvidenceAssessment.artifact_version_id)
+        .join(ArtifactRun, ArtifactRun.id == ArtifactVersion.artifact_run_id)
+        .join(TransformationRun, TransformationRun.id == ArtifactRun.transformation_run_id)
+        .where(
+            ClaimEvidenceAssessment.id == assessment_id,
+            ClaimEvidenceAssessment.owner_id == user.id,
+            TransformationRun.owner_id == user.id,
+        )
+    )
+    if assessment is None:
+        raise HTTPException(status_code=404, detail="Evidence assessment not found")
+    assessment.review_state = request.review_state
+    assessment.adjudicated_state = request.adjudicated_state
+    assessment.reviewed_by = user.id
+    assessment.reviewed_at = utc_now()
+    session.commit()
+    session.refresh(assessment)
+    return _assessment_response(assessment)
+
+
+@router.get(
+    "/artifact-versions/{artifact_version_id}/review-decisions",
+    response_model=list[ReviewDecisionResponse],
+)
+def list_artifact_review_decisions(
+    artifact_version_id: int,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+) -> list[ReviewDecisionResponse]:
+    if _owned_artifact_version(session, user, artifact_version_id) is None:
+        raise HTTPException(status_code=404, detail="Artifact version not found")
+    rows = session.scalars(
+        select(ArtifactReviewDecision)
+        .where(
+            ArtifactReviewDecision.owner_id == user.id,
+            ArtifactReviewDecision.artifact_version_id == artifact_version_id,
+        )
+        .order_by(ArtifactReviewDecision.created_at, ArtifactReviewDecision.id)
+    )
+    return [
+        ReviewDecisionResponse(
+            id=row.id,
+            artifact_version_id=row.artifact_version_id,
+            decision=cast(Literal["accepted", "rejected"], row.decision),
+            note=row.note,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
 
 
 def _claim_scan_response(session: Session, scan: ClaimScan) -> ClaimScanCoverage:
@@ -489,7 +874,7 @@ def _artifact_quote_span(
     return (starts[0], starts[0] + len(quote)) if len(starts) == 1 else None
 
 
-async def _process_claim_scan(
+async def process_claim_scan(
     session: Session,
     user: User,
     scan: ClaimScan,
@@ -526,6 +911,7 @@ async def _process_claim_scan(
                     .where(
                         ContextManifestEntry.context_manifest_id == context_manifest.id,
                         ContextManifestEntry.selected.is_(True),
+                        ContextManifestEntry.role.in_(("PRIMARY", "SUPPORTING")),
                     )
                     .order_by(SourceRegion.ordinal, SourceRegion.id)
                 ).all()
@@ -622,6 +1008,7 @@ async def _process_claim_scan(
                         artifact_end=artifact_end,
                         proposition=proposal.claim_text.strip(),
                         normalized_hash=normalized_hash,
+                        block_mapping_state="unmapped",
                     )
                     session.add(material_claim)
                     session.flush()
@@ -631,8 +1018,7 @@ async def _process_claim_scan(
                 assertion, assertion_needs_review = _assertion_for_proposal(
                     session, user, source_version, proposal, context_manifest
                 )
-                if assertion_needs_review:
-                    needs_review = True
+                needs_review = needs_review or assertion_needs_review
                 if assertion is not None:
                     existing_material_claim_id = session.scalar(
                         select(MaterialClaim.id).where(
@@ -642,6 +1028,33 @@ async def _process_claim_scan(
                     if existing_material_claim_id is None:
                         material_claim.knowledge_assertion_id = assertion.id
 
+            if material_claim is not None:
+                reconcile_claim_block(session, material_claim, artifact_version)
+                session.flush()
+
+            quote = proposal.proposed_quote
+            quote_locations = [
+                (region, start)
+                for region in context_regions
+                if region.text is not None and quote
+                for start in _quote_occurrences(region.text, quote)
+                if proposal.source_region_id is None or proposal.source_region_id == region.id
+            ]
+            if proposal.source_quote_start is not None or proposal.source_quote_end is not None:
+                quote_locations = [
+                    location
+                    for location in quote_locations
+                    if proposal.source_quote_start == location[1]
+                    and proposal.source_quote_end == location[1] + len(quote)
+                ]
+            quote_located = len(quote_locations) == 1
+            quote_region = quote_locations[0][0] if quote_located else None
+            quote_start = quote_locations[0][1] if quote_located else None
+            matching_segment = next(
+                (item for item in segments if quote_located and quote in item.segment_text),
+                None,
+            )
+
             existing_link = session.scalar(
                 select(EvidenceLink).where(
                     EvidenceLink.claim_batch_id == batch.id,
@@ -649,19 +1062,6 @@ async def _process_claim_scan(
                 )
             )
             if existing_link is None:
-                quote = proposal.proposed_quote
-                support_regions = [
-                    region
-                    for region in context_regions
-                    if region.text is not None and quote and quote in region.text
-                ]
-                quote_located = bool(quote) and (
-                    quote in source_version.source_text or bool(support_regions)
-                )
-                matching_segment = next(
-                    (item for item in segments if quote_located and quote in item.segment_text),
-                    None,
-                )
                 session.add(
                     EvidenceLink(
                         claim_batch_id=batch.id,
@@ -675,21 +1075,108 @@ async def _process_claim_scan(
                         source_locator=(
                             matching_segment.locator
                             if matching_segment is not None
-                            else support_regions[0].locator
-                            if len(support_regions) == 1
-                            else "Source text"
-                            if quote_located
+                            else quote_region.locator
+                            if quote_region is not None
                             else None
                         ),
                         status="linked" if quote_located else "support_not_located",
                     )
                 )
 
+            if material_claim is not None:
+                if not quote:
+                    evidence_state = "missing"
+                elif len(quote_locations) > 1:
+                    evidence_state = "ambiguous"
+                elif quote_located and quote_region is not None and quote_start is not None:
+                    evidence_state = "quote_located"
+                else:
+                    evidence_state = "missing"
+                existing_assessment = session.scalar(
+                    select(ClaimEvidenceAssessment).where(
+                        ClaimEvidenceAssessment.material_claim_id == material_claim.id,
+                        ClaimEvidenceAssessment.verifier_profile == "claim-scan-quote-location",
+                        ClaimEvidenceAssessment.verifier_profile_version == "1",
+                    )
+                )
+                if existing_assessment is None:
+                    assessment = ClaimEvidenceAssessment(
+                        owner_id=user.id,
+                        artifact_version_id=artifact_version.id,
+                        material_claim_id=material_claim.id,
+                        context_manifest_id=(
+                            context_manifest.id if context_manifest is not None else None
+                        ),
+                        knowledge_assertion_id=(assertion.id if assertion is not None else None),
+                        source_region_id=(
+                            quote_region.id
+                            if evidence_state == "quote_located" and quote_region is not None
+                            else None
+                        ),
+                        evidence_state=evidence_state,
+                        source_quote=(quote if evidence_state == "quote_located" else None),
+                        quote_start=quote_start if evidence_state == "quote_located" else None,
+                        quote_end=(
+                            quote_start + len(quote)
+                            if evidence_state == "quote_located" and quote_start is not None
+                            else None
+                        ),
+                        assessment_method="mechanical",
+                        verifier_profile="claim-scan-quote-location",
+                        verifier_profile_version="1",
+                        reason_code=(
+                            "exact_unique_source_span"
+                            if evidence_state == "quote_located"
+                            else "source_quote_not_unique_or_not_found"
+                        ),
+                        review_state="needs_review",
+                        created_at=utc_now(),
+                    )
+                    session.add(assessment)
+                    if evidence_state == "quote_located" and quote_region is not None:
+                        claim_block = session.execute(
+                            select(MaterialClaimBlock, ArtifactBlock)
+                            .join(
+                                ArtifactBlock,
+                                ArtifactBlock.id == MaterialClaimBlock.artifact_block_id,
+                            )
+                            .where(
+                                MaterialClaimBlock.material_claim_id == material_claim.id,
+                                MaterialClaimBlock.mapping_state == "validated",
+                            )
+                        ).first()
+                        if claim_block is not None:
+                            _mapping, block = claim_block
+                            add_validated_dependency(
+                                session,
+                                block,
+                                quote_region,
+                                assertion=(
+                                    assertion
+                                    if assertion is not None
+                                    and assertion.provenance_state == "validated"
+                                    else None
+                                ),
+                                dependency_kind=(
+                                    "assertion"
+                                    if assertion is not None
+                                    and assertion.provenance_state == "validated"
+                                    else "quote"
+                                ),
+                                origin="evidence",
+                                profile_version="claim-scan-quote-location:1",
+                            )
+
         batch.status = "needs_review" if needs_review else "complete"
         batch.error_code = "incomplete_or_unvalidated_model_output" if needs_review else None
         batch.completed_at = utc_now()
         refresh_scan_status(session, scan)
         session.commit()
+
+    from app.artifact_lineage import reconcile_lineage_claims
+
+    reconcile_lineage_claims(session, artifact_version)
+    session.commit()
 
 
 def _discrepancy_response(finding: DiscrepancyFinding) -> DiscrepancyFindingResponse:
@@ -698,6 +1185,8 @@ def _discrepancy_response(finding: DiscrepancyFinding) -> DiscrepancyFindingResp
         source_version_id=finding.source_version_id,
         artifact_version_a_id=finding.artifact_version_a_id,
         artifact_version_b_id=finding.artifact_version_b_id,
+        material_claim_a_id=finding.material_claim_a_id,
+        material_claim_b_id=finding.material_claim_b_id,
         statement_a=finding.statement_a,
         statement_b=finding.statement_b,
         discrepancy_type=finding.discrepancy_type,
@@ -787,7 +1276,7 @@ async def analyze_artifact_evidence(
         ) from None
     session.commit()
     try:
-        await _process_claim_scan(session, user, scan, version, source_version, provider)
+        await process_claim_scan(session, user, scan, version, source_version, provider)
     except Exception:
         raise HTTPException(
             status_code=502,
@@ -799,6 +1288,53 @@ async def analyze_artifact_evidence(
         .order_by(EvidenceLink.id)
     ).all()
     return [_evidence_response(link) for link in links]
+
+
+@router.post(
+    "/artifact-versions/{artifact_version_id}/evidence/verify",
+    response_model=list[EvidenceAssessmentResponse],
+)
+async def verify_artifact_evidence(
+    artifact_version_id: int,
+    user: Annotated[User, Depends(require_current_user)],
+    session: Annotated[Session, Depends(get_db_session)],
+    provider: Annotated[StructuredGenerationProvider | None, Depends(get_analysis_provider)],
+) -> list[EvidenceAssessmentResponse]:
+    owned = _owned_artifact_version(session, user, artifact_version_id)
+    if owned is None:
+        raise HTTPException(status_code=404, detail="Artifact version not found")
+    if provider is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "generation_not_configured", "message": "Verifier is unavailable."},
+        )
+    scan = session.scalar(
+        select(ClaimScan).where(
+            ClaimScan.artifact_version_id == artifact_version_id,
+            ClaimScan.owner_id == user.id,
+        )
+    )
+    if scan is None or scan.status != "complete":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "claim_scan_incomplete",
+                "message": "Complete the independent claim scan before semantic assessment.",
+            },
+        )
+    try:
+        assessments = await assess_claims(session, user, owned[0], scan, provider)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "evidence_assessment_incomplete", "message": str(exc)},
+        ) from None
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "evidence_verification_failed", "message": "Assessment failed."},
+        ) from None
+    return [_assessment_response(item) for item in assessments]
 
 
 @router.get(
@@ -927,7 +1463,7 @@ async def resume_claim_scan(
         raise HTTPException(status_code=404, detail="Claim scan not found")
     version = owned[0]
     try:
-        await _process_claim_scan(session, user, scan, version, source_version, provider)
+        await process_claim_scan(session, user, scan, version, source_version, provider)
     except Exception:
         # The persisted batch state retains the failed unit and successful siblings.
         refresh_scan_status(session, scan)
@@ -982,6 +1518,46 @@ async def analyze_sibling_discrepancy(
     if existing is not None:
         return DiscrepancyAnalysisResponse(finding=_discrepancy_response(existing))
 
+    scan_a = session.scalar(
+        select(ClaimScan).where(
+            ClaimScan.artifact_version_id == version_a.id,
+            ClaimScan.owner_id == user.id,
+        )
+    )
+    scan_b = session.scalar(
+        select(ClaimScan).where(
+            ClaimScan.artifact_version_id == version_b.id,
+            ClaimScan.owner_id == user.id,
+        )
+    )
+    if (
+        scan_a is None
+        or scan_b is None
+        or scan_a.status != "complete"
+        or scan_b.status != "complete"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "claim_scan_incomplete",
+                "message": "Complete claim coverage for both exact versions before comparing them.",
+            },
+        )
+    claims_a = list(
+        session.scalars(
+            select(MaterialClaim)
+            .where(MaterialClaim.claim_scan_id == scan_a.id)
+            .order_by(MaterialClaim.artifact_start, MaterialClaim.id)
+        )
+    )
+    claims_b = list(
+        session.scalars(
+            select(MaterialClaim)
+            .where(MaterialClaim.claim_scan_id == scan_b.id)
+            .order_by(MaterialClaim.artifact_start, MaterialClaim.id)
+        )
+    )
+
     try:
         result = await provider.generate_structured(
             GenerationRequest(
@@ -999,6 +1575,14 @@ async def analyze_sibling_discrepancy(
                         "artifact_b": artifact_text_projection(
                             OutputType(run_b.output_type), version_b.content
                         ),
+                        "claims_a": [
+                            {"material_claim_id": claim.id, "proposition": claim.proposition}
+                            for claim in claims_a
+                        ],
+                        "claims_b": [
+                            {"material_claim_id": claim.id, "proposition": claim.proposition}
+                            for claim in claims_b
+                        ],
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -1018,10 +1602,44 @@ async def analyze_sibling_discrepancy(
 
     if not result.value.possible_discrepancy:
         return DiscrepancyAnalysisResponse(finding=None)
+
+    def resolve_claim(
+        claims: list[MaterialClaim], proposed_id: int | None, statement: str | None
+    ) -> MaterialClaim | None:
+        if not statement:
+            return None
+        normalized = " ".join(statement.casefold().split())
+        if proposed_id is not None:
+            claim = next((item for item in claims if item.id == proposed_id), None)
+            return (
+                claim
+                if claim is not None
+                and " ".join(claim.proposition.casefold().split()) == normalized
+                else None
+            )
+        matches = [
+            claim
+            for claim in claims
+            if " ".join(claim.proposition.casefold().split()) == normalized
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    claim_a = resolve_claim(claims_a, result.value.material_claim_a_id, result.value.statement_a)
+    claim_b = resolve_claim(claims_b, result.value.material_claim_b_id, result.value.statement_b)
+    if claim_a is None or claim_b is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "discrepancy_claim_mapping_unresolved",
+                "message": "The possible discrepancy could not be mapped to unique exact claims.",
+            },
+        )
     finding = DiscrepancyFinding(
         source_version_id=source_version.id,
         artifact_version_a_id=version_a.id,
         artifact_version_b_id=version_b.id,
+        material_claim_a_id=claim_a.id,
+        material_claim_b_id=claim_b.id,
         statement_a=cast(str, result.value.statement_a),
         statement_b=cast(str, result.value.statement_b),
         discrepancy_type=cast(str, result.value.discrepancy_type),

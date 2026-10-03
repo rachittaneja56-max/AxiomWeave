@@ -37,21 +37,29 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class FakeGenerationProvider:
-    def __init__(self) -> None:
+    supports_phase4_automatic_claim_scan: bool = False
+    empty_automatic_claim_scan: bool = False
+
+    def __init__(self, generated_contents: list[str] | None = None) -> None:
         self.count = 0
+        self.generated_contents = generated_contents
 
     async def generate(self, _request: GenerationRequest) -> GenerationResult:
         self.count += 1
-        text = (
-            "The community center opened on Saturday."
-            if self.count == 1
-            else "The community center opened on Sunday."
-        )
+        if self.generated_contents is not None:
+            text = self.generated_contents[min(self.count - 1, len(self.generated_contents) - 1)]
+        else:
+            text = (
+                "The community center opened on Saturday."
+                if self.count == 1
+                else "The community center opened on Sunday."
+            )
         return GenerationResult(text=text, provider="test", model="fixture")
 
     async def generate_structured[TModel: BaseModel](
-        self, _request: GenerationRequest, response_model: type[TModel]
+        self, request: GenerationRequest, response_model: type[TModel]
     ) -> StructuredGenerationResult[TModel]:
+        from app.api.evidence import ClaimEvidenceProposal, EvidenceAnalysis
         from app.artifact_contracts import (
             InfographicCalloutBlock,
             InfographicSpec,
@@ -60,7 +68,32 @@ class FakeGenerationProvider:
         )
         from app.presentation import PresentationSpec, SlideSpec
 
-        if response_model is PresentationSpec:
+        if response_model is EvidenceAnalysis:
+            if getattr(self, "empty_automatic_claim_scan", False):
+                value: BaseModel = EvidenceAnalysis(proposals=[], analysis_complete=True)
+                return StructuredGenerationResult(
+                    value=response_model.model_validate(value.model_dump()),
+                    provider="test",
+                    model="fixture",
+                )
+            candidates = (
+                "The community center opened on Saturday.",
+                "The community center opened on Sunday.",
+                "The clinic opened on Monday.",
+                "The clinic opened Monday.",
+                "Visitors can check the posted hours.",
+            )
+            proposals = [
+                ClaimEvidenceProposal(
+                    claim_text=claim,
+                    artifact_quote=claim,
+                    proposed_quote=claim if claim in request.source_text else "",
+                )
+                for claim in candidates
+                if claim in request.artifact_content
+            ]
+            value: BaseModel = EvidenceAnalysis(proposals=proposals, analysis_complete=True)
+        elif response_model is PresentationSpec:
             value: BaseModel = PresentationSpec(
                 title="Fictional slide deck",
                 slides=[
@@ -134,10 +167,14 @@ class FakeAnalysisProvider:
 
 
 def set_providers(
-    generation: FakeGenerationProvider, analysis: StructuredGenerationProvider
+    generation: FakeGenerationProvider,
+    analysis: StructuredGenerationProvider,
+    *,
+    automatic_claim_scan: bool = False,
 ) -> None:
     from app.main import app
 
+    generation.supports_phase4_automatic_claim_scan = automatic_claim_scan
     app.dependency_overrides[get_generation_provider] = lambda: generation
     app.dependency_overrides[get_analysis_provider] = lambda: analysis
 
@@ -314,13 +351,14 @@ def test_sibling_discrepancy_is_advisory_and_dismissal_only_changes_review_state
             [
                 DiscrepancyAnalysis(
                     possible_discrepancy=True,
-                    statement_a="The center opened on Saturday.",
-                    statement_b="The center opened on Sunday.",
+                    statement_a="The community center opened on Saturday.",
+                    statement_b="The community center opened on Sunday.",
                     discrepancy_type="opening_date",
                     explanation="The two outputs state different opening days.",
                 )
             ]
         ),
+        automatic_claim_scan=True,
     )
     _transformation_id, _source_version_id, version_a_id, version_b_id = create_sibling_artifacts(
         client, factory
@@ -335,8 +373,10 @@ def test_sibling_discrepancy_is_advisory_and_dismissal_only_changes_review_state
     assert response.status_code == 200
     finding = response.json()["finding"]
     assert finding["review_status"] == "open"
-    assert finding["statement_a"] == "The center opened on Saturday."
-    assert finding["statement_b"] == "The center opened on Sunday."
+    assert finding["statement_a"] == "The community center opened on Saturday."
+    assert finding["statement_b"] == "The community center opened on Sunday."
+    assert finding["material_claim_a_id"] is not None
+    assert finding["material_claim_b_id"] is not None
     with factory() as session:
         versions_before = [
             session.get(ArtifactVersion, version_id) for version_id in (version_a_id, version_b_id)
@@ -357,7 +397,7 @@ def test_sibling_discrepancy_is_advisory_and_dismissal_only_changes_review_state
         after = [version.content for version in versions_after if version is not None]
         stored = session.get(DiscrepancyFinding, finding["id"])
         assert stored is not None
-        assert stored.statement_a == "The center opened on Saturday."
+        assert stored.statement_a == "The community center opened on Saturday."
         assert stored.review_status == "dismissed"
     assert before == after
 
@@ -367,7 +407,9 @@ def test_sibling_discrepancy_provider_failure_is_safe_502(
 ) -> None:
     client, _engine, factory = auth_database
     login(client)
-    set_providers(FakeGenerationProvider(), FakeAnalysisProvider(fail=True))
+    set_providers(
+        FakeGenerationProvider(), FakeAnalysisProvider(fail=True), automatic_claim_scan=True
+    )
     _transformation_id, _source_version_id, version_a_id, version_b_id = create_sibling_artifacts(
         client, factory
     )
@@ -397,6 +439,7 @@ def test_equivalent_paraphrases_create_no_discrepancy_and_cross_user_access_is_d
         FakeAnalysisProvider(
             [DiscrepancyAnalysis(possible_discrepancy=False), EvidenceAnalysis(proposals=[])]
         ),
+        automatic_claim_scan=True,
     )
     _transformation_id, source_version_id, version_a_id, version_b_id = create_sibling_artifacts(
         client, factory
@@ -469,7 +512,7 @@ def _artifact_with_content(
     artifact_content: str,
     analysis_provider: BatchClaimProvider,
 ) -> tuple[int, int]:
-    set_providers(FakeGenerationProvider(), analysis_provider)
+    set_providers(FakeGenerationProvider([artifact_content]), analysis_provider)
     saved = client.post(
         "/api/transformations",
         json={
@@ -488,11 +531,6 @@ def _artifact_with_content(
     assert generated.status_code == 200
     artifact_version_id = generated.json()["artifacts"][0]["artifact_version"]["id"]
     source_version_id = saved.json()["source_version"]["id"]
-    with factory() as session:
-        version = session.get(ArtifactVersion, artifact_version_id)
-        assert version is not None
-        version.content = artifact_content
-        session.commit()
     return source_version_id, artifact_version_id
 
 
@@ -790,6 +828,7 @@ def test_structured_artifacts_use_readable_claim_scan_projections(
     client, _engine, factory = auth_database
     login(client)
     generation_provider = FakeGenerationProvider()
+    generation_provider.empty_automatic_claim_scan = True
     set_providers(generation_provider, BatchClaimProvider([]))
     saved = client.post(
         "/api/transformations",
@@ -843,10 +882,11 @@ def test_structured_discrepancy_inputs_use_human_readable_projections(
     client, _engine, factory = auth_database
     login(client)
     generation_provider = FakeGenerationProvider()
+    generation_provider.empty_automatic_claim_scan = True
     analysis = FakeAnalysisProvider(
         values=[DiscrepancyAnalysis(possible_discrepancy=False) for _ in range(3)]
     )
-    set_providers(generation_provider, analysis)
+    set_providers(generation_provider, analysis, automatic_claim_scan=True)
     saved = client.post(
         "/api/transformations",
         json={

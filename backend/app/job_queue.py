@@ -32,6 +32,7 @@ def enqueue_artifact_job(
     artifact_run: ArtifactRun,
     source_version: SourceVersion,
     base_artifact_version_id: int | None = None,
+    targeted_block_keys: list[str] | None = None,
 ) -> Job:
     transformation = session.get(TransformationRun, artifact_run.transformation_run_id)
     if transformation is None:
@@ -41,6 +42,7 @@ def enqueue_artifact_job(
         artifact_run_id=artifact_run.id,
         source_version_id=source_version.id,
         base_artifact_version_id=base_artifact_version_id,
+        targeted_block_keys=targeted_block_keys,
         context_manifest_id=manifest.id,
         job_type=ARTIFACT_GENERATION,
         resource_class=MODEL_IO,

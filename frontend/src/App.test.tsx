@@ -375,6 +375,11 @@ describe("transformation request form", () => {
                     output_type: "presentation",
                     artifact_version_number: 1,
                     evidence_claims: ["The center opened on Saturday."],
+                    impact_state: "affected",
+                    affected_block_keys: ["slide:1:key_message"],
+                    review_block_keys: [],
+                    unknown_block_keys: [],
+                    targeted_update_available: true,
                   },
                 ]
               : [],
@@ -659,7 +664,9 @@ describe("transformation request form", () => {
     expect(
       screen.getByText("The center opened on Sunday.", { selector: "ins" }),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Targeted update" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Target affected blocks" }),
+    );
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/artifact-runs/41/targeted-update",

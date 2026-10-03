@@ -204,6 +204,18 @@ export function SourceRevisionPanel({
                     {item.evidence_claims.length > 0 && (
                       <p>{item.evidence_claims[0]}</p>
                     )}
+                    <p className="source-impact-list__state">
+                      Impact:{" "}
+                      {item.impact_state?.replaceAll("_", " ") ?? "unknown"}
+                      {item.affected_block_keys?.length
+                        ? " · affected blocks: " +
+                          item.affected_block_keys.join(", ")
+                        : ""}
+                      {item.review_block_keys?.length
+                        ? " · review blocks: " +
+                          item.review_block_keys.join(", ")
+                        : ""}
+                    </p>
                     <div className="source-impact-list__actions">
                       <button
                         type="button"
@@ -211,10 +223,12 @@ export function SourceRevisionPanel({
                         onClick={() =>
                           onAffectedAction("targeted", item.artifact_run_id)
                         }
-                        disabled={busy}
+                        disabled={busy || !item.targeted_update_available}
                       >
                         <ArrowRight aria-hidden="true" />
-                        Targeted update
+                        {item.targeted_update_available
+                          ? "Target affected blocks"
+                          : "Targeted update needs review"}
                       </button>
                       <button
                         type="button"

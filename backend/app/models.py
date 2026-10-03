@@ -12,6 +12,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     event,
+    inspect,
     text,
 )
 from sqlalchemy.engine import Dialect
@@ -369,6 +370,252 @@ class ArtifactVersion(Base):
     prompt_hash: Mapped[str | None] = mapped_column(String(64))
     artifact_schema_version: Mapped[str | None] = mapped_column(String(40))
     review_status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    origin: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ArtifactBlock(Base):
+    """A deterministic, server-owned addressable unit of visible artifact text."""
+
+    __tablename__ = "artifact_blocks"
+    __table_args__ = (
+        UniqueConstraint("artifact_version_id", "block_key", name="uq_artifact_blocks_version_key"),
+        UniqueConstraint(
+            "artifact_version_id", "ordinal", name="uq_artifact_blocks_version_ordinal"
+        ),
+        CheckConstraint("ordinal > 0", name="ck_artifact_blocks_positive_ordinal"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    artifact_version_id: Mapped[int] = mapped_column(
+        ForeignKey("artifact_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    block_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    block_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    visible_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    structural_metadata: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class MaterialClaimBlock(Base):
+    __tablename__ = "material_claim_blocks"
+    __table_args__ = (
+        UniqueConstraint("material_claim_id", "artifact_block_id", name="uq_claim_block_link"),
+        CheckConstraint("mapping_state IN ('validated', 'ambiguous')", name="ck_claim_block_state"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    material_claim_id: Mapped[int] = mapped_column(
+        ForeignKey("material_claims.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    artifact_block_id: Mapped[int] = mapped_column(
+        ForeignKey("artifact_blocks.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    mapping_state: Mapped[str] = mapped_column(String(16), nullable=False, default="validated")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class LineageProposal(Base):
+    """Raw generation proposal plus a separate server-owned validation result."""
+
+    __tablename__ = "lineage_proposals"
+    __table_args__ = (
+        CheckConstraint(
+            "validation_state IN ('validated', 'invalid_scope', 'invalid_region', "
+            "'invalid_assertion', 'invalid_span', 'ambiguous', 'unresolved')",
+            name="ck_lineage_proposals_validation_state",
+        ),
+        CheckConstraint(
+            "(proposed_quote_start IS NULL AND proposed_quote_end IS NULL) OR "
+            "(proposed_quote_start >= 0 AND proposed_quote_end >= proposed_quote_start)",
+            name="ck_lineage_proposals_quote_offsets",
+        ),
+        CheckConstraint(
+            "(validated_quote_start IS NULL AND validated_quote_end IS NULL) OR "
+            "(validated_quote_start >= 0 AND validated_quote_end > validated_quote_start)",
+            name="ck_lineage_proposals_validated_quote_offsets",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    artifact_version_id: Mapped[int] = mapped_column(
+        ForeignKey("artifact_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    artifact_block_id: Mapped[int | None] = mapped_column(
+        ForeignKey("artifact_blocks.id", ondelete="RESTRICT"), index=True
+    )
+    material_claim_id: Mapped[int | None] = mapped_column(
+        ForeignKey("material_claims.id", ondelete="RESTRICT"), index=True
+    )
+    proposed_block_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    proposed_claim: Mapped[str] = mapped_column(Text, nullable=False)
+    proposed_source_region_id: Mapped[int | None] = mapped_column(Integer)
+    proposed_assertion_id: Mapped[int | None] = mapped_column(Integer)
+    proposed_quote: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    proposed_quote_start: Mapped[int | None] = mapped_column(Integer)
+    proposed_quote_end: Mapped[int | None] = mapped_column(Integer)
+    validated_quote_start: Mapped[int | None] = mapped_column(Integer)
+    validated_quote_end: Mapped[int | None] = mapped_column(Integer)
+    validation_state: Mapped[str] = mapped_column(String(24), nullable=False, default="unresolved")
+    rejection_reason: Mapped[str | None] = mapped_column(String(80))
+    proposal_profile: Mapped[str] = mapped_column(String(80), nullable=False)
+    proposal_profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ClaimEvidenceAssessment(Base):
+    __tablename__ = "claim_evidence_assessments"
+    __table_args__ = (
+        CheckConstraint(
+            "evidence_state IN ('quote_located', 'supported', 'partial', 'contradicted', "
+            "'missing', 'ambiguous', 'conflict', 'non_factual')",
+            name="ck_claim_evidence_state",
+        ),
+        CheckConstraint(
+            "assessment_method IN ('mechanical', 'semantic_verifier', 'human')",
+            name="ck_claim_evidence_method",
+        ),
+        CheckConstraint(
+            "review_state IN ('needs_review', 'reviewed')", name="ck_claim_evidence_review"
+        ),
+        CheckConstraint(
+            "adjudicated_state IS NULL OR adjudicated_state IN ('quote_located', 'supported', "
+            "'partial', 'contradicted', 'missing', 'ambiguous', 'conflict', 'non_factual')",
+            name="ck_claim_evidence_adjudicated_state",
+        ),
+        CheckConstraint(
+            "(quote_start IS NULL AND quote_end IS NULL) OR "
+            "(quote_start >= 0 AND quote_end >= quote_start)",
+            name="ck_claim_evidence_quote_offsets",
+        ),
+        Index("ix_claim_evidence_owner_version", "owner_id", "artifact_version_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    artifact_version_id: Mapped[int] = mapped_column(
+        ForeignKey("artifact_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    material_claim_id: Mapped[int] = mapped_column(
+        ForeignKey("material_claims.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    context_manifest_id: Mapped[int | None] = mapped_column(
+        ForeignKey("context_manifests.id", ondelete="RESTRICT"), index=True
+    )
+    knowledge_assertion_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_assertions.id", ondelete="RESTRICT"), index=True
+    )
+    source_region_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_regions.id", ondelete="RESTRICT"), index=True
+    )
+    evidence_state: Mapped[str] = mapped_column(String(24), nullable=False)
+    source_quote: Mapped[str | None] = mapped_column(Text)
+    quote_start: Mapped[int | None] = mapped_column(Integer)
+    quote_end: Mapped[int | None] = mapped_column(Integer)
+    assessment_method: Mapped[str] = mapped_column(String(24), nullable=False)
+    verifier_profile: Mapped[str] = mapped_column(String(80), nullable=False)
+    verifier_profile_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(80))
+    review_state: Mapped[str] = mapped_column(String(16), nullable=False, default="needs_review")
+    adjudicated_state: Mapped[str | None] = mapped_column(String(24))
+    reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ArtifactBlockDependency(Base):
+    __tablename__ = "artifact_block_dependencies"
+    __table_args__ = (
+        UniqueConstraint(
+            "artifact_block_id", "source_region_id", "dependency_hash", name="uq_block_dependency"
+        ),
+        CheckConstraint(
+            "dependency_kind IN ('quote', 'assertion', 'lineage')", name="ck_block_dependency_kind"
+        ),
+        CheckConstraint(
+            "origin IN ('proposal', 'evidence', 'carried_forward')",
+            name="ck_block_dependency_origin",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    artifact_block_id: Mapped[int] = mapped_column(
+        ForeignKey("artifact_blocks.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    source_region_id: Mapped[int] = mapped_column(
+        ForeignKey("source_regions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    knowledge_assertion_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_assertions.id", ondelete="RESTRICT"), index=True
+    )
+    source_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    dependency_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    dependency_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    origin: Mapped[str] = mapped_column(String(24), nullable=False)
+    profile_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class SourceRegionAlignment(Base):
+    __tablename__ = "source_region_alignments"
+    __table_args__ = (
+        CheckConstraint(
+            "alignment_state IN ('unchanged', 'moved', 'changed', 'split', 'merged', "
+            "'ambiguous', 'removed', 'added')",
+            name="ck_source_region_alignment_state",
+        ),
+        CheckConstraint(
+            "(old_region_id IS NOT NULL OR alignment_state = 'added') AND "
+            "(new_region_id IS NOT NULL OR alignment_state = 'removed')",
+            name="ck_source_region_alignment_endpoints",
+        ),
+        Index(
+            "ix_source_region_alignments_versions",
+            "parent_pack_version_id",
+            "child_pack_version_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    parent_pack_version_id: Mapped[int] = mapped_column(
+        ForeignKey("source_pack_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    child_pack_version_id: Mapped[int] = mapped_column(
+        ForeignKey("source_pack_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    old_region_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_regions.id", ondelete="RESTRICT"), index=True
+    )
+    new_region_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_regions.id", ondelete="RESTRICT"), index=True
+    )
+    alignment_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ArtifactReviewDecision(Base):
+    __tablename__ = "artifact_review_decisions"
+    __table_args__ = (
+        CheckConstraint("decision IN ('accepted', 'rejected')", name="ck_artifact_review_decision"),
+        Index("ix_artifact_review_decisions_version", "artifact_version_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    artifact_version_id: Mapped[int] = mapped_column(
+        ForeignKey("artifact_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    note: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -413,6 +660,7 @@ class Job(Base):
     base_artifact_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("artifact_versions.id", ondelete="RESTRICT")
     )
+    targeted_block_keys: Mapped[list[str] | None] = mapped_column(JSON)
     context_manifest_id: Mapped[int | None] = mapped_column(
         ForeignKey("context_manifests.id", ondelete="RESTRICT"), index=True
     )
@@ -537,6 +785,12 @@ class DiscrepancyFinding(Base):
     )
     artifact_version_b_id: Mapped[int] = mapped_column(
         ForeignKey("artifact_versions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    material_claim_a_id: Mapped[int | None] = mapped_column(
+        ForeignKey("material_claims.id", ondelete="RESTRICT"), index=True
+    )
+    material_claim_b_id: Mapped[int | None] = mapped_column(
+        ForeignKey("material_claims.id", ondelete="RESTRICT"), index=True
     )
     statement_a: Mapped[str] = mapped_column(Text, nullable=False)
     statement_b: Mapped[str] = mapped_column(Text, nullable=False)
@@ -711,6 +965,11 @@ class MaterialClaim(Base):
             name="uq_material_claims_exact_span",
         ),
         Index("ix_material_claims_scan", "claim_scan_id"),
+        CheckConstraint(
+            "block_mapping_state IS NULL OR block_mapping_state IN "
+            "('validated', 'ambiguous', 'unmapped')",
+            name="ck_material_claims_block_mapping_state",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -729,6 +988,7 @@ class MaterialClaim(Base):
     proposition: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     claim_type: Mapped[str | None] = mapped_column(String(80))
+    block_mapping_state: Mapped[str | None] = mapped_column(String(16), default="unmapped")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -877,3 +1137,33 @@ class RegionEmbedding(Base):
 @event.listens_for(ContextManifestEntry, "before_delete")
 def _immutable_manifest_record(_mapper: object, _connection: object, _target: object) -> None:
     raise ValueError("Context manifests and entries are immutable snapshots")
+
+
+@event.listens_for(ArtifactVersion, "before_update")
+def _immutable_artifact_version(
+    _mapper: object, _connection: object, target: ArtifactVersion
+) -> None:
+    state = inspect(target)
+    immutable_fields = (
+        "artifact_run_id",
+        "version_number",
+        "source_version_id",
+        "context_manifest_id",
+        "content",
+        "provider",
+        "model",
+        "prompt_version",
+        "prompt_hash",
+        "artifact_schema_version",
+        "origin",
+        "created_at",
+    )
+    if any(state.attrs[name].history.has_changes() for name in immutable_fields):
+        raise ValueError("Artifact versions are immutable snapshots")
+
+
+@event.listens_for(ArtifactVersion, "before_delete")
+@event.listens_for(ArtifactBlock, "before_update")
+@event.listens_for(ArtifactBlock, "before_delete")
+def _immutable_artifact_record(_mapper: object, _connection: object, _target: object) -> None:
+    raise ValueError("Artifact versions and blocks are immutable snapshots")

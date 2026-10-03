@@ -1,4 +1,4 @@
-import type { TransformationRequest } from "./types";
+import type { EvidenceState, TransformationRequest } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -101,6 +101,21 @@ export const api = {
     ),
   evidence: (artifactVersionId: number) =>
     requestJson("/api/artifact-versions/" + artifactVersionId + "/evidence"),
+  lineage: (artifactVersionId: number) =>
+    requestJson("/api/artifact-versions/" + artifactVersionId + "/lineage"),
+  verifyEvidence: (artifactVersionId: number) =>
+    requestJson(
+      "/api/artifact-versions/" + artifactVersionId + "/evidence/verify",
+      { method: "POST" },
+    ),
+  reviewEvidence: (assessmentId: number, state?: EvidenceState) =>
+    requestJson(
+      "/api/claim-evidence-assessments/" + assessmentId + "/review",
+      jsonInit("PATCH", {
+        review_state: "reviewed",
+        adjudicated_state: state ?? null,
+      }),
+    ),
   analyzeEvidence: (versionId: number, sourceVersionId: number) =>
     requestJson(
       "/api/artifact-versions/" + versionId + "/evidence/analyze",

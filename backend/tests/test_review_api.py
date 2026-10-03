@@ -6,9 +6,11 @@ from auth_support import login
 from fastapi.testclient import TestClient
 from generation_support import run_artifact_action, run_generation
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.api.evidence import get_analysis_provider
 from app.api.generation import get_generation_provider
 from app.artifact_contracts import (
     InfographicCalloutBlock,
@@ -16,12 +18,22 @@ from app.artifact_contracts import (
     VideoPackageSpec,
     VideoSceneSpec,
 )
+from app.artifact_lineage import add_validated_dependency
 from app.generation import (
     GenerationRequest,
     GenerationResult,
     StructuredGenerationResult,
 )
-from app.models import ArtifactVersion
+from app.main import app
+from app.models import (
+    ArtifactBlock,
+    ArtifactBlockDependency,
+    ArtifactVersion,
+    SourceAsset,
+    SourcePackMembership,
+    SourcePackVersion,
+    SourceRegion,
+)
 from app.presentation import PresentationSpec, SlideSpec
 
 T = TypeVar("T", bound=BaseModel)
@@ -194,6 +206,13 @@ def test_edit_creates_immutable_version_and_review_state_updates_only_latest(
     assert client.get(f"/api/transformations/{transformation_id}").json()["status"] == (
         "Review Required"
     )
+    with factory() as session:
+        accepted_version = session.get(ArtifactVersion, edited.json()["id"])
+        assert accepted_version is not None
+        with pytest.raises(ValueError, match="Artifact versions are immutable snapshots"):
+            accepted_version.content = "Mutated accepted content."
+            session.commit()
+        session.rollback()
 
 
 def test_regenerate_creates_next_version_without_overwriting_history(
@@ -242,6 +261,90 @@ def test_manual_edit_does_not_override_an_active_job_status(
         client.get(f"/api/transformations/{transformation_id}").json()["artifact_runs"][0]["status"]
         == "pending"
     )
+
+
+def test_manual_edit_carries_only_exact_key_and_content_dependencies(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    provider = ReviewTestProvider(texts=["Generated review draft.\n\nUnrelated user note."])
+    install_provider(provider)
+    app.dependency_overrides[get_analysis_provider] = lambda: None
+    transformation_id = save_transformation(client, ["executive_summary"])
+    generated = run_generation(client, transformation_id, factory, provider).json()
+    artifact = generated["artifacts"][0]
+    parent_id = artifact["artifact_version"]["id"]
+
+    with factory() as session:
+        parent = session.get(ArtifactVersion, parent_id)
+        assert parent is not None
+        blocks = list(
+            session.scalars(
+                select(ArtifactBlock).where(ArtifactBlock.artifact_version_id == parent.id)
+            )
+        )
+        assert {block.block_key for block in blocks} == {"paragraph:1", "paragraph:2"}
+        pack_version = session.scalar(
+            select(SourcePackVersion).where(
+                SourcePackVersion.source_version_id == parent.source_version_id
+            )
+        )
+        assert pack_version is not None
+        region = session.scalar(
+            select(SourceRegion)
+            .join(SourceAsset, SourceAsset.id == SourceRegion.source_asset_id)
+            .join(SourcePackMembership, SourcePackMembership.source_asset_id == SourceAsset.id)
+            .where(SourcePackMembership.source_pack_version_id == pack_version.id)
+        )
+        assert region is not None
+        for block in blocks:
+            add_validated_dependency(
+                session,
+                block,
+                region,
+                assertion=None,
+                dependency_kind="lineage",
+                origin="proposal",
+                profile_version="manual-edit-test:1",
+            )
+        session.commit()
+
+    edited = client.post(
+        f"/api/artifact-runs/{artifact['artifact_run_id']}/versions",
+        json={"content": "Changed user-authored paragraph.\n\nUnrelated user note."},
+    )
+    assert edited.status_code == 200
+    child_id = edited.json()["id"]
+    with factory() as session:
+        children = list(
+            session.scalars(
+                select(ArtifactBlock).where(ArtifactBlock.artifact_version_id == child_id)
+            )
+        )
+        child_by_key = {block.block_key: block for block in children}
+        assert child_by_key["paragraph:1"].visible_text == "Changed user-authored paragraph."
+        assert child_by_key["paragraph:2"].visible_text == "Unrelated user note."
+        changed_dependencies = list(
+            session.scalars(
+                select(ArtifactBlockDependency).where(
+                    ArtifactBlockDependency.artifact_block_id == child_by_key["paragraph:1"].id
+                )
+            )
+        )
+        carried_dependencies = list(
+            session.scalars(
+                select(ArtifactBlockDependency).where(
+                    ArtifactBlockDependency.artifact_block_id == child_by_key["paragraph:2"].id
+                )
+            )
+        )
+        assert changed_dependencies == []
+        assert len(carried_dependencies) == 1
+        assert carried_dependencies[0].origin == "carried_forward"
+        parent = session.get(ArtifactVersion, parent_id)
+        assert parent is not None
+        assert parent.content == "Generated review draft.\n\nUnrelated user note."
 
 
 def test_presentation_edits_are_validated_and_saved_as_new_versions(

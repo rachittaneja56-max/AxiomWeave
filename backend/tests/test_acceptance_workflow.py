@@ -22,13 +22,16 @@ from app.presentation import PresentationSpec, SlideSpec
 
 
 class AcceptanceProvider:
+    supports_phase4_automatic_claim_scan = True
+
     def __init__(self) -> None:
         self.presentation_attempts = 0
 
     async def generate(self, request: GenerationRequest) -> GenerationResult:
-        if "Executive Summary" in request.transformation_instructions:
+        instructions = request.transformation_instructions.casefold()
+        if "executive summary" in instructions:
             text = "The center opened Saturday."
-        elif "LinkedIn post" in request.transformation_instructions:
+        elif "linkedin post" in instructions:
             text = "The center opened Sunday."
         else:
             text = "Visitors can enter on Maple Street."
@@ -37,7 +40,15 @@ class AcceptanceProvider:
     async def generate_structured[T: BaseModel](
         self, request: GenerationRequest, response_model: type[T]
     ) -> StructuredGenerationResult[T]:
-        from app.api.evidence import ClaimEvidenceProposal, DiscrepancyAnalysis, EvidenceAnalysis
+        from app.api.evidence import (
+            ClaimEvidenceProposal,
+            DiscrepancyAnalysis,
+            EvidenceAnalysis,
+        )
+        from app.artifact_generators import (
+            TargetedBlockReplacement,
+            TargetedBlockReplacementSet,
+        )
 
         if response_model is PresentationSpec:
             self.presentation_attempts += 1
@@ -63,28 +74,58 @@ class AcceptanceProvider:
                 ],
             )
         elif response_model is EvidenceAnalysis:
+            candidates = [
+                (
+                    "The community center opened on Saturday.",
+                    "The community center opened on Saturday.",
+                ),
+                ("The center opened Saturday.", "The community center opened on Saturday."),
+                ("The center opened Sunday.", ""),
+                ("The center opens Saturday.", "The community center opened on Saturday."),
+                ("Opening day is Saturday.", "The community center opened on Saturday."),
+                ("Visitors can enter on Maple Street.", "Visitors can enter on Maple Street."),
+                ("Visitors can use Maple Street.", "Visitors can enter on Maple Street."),
+                ("Use the Maple Street entrance.", "Visitors can enter on Maple Street."),
+            ]
+            proposals = [
+                ClaimEvidenceProposal(
+                    claim_text=artifact_quote,
+                    artifact_quote=artifact_quote,
+                    proposed_quote=source_quote,
+                )
+                for artifact_quote, source_quote in candidates
+                if artifact_quote in request.artifact_content
+            ]
             value = EvidenceAnalysis(
-                proposals=[
-                    ClaimEvidenceProposal(
-                        claim_text="The center opened Saturday.",
-                        proposed_quote="The community center opened on Saturday.",
-                    ),
-                    ClaimEvidenceProposal(
-                        claim_text="The center has free parking.",
-                        proposed_quote="The center has free parking.",
-                    ),
-                ]
+                proposals=proposals,
+                analysis_complete=True,
             )
         elif response_model is DiscrepancyAnalysis:
+            request_payload = json.loads(request.artifact_content)
+            claims_a = request_payload["claims_a"]
+            claims_b = request_payload["claims_b"]
             value = DiscrepancyAnalysis(
                 possible_discrepancy=True,
-                statement_a="The center opened Saturday.",
-                statement_b="The center opened Sunday.",
+                statement_a=claims_a[0]["proposition"],
+                statement_b=claims_b[0]["proposition"],
+                material_claim_a_id=claims_a[0]["material_claim_id"],
+                material_claim_b_id=claims_b[0]["material_claim_id"],
                 discrepancy_type="date_conflict",
                 explanation="The sibling artifacts give different opening days.",
             )
         elif response_model is TargetedArtifactContent:
             value = TargetedArtifactContent(content="The center opens Sunday.")
+        elif response_model is TargetedBlockReplacementSet:
+            allowed: list[dict[str, str]] = json.loads(request.artifact_content)
+            value = TargetedBlockReplacementSet(
+                replacements=[
+                    TargetedBlockReplacement(
+                        block_key=item["block_key"],
+                        replacement_text="The center opens Sunday.",
+                    )
+                    for item in allowed
+                ]
+            )
         else:
             value = response_model.model_validate({"content": "Updated from V2."})
         return StructuredGenerationResult(
@@ -143,6 +184,13 @@ def test_tier_a_acceptance_workflow(
     assert retried.status_code == 200
     assert retried.json()["status"] == "succeeded"
     assert json.loads(retried.json()["artifact_version"]["content"])["slides"][0]["speaker_notes"]
+    summary_scan = client.get(
+        f"/api/artifact-versions/{artifacts['executive_summary']['artifact_version']['id']}/claim-scan"
+    )
+    assert summary_scan.status_code == 200
+    assert summary_scan.json()["status"] == "complete"
+    assert summary_scan.json()["claims_found"] == 1
+    assert summary_scan.json()["completed_batches"] == summary_scan.json()["total_batches"]
 
     summary_run = artifacts["executive_summary"]["artifact_run_id"]
     summary_v1_id = artifacts["executive_summary"]["artifact_version"]["id"]
@@ -172,7 +220,7 @@ def test_tier_a_acceptance_workflow(
         json={"source_version_id": source_v1_id},
     )
     assert evidence.status_code == 200
-    assert [item["status"] for item in evidence.json()] == ["linked", "support_not_located"]
+    assert [item["status"] for item in evidence.json()] == ["linked"]
     assert client.get(f"/api/source-versions/{source_v1_id}").status_code == 200
     linked_quote = client.get(f"/api/artifact-versions/{summary_v2_id}/evidence").json()[0]
     assert linked_quote["source_quote"] == "The community center opened on Saturday."
@@ -182,6 +230,7 @@ def test_tier_a_acceptance_workflow(
         "/api/discrepancies/analyze",
         json={"artifact_version_a_id": summary_v1_id, "artifact_version_b_id": linkedin_v1_id},
     )
+    assert discrepancy.status_code == 200, discrepancy.text
     finding = discrepancy.json()["finding"]
     assert finding["review_status"] == "open"
     summary_before_dismissal = client.get(f"/api/transformations/{transformation_id}").json()
@@ -236,6 +285,13 @@ def test_tier_a_acceptance_workflow(
     )
     assert summary_versions[-1]["version_number"] == 3
     assert summary_versions[-1]["source_version_id"] == source_v2_id
+    assert summary_versions[-1]["review_status"] == "draft"
+    assert summary_versions[-2]["review_status"] == "accepted"
+    assert summary_versions[-2]["content"] == (
+        "The community center opened on Saturday. Edited for clarity."
+    )
+    decisions = client.get(f"/api/artifact-versions/{summary_v2_id}/review-decisions")
+    assert [item["decision"] for item in decisions.json()] == ["accepted"]
     regenerated = run_artifact_action(
         client,
         artifacts["linkedin_post"]["artifact_run_id"],
