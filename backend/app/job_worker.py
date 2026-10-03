@@ -7,6 +7,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.artifact_contracts import ARTIFACT_CONTRACTS
 from app.artifact_generators import (
     build_artifact_request,
     build_targeted_update_request,
@@ -133,6 +134,9 @@ def _persist_success(
                     model=model_name,
                     prompt_version=prompt_version,
                     prompt_hash=prompt_hash,
+                    artifact_schema_version=ARTIFACT_CONTRACTS[
+                        OutputType(artifact_run.output_type)
+                    ].schema_version,
                 )
             )
             attempt.status = "succeeded"

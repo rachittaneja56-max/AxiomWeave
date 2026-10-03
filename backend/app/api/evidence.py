@@ -9,6 +9,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
+from app.artifact_contracts import artifact_text_projection
 from app.auth import require_current_user
 from app.claim_scanning import (
     batch_input_text,
@@ -18,6 +19,7 @@ from app.claim_scanning import (
 )
 from app.context_planning import ContextPlanNeedsReview, context_text_from_manifest
 from app.database import get_db_session
+from app.domain.transformation import OutputType
 from app.generation import (
     GenerationRequest,
     StructuredGenerationProvider,
@@ -542,7 +544,7 @@ async def _process_claim_scan(
         if batch.status == "complete":
             continue
         try:
-            text_batch = batch_input_text(artifact_version, batch)
+            text_batch = batch_input_text(artifact_version, batch, scan.text_projection)
         except ValueError:
             batch.status = "needs_review"
             batch.error_code = "artifact_batch_snapshot_mismatch"
@@ -632,7 +634,13 @@ async def _process_claim_scan(
                 if assertion_needs_review:
                     needs_review = True
                 if assertion is not None:
-                    material_claim.knowledge_assertion_id = assertion.id
+                    existing_material_claim_id = session.scalar(
+                        select(MaterialClaim.id).where(
+                            MaterialClaim.knowledge_assertion_id == assertion.id
+                        )
+                    )
+                    if existing_material_claim_id is None:
+                        material_claim.knowledge_assertion_id = assertion.id
 
             existing_link = session.scalar(
                 select(EvidenceLink).where(
@@ -770,7 +778,13 @@ async def analyze_artifact_evidence(
             },
         )
 
-    scan = create_or_get_claim_scan(session, user.id, version)
+    try:
+        scan = create_or_get_claim_scan(session, user.id, version)
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_artifact", "message": "Artifact content is invalid."},
+        ) from None
     session.commit()
     try:
         await _process_claim_scan(session, user, scan, version, source_version, provider)
@@ -842,13 +856,15 @@ def list_artifact_assertions(
         )
     )
     assertion_join = and_(
-        KnowledgeAssertion.id == MaterialClaim.knowledge_assertion_id,
+        KnowledgeAssertion.id
+        == func.coalesce(MaterialClaim.knowledge_assertion_id, EvidenceLink.knowledge_assertion_id),
         KnowledgeAssertion.owner_id == user.id,
         KnowledgeAssertion.source_pack_version_id == pack_version_id,
     )
     rows = session.execute(
         select(MaterialClaim, KnowledgeAssertion, SourceRegion)
         .join(ClaimScan, ClaimScan.id == MaterialClaim.claim_scan_id)
+        .outerjoin(EvidenceLink, EvidenceLink.material_claim_id == MaterialClaim.id)
         .outerjoin(KnowledgeAssertion, assertion_join)
         .outerjoin(SourceRegion, SourceRegion.id == KnowledgeAssertion.source_region_id)
         .where(
@@ -976,8 +992,16 @@ async def analyze_sibling_discrepancy(
                 ),
                 source_text=source_version.source_text,
                 artifact_content=json.dumps(
-                    {"artifact_a": version_a.content, "artifact_b": version_b.content},
+                    {
+                        "artifact_a": artifact_text_projection(
+                            OutputType(run_a.output_type), version_a.content
+                        ),
+                        "artifact_b": artifact_text_projection(
+                            OutputType(run_b.output_type), version_b.content
+                        ),
+                    },
                     ensure_ascii=False,
+                    sort_keys=True,
                 ),
                 max_output_tokens=1000,
             ),

@@ -1,6 +1,7 @@
 import json
 from typing import TypeVar
 
+import pytest
 from auth_support import login
 from fastapi.testclient import TestClient
 from generation_support import run_artifact_action, run_generation
@@ -9,6 +10,12 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.generation import get_generation_provider
+from app.artifact_contracts import (
+    InfographicCalloutBlock,
+    InfographicSpec,
+    VideoPackageSpec,
+    VideoSceneSpec,
+)
 from app.generation import (
     GenerationRequest,
     GenerationResult,
@@ -33,27 +40,48 @@ class ReviewTestProvider:
     async def generate_structured[TModel: BaseModel](
         self, _request: GenerationRequest, response_model: type[TModel]
     ) -> StructuredGenerationResult[TModel]:
-        presentation = PresentationSpec(
-            title="Fictional briefing",
-            slides=[
-                SlideSpec(
-                    title="Opening",
-                    key_message="A fictional opening date.",
-                    bullets=["Opened on Saturday."],
-                    visual_recommendation="Entrance photo.",
-                    speaker_notes="Welcome the attendees.",
-                ),
-                SlideSpec(
-                    title="Next steps",
-                    key_message="Check posted hours.",
-                    bullets=["Visit during opening hours."],
-                    visual_recommendation="Hours sign.",
-                    speaker_notes="Point to the posted schedule.",
-                ),
-            ],
-        )
+        if response_model is PresentationSpec:
+            value: BaseModel = PresentationSpec(
+                title="Fictional briefing",
+                slides=[
+                    SlideSpec(
+                        title="Opening",
+                        key_message="A fictional opening date.",
+                        bullets=["Opened on Saturday."],
+                        visual_recommendation="Entrance photo.",
+                        speaker_notes="Welcome the attendees.",
+                    ),
+                    SlideSpec(
+                        title="Next steps",
+                        key_message="Check posted hours.",
+                        bullets=["Visit during opening hours."],
+                        visual_recommendation="Hours sign.",
+                        speaker_notes="Point to the posted schedule.",
+                    ),
+                ],
+            )
+        elif response_model is InfographicSpec:
+            value = InfographicSpec(
+                title="Fictional infographic",
+                blocks=[InfographicCalloutBlock(label="Opening", value="Saturday")],
+                visual_direction="Use a simple calendar illustration.",
+            )
+        elif response_model is VideoPackageSpec:
+            value = VideoPackageSpec(
+                title="Fictional video package",
+                concept="Share a short opening update.",
+                scenes=[
+                    VideoSceneSpec(
+                        title="Opening",
+                        narration="The center opened on Saturday.",
+                        visual_direction="Show the center entrance.",
+                    )
+                ],
+            )
+        else:
+            raise AssertionError(f"Unexpected structured family: {response_model.__name__}")
         return StructuredGenerationResult(
-            value=response_model.model_validate(presentation.model_dump()),
+            value=response_model.model_validate(value.model_dump()),
             provider="test",
             model="deterministic",
         )
@@ -125,7 +153,14 @@ def test_edit_creates_immutable_version_and_review_state_updates_only_latest(
     assert edited.json()["version_number"] == 2
     assert edited.json()["content"] == "Human edited review draft."
     assert edited.json()["review_status"] == "draft"
-    assert edited.json()["provider"] is None
+    assert edited.json()["provider"] == "human"
+    assert edited.json()["model"] == "manual-edit"
+    assert edited.json()["prompt_version"] == "manual_edit_v1"
+    assert len(edited.json()["prompt_hash"]) == 64
+    assert edited.json()["artifact_schema_version"] == "1"
+    assert (
+        edited.json()["context_manifest_id"] == artifact["artifact_version"]["context_manifest_id"]
+    )
     with factory() as session:
         versions = list(session.query(ArtifactVersion).order_by(ArtifactVersion.version_number))
         assert [version.content for version in versions] == [
@@ -253,3 +288,107 @@ def test_presentation_edits_are_validated_and_saved_as_new_versions(
     assert edited.json()["version_number"] == 2
     parsed = PresentationSpec.model_validate_json(edited.json()["content"])
     assert parsed.slides[0].speaker_notes == "Introduce the center."
+
+
+@pytest.mark.parametrize("output_type", ["infographic", "video_package"])
+def test_structured_family_edits_validate_and_append_version(
+    output_type: str,
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    install_provider(ReviewTestProvider())
+    transformation_id = save_transformation(client, [output_type])
+    generated = run_generation(client, transformation_id, factory).json()
+    artifact = generated["artifacts"][0]
+    original = artifact["artifact_version"]
+
+    invalid = client.post(
+        f"/api/artifact-runs/{artifact['artifact_run_id']}/versions",
+        json={"content": json.dumps({"title": "Malformed specification"})},
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == f"invalid_{output_type}"
+
+    if output_type == "infographic":
+        edited_value = InfographicSpec(
+            title="Edited infographic",
+            key_message="An edited key message.",
+            blocks=[InfographicCalloutBlock(label="Edited label", value="Edited value")],
+            visual_direction="Use a simple calendar illustration.",
+        )
+    else:
+        edited_value = VideoPackageSpec(
+            title="Edited package",
+            concept="An edited concept.",
+            scenes=[
+                VideoSceneSpec(
+                    title="Edited scene",
+                    narration="An edited narration line.",
+                    on_screen_text=["Edited screen text"],
+                    visual_direction="Show a simple location illustration.",
+                )
+            ],
+        )
+    edited = client.post(
+        f"/api/artifact-runs/{artifact['artifact_run_id']}/versions",
+        json={"content": edited_value.model_dump_json()},
+    )
+
+    assert edited.status_code == 200
+    result = edited.json()
+    assert result["version_number"] == 2
+    assert result["artifact_schema_version"] == "1"
+    assert result["context_manifest_id"] == original["context_manifest_id"]
+    assert result["provider"] == "human"
+    assert result["model"] == "manual-edit"
+    assert result["prompt_version"] == "manual_edit_v1"
+    assert len(result["prompt_hash"]) == 64
+
+
+@pytest.mark.parametrize(
+    ("output_type", "content"),
+    [
+        ("executive_summary", "Edited, source-grounded summary."),
+        ("linkedin_post", "Edited professional post."),
+        ("x_post", "🙂" * 280),
+        ("advisory", "Edited readable advisory."),
+    ],
+)
+def test_text_family_edits_keep_plain_content_and_schema_metadata(
+    output_type: str,
+    content: str,
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    install_provider(ReviewTestProvider())
+    transformation_id = save_transformation(client, [output_type])
+    artifact = run_generation(client, transformation_id, factory).json()["artifacts"][0]
+    saved = client.post(
+        f"/api/artifact-runs/{artifact['artifact_run_id']}/versions",
+        json={"content": content},
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["content"] == content
+    assert saved.json()["artifact_schema_version"] == "1"
+    assert saved.json()["version_number"] == 2
+
+
+def test_manual_x_post_edit_rejects_more_than_280_unicode_code_points(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    install_provider(ReviewTestProvider())
+    transformation_id = save_transformation(client, ["x_post"])
+    artifact = run_generation(client, transformation_id, factory).json()["artifacts"][0]
+
+    invalid = client.post(
+        f"/api/artifact-runs/{artifact['artifact_run_id']}/versions",
+        json={"content": "🙂" * 281},
+    )
+
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "invalid_x_post"

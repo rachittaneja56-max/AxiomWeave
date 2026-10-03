@@ -2,11 +2,15 @@ import {
   OUTPUT_TYPES,
   type DashboardItem,
   type GeneratedArtifact,
+  type InfographicBlock,
+  type InfographicDocument,
   type OutputType,
   type PresentationDocument,
   type SavedTransformation,
   type SourceRevisionStatus,
   type TransformationDetail,
+  type VideoPackageDocument,
+  type VideoScene,
   type WorkflowStatus,
 } from "./types";
 
@@ -67,6 +71,12 @@ export function isGeneratedArtifact(
       value.artifact_version.provider === null) &&
     (typeof value.artifact_version.model === "string" ||
       value.artifact_version.model === null) &&
+    (value.artifact_version.artifact_schema_version === undefined ||
+      typeof value.artifact_version.artifact_schema_version === "string" ||
+      value.artifact_version.artifact_schema_version === null) &&
+    (value.artifact_version.context_manifest_id === undefined ||
+      typeof value.artifact_version.context_manifest_id === "number" ||
+      value.artifact_version.context_manifest_id === null) &&
     typeof value.artifact_version.source_version_number === "number" &&
     typeof value.artifact_version.version_number === "number"
   );
@@ -101,6 +111,12 @@ export function isTransformationDetail(
           Number.isInteger(version.version_number) &&
           typeof version.content === "string" &&
           typeof version.source_version_number === "number" &&
+          (version.context_manifest_id === undefined ||
+            typeof version.context_manifest_id === "number" ||
+            version.context_manifest_id === null) &&
+          (version.artifact_schema_version === undefined ||
+            typeof version.artifact_schema_version === "string" ||
+            version.artifact_schema_version === null) &&
           ["draft", "accepted", "rejected"].includes(
             String(version.review_status),
           ),
@@ -390,13 +406,216 @@ export function parsePresentation(
   }
 }
 
+function hasOnlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key));
+}
+
+function nonEmptyString(
+  value: unknown,
+  maximum = Number.POSITIVE_INFINITY,
+): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    value.length <= maximum
+  );
+}
+
+function boundedString(value: unknown, maximum: number): value is string {
+  return typeof value === "string" && value.length <= maximum;
+}
+
+export function parseInfographic(content: string): InfographicDocument | null {
+  try {
+    const value: unknown = JSON.parse(content);
+    if (
+      !isRecord(value) ||
+      !hasOnlyKeys(value, [
+        "title",
+        "subtitle",
+        "key_message",
+        "blocks",
+        "visual_direction",
+      ]) ||
+      !nonEmptyString(value.title, 160) ||
+      !boundedString(value.subtitle, 240) ||
+      !boundedString(value.key_message, 500) ||
+      !nonEmptyString(value.visual_direction, 500) ||
+      !Array.isArray(value.blocks) ||
+      value.blocks.length < 1 ||
+      value.blocks.length > 12
+    ) {
+      return null;
+    }
+    const blocks: InfographicBlock[] = [];
+    for (const item of value.blocks) {
+      if (!isRecord(item) || typeof item.type !== "string") return null;
+      if (
+        item.type === "section" &&
+        hasOnlyKeys(item, ["type", "heading", "body"]) &&
+        nonEmptyString(item.heading, 120) &&
+        nonEmptyString(item.body, 800)
+      ) {
+        blocks.push({
+          type: "section",
+          heading: item.heading,
+          body: item.body,
+        });
+      } else if (
+        item.type === "callout" &&
+        hasOnlyKeys(item, ["type", "label", "value", "explanation"]) &&
+        nonEmptyString(item.label, 120) &&
+        nonEmptyString(item.value, 160) &&
+        boundedString(item.explanation, 400)
+      ) {
+        blocks.push({
+          type: "callout",
+          label: item.label,
+          value: item.value,
+          explanation: item.explanation,
+        });
+      } else if (
+        item.type === "data" &&
+        hasOnlyKeys(item, ["type", "heading", "rows"]) &&
+        nonEmptyString(item.heading, 120) &&
+        Array.isArray(item.rows) &&
+        item.rows.length > 0 &&
+        item.rows.length <= 8
+      ) {
+        const rows: { label: string; value: string; note: string }[] = [];
+        for (const row of item.rows) {
+          if (
+            !isRecord(row) ||
+            !hasOnlyKeys(row, ["label", "value", "note"]) ||
+            !nonEmptyString(row.label, 120) ||
+            !nonEmptyString(row.value, 120) ||
+            !boundedString(row.note, 300)
+          ) {
+            return null;
+          }
+          rows.push({ label: row.label, value: row.value, note: row.note });
+        }
+        blocks.push({ type: "data", heading: item.heading, rows });
+      } else {
+        return null;
+      }
+    }
+    return {
+      title: value.title,
+      subtitle: value.subtitle,
+      key_message: value.key_message,
+      blocks,
+      visual_direction: value.visual_direction,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function parseVideoPackage(
+  content: string,
+): VideoPackageDocument | null {
+  try {
+    const value: unknown = JSON.parse(content);
+    if (
+      !isRecord(value) ||
+      !hasOnlyKeys(value, ["title", "concept", "scenes"]) ||
+      !nonEmptyString(value.title, 160) ||
+      !nonEmptyString(value.concept, 600) ||
+      !Array.isArray(value.scenes) ||
+      value.scenes.length < 1 ||
+      value.scenes.length > 16
+    ) {
+      return null;
+    }
+    const scenes: VideoScene[] = [];
+    for (const scene of value.scenes) {
+      if (
+        !isRecord(scene) ||
+        !hasOnlyKeys(scene, [
+          "title",
+          "narration",
+          "on_screen_text",
+          "visual_direction",
+          "transition_notes",
+        ]) ||
+        !nonEmptyString(scene.title, 120) ||
+        !boundedString(scene.narration, 2000) ||
+        !Array.isArray(scene.on_screen_text) ||
+        scene.on_screen_text.length > 8 ||
+        !scene.on_screen_text.every((line) => nonEmptyString(line, 160)) ||
+        !nonEmptyString(scene.visual_direction, 500) ||
+        !boundedString(scene.transition_notes, 240) ||
+        (!scene.narration.trim() && scene.on_screen_text.length === 0)
+      ) {
+        return null;
+      }
+      scenes.push({
+        title: scene.title,
+        narration: scene.narration,
+        on_screen_text: scene.on_screen_text,
+        visual_direction: scene.visual_direction,
+        transition_notes: scene.transition_notes,
+      });
+    }
+    return { title: value.title, concept: value.concept, scenes };
+  } catch {
+    return null;
+  }
+}
+
 export function artifactExportText(
   outputType: OutputType,
   content: string,
 ): string {
+  if (outputType === "infographic") {
+    const infographic = parseInfographic(content);
+    if (!infographic)
+      return "This infographic specification could not be exported.";
+    const blocks = infographic.blocks.flatMap((block) => {
+      if (block.type === "section") return [`## ${block.heading}`, block.body];
+      if (block.type === "callout")
+        return [`**${block.label}: ${block.value}**`, block.explanation];
+      return [
+        `## ${block.heading}`,
+        ...block.rows.map(
+          (row) =>
+            `- ${row.label}: ${row.value}${row.note ? ` (${row.note})` : ""}`,
+        ),
+      ];
+    });
+    return [
+      `# ${infographic.title}`,
+      infographic.subtitle,
+      infographic.key_message,
+      ...blocks,
+      `Visual direction: ${infographic.visual_direction}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  if (outputType === "video_package") {
+    const video = parseVideoPackage(content);
+    if (!video) return "This video package could not be exported.";
+    return [
+      `# ${video.title}`,
+      `Concept: ${video.concept}`,
+      ...video.scenes.flatMap((scene, index) => [
+        `## Scene ${index + 1}: ${scene.title}`,
+        scene.narration ? `**Narration**\n\n${scene.narration}` : "",
+        ...scene.on_screen_text.map((line) => `On-screen text: ${line}`),
+        `**Visual direction**\n\n${scene.visual_direction}`,
+        scene.transition_notes
+          ? `**Transition notes**\n\n${scene.transition_notes}`
+          : "",
+      ]),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
   if (outputType !== "presentation") return content;
   const presentation = parsePresentation(content);
-  if (!presentation) return content;
+  if (!presentation) return "This presentation could not be exported.";
   return [
     "# " + presentation.title,
     ...presentation.slides.flatMap((slide, index) => [

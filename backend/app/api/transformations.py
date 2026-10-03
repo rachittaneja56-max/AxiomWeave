@@ -6,11 +6,13 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.artifact_contracts import ARTIFACT_CONTRACTS
 from app.auth import require_current_user
 from app.claim_scanning import claim_scan_coverage
 from app.database import get_db_session
 from app.domain.transformation import (
     CreateTransformationRequest,
+    OutputType,
     PreparedTransformationRequest,
     TransformationRequest,
 )
@@ -36,7 +38,7 @@ from app.source_versions import create_source_pack_version, create_source_versio
 
 router = APIRouter()
 
-_OUTPUT_TYPES = ("executive_summary", "linkedin_post", "x_post", "advisory", "presentation")
+_OUTPUT_TYPES = frozenset(output_type.value for output_type in ARTIFACT_CONTRACTS)
 _ARTIFACT_STATUSES = ("pending", "running", "succeeded", "failed")
 
 
@@ -48,7 +50,7 @@ class SourceVersionSummary(BaseModel):
 
 
 class DashboardArtifactState(BaseModel):
-    output_type: Literal["executive_summary", "linkedin_post", "x_post", "advisory", "presentation"]
+    output_type: OutputType
     status: Literal["pending", "running", "succeeded", "failed"] | None
     latest_version_number: int | None
     review_status: Literal["draft", "accepted", "rejected"] | None
@@ -93,12 +95,14 @@ class ArtifactVersionHistory(BaseModel):
     id: int
     version_number: int
     source_version_id: int
+    context_manifest_id: int | None
     source_version_number: int
     content: str
     provider: str | None
     model: str | None
     prompt_version: str | None
     prompt_hash: str | None
+    artifact_schema_version: str | None
     review_status: Literal["draft", "accepted", "rejected"]
     created_at: datetime
     context_manifest: ContextManifestSummary | None = None
@@ -107,7 +111,7 @@ class ArtifactVersionHistory(BaseModel):
 
 class ArtifactRunHistory(BaseModel):
     artifact_run_id: int
-    output_type: Literal["executive_summary", "linkedin_post", "x_post", "advisory", "presentation"]
+    output_type: OutputType
     status: Literal["pending", "running", "succeeded", "failed"]
     versions: list[ArtifactVersionHistory]
     context_manifest: ContextManifestSummary | None = None
@@ -236,7 +240,7 @@ def _dashboard_card(
     by_type = {run.output_type: run for run in artifact_runs}
     artifact_states = [
         DashboardArtifactState(
-            output_type=output_type,
+            output_type=OutputType(output_type),
             status=(
                 cast(
                     Literal["pending", "running", "succeeded", "failed"],
@@ -295,12 +299,14 @@ def _artifact_history(
                 id=version.id,
                 version_number=version.version_number,
                 source_version_id=version.source_version_id,
+                context_manifest_id=version.context_manifest_id,
                 source_version_number=source_version.version_number,
                 content=version.content,
                 provider=version.provider,
                 model=version.model,
                 prompt_version=version.prompt_version,
                 prompt_hash=version.prompt_hash,
+                artifact_schema_version=version.artifact_schema_version,
                 review_status=cast(Literal["draft", "accepted", "rejected"], version.review_status),
                 created_at=version.created_at,
                 context_manifest=_context_manifest_summary(
@@ -317,10 +323,7 @@ def _artifact_history(
     )
     return ArtifactRunHistory(
         artifact_run_id=artifact_run.id,
-        output_type=cast(
-            Literal["executive_summary", "linkedin_post", "x_post", "advisory", "presentation"],
-            artifact_run.output_type,
-        ),
+        output_type=OutputType(artifact_run.output_type),
         status=cast(Literal["pending", "running", "succeeded", "failed"], artifact_run.status),
         versions=history,
         context_manifest=(

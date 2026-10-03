@@ -242,7 +242,7 @@ def test_postgres_populated_legacy_auth_upgrade_preserves_data(
                 text("SELECT owner_id FROM sources WHERE title = 'Legacy source'")
             )
 
-        assert revision == "f2c6a19b5d40"
+        assert revision == "a3f709e62b14"
         assert user["id"] == 42
         assert user["username"] == "legacy-migrated-42"
         assert user["password_hash"] == "!disabled-legacy-google!"
@@ -312,6 +312,13 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
         }
         assert region_columns["source_segment_id"]["nullable"] is True
         assert region_columns["text"]["nullable"] is True
+        artifact_version_columns = {
+            column["name"]: column for column in inspector.get_columns("artifact_versions")
+        }
+        assert artifact_version_columns["artifact_schema_version"]["nullable"] is True
+        assert "text_projection" in {
+            column["name"] for column in inspector.get_columns("claim_scans")
+        }
 
         unique_constraints = inspector.get_unique_constraints("artifact_runs")
         assert "uq_artifact_runs_transformation_output" in {
@@ -378,6 +385,7 @@ def test_postgres_durable_jobs_migration_preserves_populated_current_data(
             persisted_version = session.get(ArtifactVersion, artifact_version_id)
             assert persisted_version is not None
             assert persisted_version.content == "Existing PG artifact."
+            assert persisted_version.artifact_schema_version is None
             assert list(session.scalars(select(Job))) == []
             assert list(session.scalars(select(JobAttempt))) == []
     finally:

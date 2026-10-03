@@ -7,7 +7,9 @@ from hashlib import sha256
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import ArtifactVersion, ClaimBatch, ClaimScan, MaterialClaim, utc_now
+from app.artifact_contracts import artifact_text_projection
+from app.domain.transformation import OutputType
+from app.models import ArtifactRun, ArtifactVersion, ClaimBatch, ClaimScan, MaterialClaim, utc_now
 
 CLAIM_EXTRACTION_PROFILE = "material-claim-scan"
 CLAIM_EXTRACTION_PROFILE_VERSION = 1
@@ -61,11 +63,18 @@ def create_or_get_claim_scan(
         if scan.owner_id != owner_id:
             raise ValueError("Claim scan owner does not match artifact owner")
         return scan
+    artifact_run = session.get(ArtifactRun, artifact_version.artifact_run_id)
+    if artifact_run is None:
+        raise ValueError("Artifact run is unavailable")
+    projection = artifact_text_projection(
+        OutputType(artifact_run.output_type), artifact_version.content
+    )
     scan = ClaimScan(
         owner_id=owner_id,
         artifact_version_id=artifact_version.id,
         source_version_id=artifact_version.source_version_id,
         status="pending",
+        text_projection=projection,
         extraction_profile=CLAIM_EXTRACTION_PROFILE,
         extraction_profile_version=CLAIM_EXTRACTION_PROFILE_VERSION,
         created_at=utc_now(),
@@ -79,15 +88,13 @@ def create_or_get_claim_scan(
             ordinal=ordinal,
             text_start=start,
             text_end=end,
-            input_hash=sha256(artifact_version.content[start:end].encode("utf-8")).hexdigest(),
+            input_hash=sha256(projection[start:end].encode("utf-8")).hexdigest(),
             extraction_profile=CLAIM_EXTRACTION_PROFILE,
             extraction_profile_version=CLAIM_EXTRACTION_PROFILE_VERSION,
             status="pending",
             attempt_count=0,
         )
-        for ordinal, (start, end) in enumerate(
-            deterministic_text_ranges(artifact_version.content), 1
-        )
+        for ordinal, (start, end) in enumerate(deterministic_text_ranges(projection), 1)
     )
     session.flush()
     refresh_scan_status(session, scan)
@@ -128,8 +135,11 @@ def claim_scan_coverage(session: Session, scan: ClaimScan) -> dict[str, int | st
     }
 
 
-def batch_input_text(artifact_version: ArtifactVersion, batch: ClaimBatch) -> str:
-    value = artifact_version.content[batch.text_start : batch.text_end]
+def batch_input_text(
+    artifact_version: ArtifactVersion, batch: ClaimBatch, text_projection: str | None = None
+) -> str:
+    source_text = text_projection if text_projection is not None else artifact_version.content
+    value = source_text[batch.text_start : batch.text_end]
     if sha256(value.encode("utf-8")).hexdigest() != batch.input_hash:
         raise ValueError("Artifact claim batch no longer matches its exact text snapshot")
     return value

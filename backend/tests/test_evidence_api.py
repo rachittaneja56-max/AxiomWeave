@@ -49,16 +49,80 @@ class FakeGenerationProvider:
         )
         return GenerationResult(text=text, provider="test", model="fixture")
 
+    async def generate_structured[TModel: BaseModel](
+        self, _request: GenerationRequest, response_model: type[TModel]
+    ) -> StructuredGenerationResult[TModel]:
+        from app.artifact_contracts import (
+            InfographicCalloutBlock,
+            InfographicSpec,
+            VideoPackageSpec,
+            VideoSceneSpec,
+        )
+        from app.presentation import PresentationSpec, SlideSpec
+
+        if response_model is PresentationSpec:
+            value: BaseModel = PresentationSpec(
+                title="Fictional slide deck",
+                slides=[
+                    SlideSpec(
+                        title="Clinic",
+                        key_message="The clinic opened on Monday.",
+                        bullets=["The clinic opened on Monday."],
+                        visual_recommendation="Show a simple building illustration.",
+                        speaker_notes="The clinic opened on Monday.",
+                    ),
+                    SlideSpec(
+                        title="Services",
+                        key_message="Visitors can check the posted hours.",
+                        bullets=["Check the posted hours."],
+                        visual_recommendation="Show a clock illustration.",
+                        speaker_notes="Review the posted hours.",
+                    ),
+                ],
+            )
+        elif response_model is InfographicSpec:
+            value = InfographicSpec(
+                title="Clinic opening facts",
+                key_message="The clinic opened on Monday.",
+                blocks=[
+                    InfographicCalloutBlock(
+                        label="Opening day", value="Monday", explanation="The clinic opened."
+                    )
+                ],
+                visual_direction="Use a simple building illustration.",
+            )
+        elif response_model is VideoPackageSpec:
+            value = VideoPackageSpec(
+                title="Clinic update",
+                concept="Share the clinic opening information.",
+                scenes=[
+                    VideoSceneSpec(
+                        title="Opening day",
+                        narration="The clinic opened on Monday.",
+                        on_screen_text=["Opened Monday"],
+                        visual_direction="Show the clinic entrance.",
+                    )
+                ],
+            )
+        else:
+            raise AssertionError(f"Unexpected structured family: {response_model.__name__}")
+        return StructuredGenerationResult(
+            value=response_model.model_validate(value.model_dump()),
+            provider="test",
+            model="fixture",
+        )
+
 
 class FakeAnalysisProvider:
     def __init__(self, values: list[BaseModel] | None = None, *, fail: bool = False) -> None:
         self.values = values or []
         self.fail = fail
+        self.requests: list[GenerationRequest] = []
 
     async def generate_structured[TModel: BaseModel](
         self, request: GenerationRequest, response_model: type[TModel]
     ) -> StructuredGenerationResult[TModel]:
-        _ = request
+        self.requests.append(request)
         if self.fail:
             raise GenerationProviderError()
         value = self.values.pop(0)
@@ -97,6 +161,7 @@ def create_sibling_artifacts(
             "style": "plain language",
         },
     )
+
     assert response.status_code == 200
     transformation_id = response.json()["transformation_run_id"]
     generated = run_generation(client, transformation_id, factory)
@@ -715,3 +780,105 @@ def test_invalid_exact_source_offsets_create_unresolved_candidate_assertion(
     assert assertions.json()[0]["source_quote_start"] is None
     assert assertions.json()[0]["source_quote_end"] is None
     assert assertions.json()[0]["review_state"] == "needs_review"
+
+
+def test_structured_artifacts_use_readable_claim_scan_projections(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+) -> None:
+    from app.models import ClaimScan
+
+    client, _engine, factory = auth_database
+    login(client)
+    generation_provider = FakeGenerationProvider()
+    set_providers(generation_provider, BatchClaimProvider([]))
+    saved = client.post(
+        "/api/transformations",
+        json={
+            "source_text": "The clinic opened on Monday. Visitors can check the posted hours.",
+            "output_types": ["presentation", "infographic", "video_package"],
+            "audience": "community members",
+            "tone": "clear",
+            "language": "English",
+            "detail_level": "standard",
+            "objective": "inform",
+            "style": "plain language",
+        },
+    )
+    assert saved.status_code == 200
+    generated = run_generation(client, saved.json()["transformation_run_id"], factory)
+    assert generated.status_code == 200
+
+    for artifact in generated.json()["artifacts"]:
+        version = artifact["artifact_version"]
+        claim = "The clinic opened on Monday."
+        analysis = BatchClaimProvider([claim])
+        set_providers(generation_provider, analysis)
+        response = client.post(
+            f"/api/artifact-versions/{version['id']}/evidence/analyze",
+            json={"source_version_id": saved.json()["source_version"]["id"]},
+        )
+        assert response.status_code == 200, (artifact["output_type"], response.json())
+        assert analysis.calls == [1]
+        assertions = client.get(f"/api/artifact-versions/{version['id']}/assertions")
+        assert assertions.status_code == 200
+        assert len(assertions.json()) == 1
+        assert assertions.json()[0]["proposition"] == claim
+        with factory() as session:
+            scan = session.scalar(
+                select(ClaimScan).where(ClaimScan.artifact_version_id == version["id"])
+            )
+            assert scan is not None
+            assert scan.text_projection is not None
+            assert claim in scan.text_projection
+            assert '{"' not in scan.text_projection
+
+
+def test_structured_discrepancy_inputs_use_human_readable_projections(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+) -> None:
+    import json
+
+    from app.api.evidence import DiscrepancyAnalysis
+
+    client, _engine, factory = auth_database
+    login(client)
+    generation_provider = FakeGenerationProvider()
+    analysis = FakeAnalysisProvider(
+        values=[DiscrepancyAnalysis(possible_discrepancy=False) for _ in range(3)]
+    )
+    set_providers(generation_provider, analysis)
+    saved = client.post(
+        "/api/transformations",
+        json={
+            "source_text": "The clinic opened on Monday. Visitors can check the posted hours.",
+            "output_types": ["presentation", "infographic", "video_package"],
+            "audience": "community members",
+            "tone": "clear",
+            "language": "English",
+            "detail_level": "standard",
+            "objective": "inform",
+            "style": "plain language",
+        },
+    )
+    generated = run_generation(client, saved.json()["transformation_run_id"], factory)
+    assert generated.status_code == 200
+    artifact_versions = [item["artifact_version"] for item in generated.json()["artifacts"]]
+
+    for left_index, right_index in ((0, 1), (0, 2), (1, 2)):
+        response = client.post(
+            "/api/discrepancies/analyze",
+            json={
+                "artifact_version_a_id": artifact_versions[left_index]["id"],
+                "artifact_version_b_id": artifact_versions[right_index]["id"],
+            },
+        )
+        assert response.status_code == 200
+
+    assert len(analysis.requests) == 3
+    for request in analysis.requests:
+        readable_artifacts = json.loads(request.artifact_content)
+        assert "# " in readable_artifacts["artifact_a"]
+        assert "{" not in readable_artifacts["artifact_a"]
+        assert "{" not in readable_artifacts["artifact_b"]
+        assert '"scenes"' not in request.artifact_content
+        assert '"blocks"' not in request.artifact_content

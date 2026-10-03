@@ -127,7 +127,7 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         assert set(inspector.get_table_names()) == EXPECTED_TABLES | {"alembic_version"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "f2c6a19b5d40"
+        assert revision == "a3f709e62b14"
         asset_columns = {
             column["name"]: column for column in inspector.get_columns("source_assets")
         }
@@ -139,6 +139,12 @@ def test_migration_from_empty_database_and_repeated_upgrade(tmp_path: Path) -> N
         }
         assert region_columns["source_segment_id"]["nullable"] is True
         assert region_columns["text"]["nullable"] is True
+        artifact_version_columns = {
+            column["name"]: column for column in inspector.get_columns("artifact_versions")
+        }
+        assert artifact_version_columns["artifact_schema_version"]["nullable"] is True
+        claim_scan_columns = {column["name"] for column in inspector.get_columns("claim_scans")}
+        assert "text_projection" in claim_scan_columns
     finally:
         engine.dispose()
 
@@ -200,6 +206,7 @@ def test_durable_jobs_migration_preserves_populated_current_sqlite_data(
             preserved_version = session.get(ArtifactVersion, artifact_version_id)
             assert preserved_version is not None
             assert preserved_version.content == "Existing immutable artifact."
+            assert preserved_version.artifact_schema_version is None
             assert list(session.scalars(select(Job))) == []
             assert list(session.scalars(select(JobAttempt))) == []
     finally:

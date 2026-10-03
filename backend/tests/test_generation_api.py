@@ -12,6 +12,12 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.generation import get_generation_provider
+from app.artifact_contracts import (
+    InfographicCalloutBlock,
+    InfographicSpec,
+    VideoPackageSpec,
+    VideoSceneSpec,
+)
 from app.artifact_generators import ARTIFACT_INSTRUCTIONS, OUTPUT_TOKEN_BUDGETS
 from app.domain.transformation import OutputType
 from app.generation import (
@@ -51,14 +57,40 @@ class FixedProvider:
         self, request: GenerationRequest, response_model: type[T]
     ) -> StructuredGenerationResult[T]:
         self._record(request)
-        presentation = PresentationSpec(
-            title="Fictional briefing",
-            slides=[
-                PresentationSlideData.make("Situation"),
-                PresentationSlideData.make("Response"),
-            ],
-        )
-        parsed = response_model.model_validate(presentation.model_dump())
+        if response_model is PresentationSpec:
+            value: BaseModel = PresentationSpec(
+                title="Fictional briefing",
+                slides=[
+                    PresentationSlideData.make("Situation"),
+                    PresentationSlideData.make("Response"),
+                ],
+            )
+        elif response_model is InfographicSpec:
+            value = InfographicSpec(
+                title="Fictional infographic",
+                blocks=[
+                    InfographicCalloutBlock(
+                        label="Opening", value="Saturday", explanation="Fictional source."
+                    )
+                ],
+                visual_direction="Use a simple calendar illustration.",
+            )
+        elif response_model is VideoPackageSpec:
+            value = VideoPackageSpec(
+                title="Fictional video",
+                concept="Show the community center opening.",
+                scenes=[
+                    VideoSceneSpec(
+                        title="Opening day",
+                        narration="The center opened on Saturday.",
+                        on_screen_text=["Community center"],
+                        visual_direction="Show the building entrance.",
+                    )
+                ],
+            )
+        else:
+            raise AssertionError(f"Unexpected structured family: {response_model.__name__}")
+        parsed = response_model.model_validate(value.model_dump())
         return StructuredGenerationResult(value=parsed, provider="test", model="deterministic")
 
 
@@ -463,6 +495,123 @@ def test_only_selected_outputs_are_generated(
 
     assert generated.status_code == 200
     assert [item["output_type"] for item in generated.json()["artifacts"]] == ["advisory"]
+
+
+def test_all_seven_families_create_independent_jobs_and_versioned_artifacts(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    provider = FixedProvider()
+    install_provider(provider)
+    selected = [output_type.value for output_type in OutputType]
+    response = client.post(
+        "/api/transformations",
+        json={
+            "source_text": "The fictional clinic opened on Monday.",
+            "output_types": selected,
+            "audience": "community members",
+            "tone": "clear",
+            "language": "English",
+            "detail_level": "standard",
+            "objective": "inform",
+            "style": "plain language",
+        },
+    )
+    assert response.status_code == 200
+
+    generated = run_generation(client, response.json()["transformation_run_id"], factory, provider)
+    assert generated.status_code == 200
+    artifacts = generated.json()["artifacts"]
+    assert [item["output_type"] for item in artifacts] == selected
+    assert all(item["status"] == "succeeded" for item in artifacts)
+    assert len(provider.requests) == 7
+
+    with factory() as session:
+        runs = list(session.scalars(select(ArtifactRun)))
+        jobs = list(session.scalars(select(Job)))
+        versions = list(session.scalars(select(ArtifactVersion)))
+        assert len(runs) == 7
+        assert len(jobs) == 7
+        assert len(versions) == 7
+        assert {version.artifact_schema_version for version in versions} == {"1"}
+        assert all(job.context_manifest_id is not None for job in jobs)
+        assert all(version.context_manifest_id is not None for version in versions)
+        assert {version.prompt_version for version in versions} == {
+            "1",
+            "2",
+        }
+        assert all(version.prompt_hash and len(version.prompt_hash) == 64 for version in versions)
+
+
+@pytest.mark.parametrize(
+    ("failed_output_type", "failed_model"),
+    [
+        (OutputType.INFOGRAPHIC, InfographicSpec),
+        (OutputType.VIDEO_PACKAGE, VideoPackageSpec),
+    ],
+)
+def test_invalid_structured_family_failure_and_retry_leave_successful_siblings_intact(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+    failed_output_type: OutputType,
+    failed_model: type[BaseModel],
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+
+    class InvalidInfographicOnceProvider(FixedProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.invalid = True
+
+        async def generate_structured[T: BaseModel](
+            self, request: GenerationRequest, response_model: type[T]
+        ) -> StructuredGenerationResult[T]:
+            if response_model is failed_model and self.invalid:
+                self._record(request)
+                raise ValueError("malformed structured response")
+            return await super().generate_structured(request, response_model)
+
+    provider = InvalidInfographicOnceProvider()
+    install_provider(provider)
+    response = client.post(
+        "/api/transformations",
+        json={
+            "source_text": "The fictional clinic opened on Monday.",
+            "output_types": [output_type.value for output_type in OutputType],
+            "audience": "community members",
+            "tone": "clear",
+            "language": "English",
+            "detail_level": "standard",
+            "objective": "inform",
+            "style": "plain language",
+        },
+    )
+    run_id = response.json()["transformation_run_id"]
+    generated = run_generation(client, run_id, factory, provider)
+    artifacts = generated.json()["artifacts"]
+    failed = next(item for item in artifacts if item["output_type"] == failed_output_type.value)
+    assert generated.json()["status"] == "partial_failure"
+    assert sum(item["status"] == "succeeded" for item in artifacts) == 6
+    assert failed["status"] == "failed"
+    prior_sibling_versions = {
+        item["output_type"]: item["artifact_version"]["id"]
+        for item in artifacts
+        if item["status"] == "succeeded"
+    }
+    provider.invalid = False
+    retried = run_artifact_action(client, failed["artifact_run_id"], "retry", factory, provider)
+
+    assert retried.status_code == 200
+    assert retried.json()["status"] == "succeeded"
+    assert len(provider.requests) == 8
+    detail = client.get(f"/api/transformations/{run_id}").json()
+    for run in detail["artifact_runs"]:
+        if run["output_type"] == failed_output_type.value:
+            assert len(run["versions"]) == 1
+            assert run["versions"][0]["artifact_schema_version"] == "1"
+        else:
+            assert run["versions"][0]["id"] == prior_sibling_versions[run["output_type"]]
 
 
 def test_four_output_partial_failure_and_targeted_retry_preserve_successful_siblings(

@@ -1,7 +1,9 @@
 import { createPortal } from "react-dom";
 import {
   FileCheck2,
+  FileImage,
   FileText,
+  Clapperboard,
   Megaphone,
   MessageCircle,
   Presentation,
@@ -15,6 +17,8 @@ const OUTPUT_ICONS: Record<OutputType, typeof FileText> = {
   x_post: MessageCircle,
   advisory: FileText,
   presentation: Presentation,
+  infographic: FileImage,
+  video_package: Clapperboard,
 };
 
 export function ArtifactRail({

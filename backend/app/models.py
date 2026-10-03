@@ -367,6 +367,7 @@ class ArtifactVersion(Base):
     model: Mapped[str | None] = mapped_column(String(120))
     prompt_version: Mapped[str | None] = mapped_column(String(120))
     prompt_hash: Mapped[str | None] = mapped_column(String(64))
+    artifact_schema_version: Mapped[str | None] = mapped_column(String(40))
     review_status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -491,7 +492,7 @@ class EvidenceLink(Base):
         ForeignKey("material_claims.id", ondelete="RESTRICT"), unique=True
     )
     knowledge_assertion_id: Mapped[int | None] = mapped_column(
-        ForeignKey("knowledge_assertions.id", ondelete="RESTRICT"), unique=True
+        ForeignKey("knowledge_assertions.id", ondelete="RESTRICT")
     )
     artifact_version_id: Mapped[int] = mapped_column(
         ForeignKey("artifact_versions.id", ondelete="RESTRICT"), nullable=False, index=True
@@ -655,6 +656,7 @@ class ClaimScan(Base):
         ForeignKey("source_versions.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    text_projection: Mapped[str | None] = mapped_column(Text)
     extraction_profile: Mapped[str] = mapped_column(String(80), nullable=False)
     extraction_profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

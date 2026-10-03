@@ -1,5 +1,6 @@
 from typing import TypeVar, cast
 
+import pytest
 from auth_support import login
 from fastapi.testclient import TestClient
 from generation_support import drain_jobs, run_artifact_action, run_generation
@@ -8,6 +9,12 @@ from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.artifact_contracts import (
+    InfographicCalloutBlock,
+    InfographicSpec,
+    VideoPackageSpec,
+    VideoSceneSpec,
+)
 from app.generation import GenerationRequest, GenerationResult, StructuredGenerationResult
 from app.models import (
     ArtifactVersion,
@@ -27,6 +34,7 @@ class RevisionProvider:
     def __init__(self) -> None:
         self.generated = 0
         self.structured_requests: list[GenerationRequest] = []
+        self.response_models: list[type[BaseModel]] = []
 
     async def generate(self, _request: GenerationRequest) -> GenerationResult:
         self.generated += 1
@@ -38,6 +46,7 @@ class RevisionProvider:
         self, request: GenerationRequest, response_model: type[TModel]
     ) -> StructuredGenerationResult[TModel]:
         self.structured_requests.append(request)
+        self.response_models.append(response_model)
         if response_model is PresentationSpec:
             value = PresentationSpec(
                 title="Updated briefing",
@@ -56,6 +65,26 @@ class RevisionProvider:
                         visual_recommendation="Entrance sign.",
                         speaker_notes="Point out the entrance.",
                     ),
+                ],
+            )
+        elif response_model is InfographicSpec:
+            value = InfographicSpec(
+                title="Updated infographic",
+                key_message="The center opened Sunday.",
+                blocks=[InfographicCalloutBlock(label="Opening", value="Sunday")],
+                visual_direction="Use a simple calendar illustration.",
+            )
+        elif response_model is VideoPackageSpec:
+            value = VideoPackageSpec(
+                title="Updated video package",
+                concept="Share the updated opening day.",
+                scenes=[
+                    VideoSceneSpec(
+                        title="Updated opening",
+                        narration="The center opened Sunday.",
+                        on_screen_text=["Opened Sunday"],
+                        visual_direction="Show the center entrance.",
+                    )
                 ],
             )
         else:
@@ -311,6 +340,58 @@ def test_x_post_targeted_update_from_source_v2_keeps_output_contract(
         revised.json()["parent_source_version"]["id"],
         source_v2_id,
     ]
+
+
+@pytest.mark.parametrize(
+    ("output_type", "response_model"),
+    [("infographic", InfographicSpec), ("video_package", VideoPackageSpec)],
+)
+def test_structured_family_targeted_update_uses_v2_contract_and_lineage(
+    output_type: str,
+    response_model: type[BaseModel],
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    provider = RevisionProvider()
+    saved = client.post(
+        "/api/transformations",
+        json={
+            "source_text": "The center opened on Saturday.",
+            "output_types": [output_type],
+            "audience": "community members",
+            "tone": "clear",
+            "language": "English",
+            "detail_level": "standard",
+            "objective": "inform",
+            "style": "plain language",
+        },
+    )
+    transformation_id = saved.json()["transformation_run_id"]
+    first = run_generation(client, transformation_id, factory, provider).json()["artifacts"][0]
+    first_version = first["artifact_version"]
+
+    revised = client.post(
+        f"/api/transformations/{transformation_id}/source-versions",
+        json={"source_text": "The center opened on Sunday."},
+    )
+    assert revised.status_code == 200
+    source_v2_id = revised.json()["source_version"]["id"]
+    targeted = client.post(f"/api/artifact-runs/{first['artifact_run_id']}/targeted-update")
+    assert targeted.status_code == 202
+    drain_jobs(factory, provider)
+
+    detail = client.get(f"/api/transformations/{transformation_id}").json()
+    versions = detail["artifact_runs"][0]["versions"]
+    assert [version["version_number"] for version in versions] == [1, 2]
+    assert versions[0]["source_version_id"] == revised.json()["parent_source_version"]["id"]
+    assert versions[1]["source_version_id"] == source_v2_id
+    assert versions[1]["artifact_schema_version"] == "1"
+    assert versions[1]["context_manifest_id"] is not None
+    assert provider.response_models[-1] is response_model
+    parsed = response_model.model_validate_json(versions[1]["content"])
+    assert parsed
+    assert first_version["context_manifest_id"] is not None
 
 
 def test_revision_impact_is_owner_scoped(

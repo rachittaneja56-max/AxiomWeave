@@ -1,4 +1,4 @@
-import json
+from hashlib import sha256
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -6,10 +6,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.artifact_contracts import ARTIFACT_CONTRACTS, validate_artifact_content
 from app.auth import require_current_user
 from app.database import get_db_session
+from app.domain.transformation import OutputType
 from app.models import ArtifactRun, ArtifactVersion, TransformationRun, User
-from app.presentation import PresentationSpec
 
 router = APIRouter()
 
@@ -27,11 +28,13 @@ class ArtifactVersionResponse(BaseModel):
     artifact_run_id: int
     version_number: int
     source_version_id: int
+    context_manifest_id: int | None
     content: str
     provider: str | None
     model: str | None
     prompt_version: str | None
     prompt_hash: str | None
+    artifact_schema_version: str | None
     review_status: Literal["draft", "accepted", "rejected"]
 
 
@@ -49,11 +52,13 @@ def _version_response(version: ArtifactVersion) -> ArtifactVersionResponse:
         artifact_run_id=version.artifact_run_id,
         version_number=version.version_number,
         source_version_id=version.source_version_id,
+        context_manifest_id=version.context_manifest_id,
         content=version.content,
         provider=version.provider,
         model=version.model,
         prompt_version=version.prompt_version,
         prompt_hash=version.prompt_hash,
+        artifact_schema_version=version.artifact_schema_version,
         review_status=cast(Literal["draft", "accepted", "rejected"], version.review_status),
     )
 
@@ -82,33 +87,33 @@ def create_edited_artifact_version(
             status_code=422,
             detail={"code": "empty_artifact", "message": "Artifact content cannot be empty."},
         )
-    if artifact_run.output_type == "presentation":
-        try:
-            presentation = PresentationSpec.model_validate_json(content)
-        except ValueError:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "invalid_presentation",
-                    "message": "Presentation content does not match the required structure.",
-                },
-            ) from None
-        content = json.dumps(
-            presentation.model_dump(mode="json"),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+    output_type = OutputType(artifact_run.output_type)
+    try:
+        content = validate_artifact_content(output_type, content)
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": f"invalid_{output_type.value}",
+                "message": "Artifact content does not match the required family contract.",
+            },
+        ) from None
+    contract = ARTIFACT_CONTRACTS[output_type]
+    edit_prompt_hash = sha256(
+        f"manual_edit_v1:{output_type.value}:{contract.schema_version}".encode()
+    ).hexdigest()
 
     version = ArtifactVersion(
         artifact_run_id=artifact_run.id,
         version_number=previous.version_number + 1,
         source_version_id=previous.source_version_id,
         content=content,
-        provider=None,
-        model=None,
-        prompt_version=None,
-        prompt_hash=None,
+        context_manifest_id=previous.context_manifest_id,
+        provider="human",
+        model="manual-edit",
+        prompt_version="manual_edit_v1",
+        prompt_hash=edit_prompt_hash,
+        artifact_schema_version=contract.schema_version,
         review_status="draft",
     )
     session.add(version)

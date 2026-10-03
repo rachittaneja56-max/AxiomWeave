@@ -14,13 +14,26 @@ import {
 } from "lucide-react";
 import type {
   OutputType,
+  InfographicDocument,
   ReviewArtifactRun,
   ReviewArtifactVersion,
+  VideoPackageDocument,
 } from "../types";
-import { outputLabel, parsePresentation } from "../utils";
+import {
+  outputLabel,
+  parseInfographic,
+  parsePresentation,
+  parseVideoPackage,
+} from "../utils";
 import { MarkdownDocument } from "../components/MarkdownDocument";
 import { StatusBadge } from "../components/StatusBadge";
 import type { PresentationDocument } from "../types";
+import {
+  InfographicEditor,
+  InfographicViewer,
+  VideoPackageEditor,
+  VideoPackageViewer,
+} from "./StructuredArtifactViewers";
 
 function PresentationEditor({
   value,
@@ -283,6 +296,14 @@ export function ArtifactViewer({
   const [presentationDraft, setPresentationDraft] = useState(() =>
     parsePresentation(version?.content ?? ""),
   );
+  const [infographicDraft, setInfographicDraft] =
+    useState<InfographicDocument | null>(() =>
+      parseInfographic(version?.content ?? ""),
+    );
+  const [videoPackageDraft, setVideoPackageDraft] =
+    useState<VideoPackageDocument | null>(() =>
+      parseVideoPackage(version?.content ?? ""),
+    );
   const [editing, setEditing] = useState(false);
   const [activeEditSlideIndex, setActiveEditSlideIndex] = useState(0);
   const label = outputLabel(artifact.output_type);
@@ -290,12 +311,16 @@ export function ArtifactViewer({
   useEffect(() => {
     setEditContent(version?.content ?? "");
     setPresentationDraft(parsePresentation(version?.content ?? ""));
+    setInfographicDraft(parseInfographic(version?.content ?? ""));
+    setVideoPackageDraft(parseVideoPackage(version?.content ?? ""));
     setEditing(false);
   }, [artifact.artifact_run_id, version?.id, version?.content]);
 
   function beginEdit() {
     setEditContent(version?.content ?? "");
     setPresentationDraft(parsePresentation(version?.content ?? ""));
+    setInfographicDraft(parseInfographic(version?.content ?? ""));
+    setVideoPackageDraft(parseVideoPackage(version?.content ?? ""));
     setEditing(true);
     setActiveEditSlideIndex(0);
     onEdit();
@@ -316,6 +341,16 @@ export function ArtifactViewer({
             {version ? "Version " + version.version_number : "No version yet"}
           </p>
           <h2 id="artifact-title">{label}</h2>
+          {artifact.output_type === "infographic" && (
+            <p className="artifact-capability">
+              Editable infographic specification
+            </p>
+          )}
+          {artifact.output_type === "video_package" && (
+            <p className="artifact-capability">
+              Editable video production package
+            </p>
+          )}
           {version && (
             <StatusBadge
               status={
@@ -456,6 +491,30 @@ export function ArtifactViewer({
                   editor.
                 </p>
               )
+            ) : artifact.output_type === "infographic" ? (
+              infographicDraft ? (
+                <InfographicEditor
+                  value={infographicDraft}
+                  onChange={setInfographicDraft}
+                />
+              ) : (
+                <p className="notice notice--error" role="alert">
+                  This infographic specification could not be opened in the
+                  structured editor.
+                </p>
+              )
+            ) : artifact.output_type === "video_package" ? (
+              videoPackageDraft ? (
+                <VideoPackageEditor
+                  value={videoPackageDraft}
+                  onChange={setVideoPackageDraft}
+                />
+              ) : (
+                <p className="notice notice--error" role="alert">
+                  This video package could not be opened in the structured
+                  editor.
+                </p>
+              )
             ) : (
               <>
                 <label htmlFor="artifact-editor">Edit {label}</label>
@@ -475,16 +534,26 @@ export function ArtifactViewer({
                   className="button-primary"
                   onClick={() =>
                     onSave(
-                      presentationDraft &&
-                        artifact.output_type === "presentation"
+                      artifact.output_type === "presentation" &&
+                        presentationDraft
                         ? JSON.stringify(presentationDraft)
-                        : editContent,
+                        : artifact.output_type === "infographic" &&
+                            infographicDraft
+                          ? JSON.stringify(infographicDraft)
+                          : artifact.output_type === "video_package" &&
+                              videoPackageDraft
+                            ? JSON.stringify(videoPackageDraft)
+                            : editContent,
                     )
                   }
                   disabled={
                     busy ||
                     (artifact.output_type === "presentation" &&
-                      !presentationDraft)
+                      !presentationDraft) ||
+                    (artifact.output_type === "infographic" &&
+                      !infographicDraft) ||
+                    (artifact.output_type === "video_package" &&
+                      !videoPackageDraft)
                   }
                 >
                   Save version
@@ -502,6 +571,24 @@ export function ArtifactViewer({
           </div>
         ) : artifact.output_type === "presentation" ? (
           <PresentationViewer content={version.content} />
+        ) : artifact.output_type === "infographic" ? (
+          infographicDraft ? (
+            <InfographicViewer value={infographicDraft} />
+          ) : (
+            <div className="document-empty" role="alert">
+              <FileText aria-hidden="true" />
+              <p>This infographic specification could not be displayed.</p>
+            </div>
+          )
+        ) : artifact.output_type === "video_package" ? (
+          videoPackageDraft ? (
+            <VideoPackageViewer value={videoPackageDraft} />
+          ) : (
+            <div className="document-empty" role="alert">
+              <FileText aria-hidden="true" />
+              <p>This video package could not be displayed.</p>
+            </div>
+          )
         ) : (
           <article
             className={

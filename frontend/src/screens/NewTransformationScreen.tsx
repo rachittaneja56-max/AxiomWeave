@@ -1,7 +1,9 @@
 import { useRef, useState, type DragEvent, type FormEvent } from "react";
 import {
   Check,
+  Clapperboard,
   FileCheck2,
+  FileImage,
   FileText,
   LoaderCircle,
   Megaphone,
@@ -50,6 +52,8 @@ const OUTPUT_ICONS: Record<OutputType, typeof FileText> = {
   x_post: MessageCircle,
   advisory: FileText,
   presentation: Presentation,
+  infographic: FileImage,
+  video_package: Clapperboard,
 };
 
 type Phase = "idle" | "saving" | "generating" | "ready";
@@ -211,21 +215,12 @@ export function NewTransformationScreen({
         (artifact: GeneratedArtifact) => artifact.status === "succeeded",
       );
       if (body.artifacts.length > 0) {
-        const preference: OutputType[] = [
-          "executive_summary",
-          "linkedin_post",
-          "x_post",
-          "advisory",
-          "presentation",
-        ];
         const initial =
-          preference
-            .map((type) =>
-              successful.find(
-                (artifact: GeneratedArtifact) => artifact.output_type === type,
-              ),
-            )
-            .find(Boolean) ?? body.artifacts[0];
+          OUTPUT_TYPES.map(({ value }) =>
+            successful.find(
+              (artifact: GeneratedArtifact) => artifact.output_type === value,
+            ),
+          ).find(Boolean) ?? body.artifacts[0];
         queueMicrotask(() =>
           onOpenReview(
             transformation.transformation_run_id,
@@ -313,16 +308,9 @@ export function NewTransformationScreen({
         next.every((artifact) => artifact.status === "succeeded") &&
         saved
       ) {
-        const preference: OutputType[] = [
-          "executive_summary",
-          "linkedin_post",
-          "x_post",
-          "advisory",
-          "presentation",
-        ];
-        const initial = preference
-          .map((type) => next.find((artifact) => artifact.output_type === type))
-          .find(Boolean);
+        const initial = OUTPUT_TYPES.map(({ value }) =>
+          next.find((artifact) => artifact.output_type === value),
+        ).find(Boolean);
         queueMicrotask(() =>
           onOpenReview(
             saved.transformation_run_id,

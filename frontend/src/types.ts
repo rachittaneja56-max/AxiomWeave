@@ -29,6 +29,18 @@ export const OUTPUT_TYPES = [
     shortLabel: "Slides",
     description: "A concise slide outline with speaker notes.",
   },
+  {
+    value: "infographic",
+    label: "Infographic",
+    shortLabel: "Infographic",
+    description: "An editable structured infographic specification.",
+  },
+  {
+    value: "video_package",
+    label: "Video Package",
+    shortLabel: "Video",
+    description: "An editable video production package with scenes and script.",
+  },
 ] as const;
 
 export type OutputType = (typeof OUTPUT_TYPES)[number]["value"];
@@ -70,12 +82,14 @@ export type GeneratedArtifactVersion = {
   id: number;
   version_number: number;
   source_version_id: number;
+  context_manifest_id?: number | null;
   source_version_number: number;
   content: string;
   provider: string | null;
   model: string | null;
   prompt_version: string | null;
   prompt_hash: string | null;
+  artifact_schema_version?: string | null;
   created_at?: string;
 };
 
@@ -224,6 +238,42 @@ export type PresentationSlide = {
 export type PresentationDocument = {
   title: string;
   slides: PresentationSlide[];
+};
+
+export type InfographicBlock =
+  | { type: "section"; heading: string; body: string }
+  | {
+      type: "callout";
+      label: string;
+      value: string;
+      explanation: string;
+    }
+  | {
+      type: "data";
+      heading: string;
+      rows: { label: string; value: string; note: string }[];
+    };
+
+export type InfographicDocument = {
+  title: string;
+  subtitle: string;
+  key_message: string;
+  blocks: InfographicBlock[];
+  visual_direction: string;
+};
+
+export type VideoScene = {
+  title: string;
+  narration: string;
+  on_screen_text: string[];
+  visual_direction: string;
+  transition_notes: string;
+};
+
+export type VideoPackageDocument = {
+  title: string;
+  concept: string;
+  scenes: VideoScene[];
 };
 
 export type WorkspaceScreen = "dashboard" | "new" | "review";

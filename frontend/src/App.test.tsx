@@ -184,13 +184,22 @@ describe("transformation request form", () => {
         "Context can guide the writing, but it is not treated as source evidence.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getAllByRole("checkbox")).toHaveLength(5);
+    expect(screen.getAllByRole("checkbox")).toHaveLength(7);
     expect(
       screen.getByRole("checkbox", { name: "X Post" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Infographic" })).toBeVisible();
     expect(
-      screen.queryByLabelText(/Infographic|Video package/i),
-    ).not.toBeInTheDocument();
+      screen.getByRole("checkbox", { name: "Video Package" }),
+    ).toBeVisible();
+    expect(
+      screen.getByText("An editable structured infographic specification."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "An editable video production package with scenes and script.",
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Paste text" })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -221,6 +230,17 @@ describe("transformation request form", () => {
     expect(
       screen.getByRole("checkbox", { name: "Professional Post" }),
     ).toBeChecked();
+
+    for (const output of [
+      "X Post",
+      "Formal Advisory",
+      "Presentation",
+      "Infographic",
+      "Video Package",
+    ]) {
+      fireEvent.click(screen.getByRole("checkbox", { name: output }));
+    }
+    expect(screen.getByText("7 selected")).toBeInTheDocument();
   });
 
   it("opens a saved artifact history and records an acceptance decision", async () => {

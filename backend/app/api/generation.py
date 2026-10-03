@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.artifact_contracts import ARTIFACT_CONTRACTS
 from app.auth import require_current_user
 from app.database import get_db_session
 from app.domain.transformation import OutputType
@@ -24,30 +25,26 @@ from app.provider_factory import get_generation_provider as get_generation_provi
 __all__ = ["get_generation_provider", "router"]
 
 router = APIRouter()
-SUPPORTED_OUTPUTS = (
-    OutputType.EXECUTIVE_SUMMARY,
-    OutputType.LINKEDIN_POST,
-    OutputType.X_POST,
-    OutputType.ADVISORY,
-    OutputType.PRESENTATION,
-)
+SUPPORTED_OUTPUTS = tuple(ARTIFACT_CONTRACTS)
 
 
 class GeneratedArtifactVersion(BaseModel):
     id: int
     version_number: int
     source_version_id: int
+    context_manifest_id: int | None
     source_version_number: int
     content: str
     provider: str
     model: str
     prompt_version: str
     prompt_hash: str
+    artifact_schema_version: str | None
 
 
 class ArtifactRunDetail(BaseModel):
     artifact_run_id: int
-    output_type: Literal["executive_summary", "linkedin_post", "x_post", "advisory", "presentation"]
+    output_type: OutputType
     status: Literal["pending", "running", "succeeded", "failed"]
     artifact_version: GeneratedArtifactVersion | None
 
@@ -99,19 +96,18 @@ def _run_detail(session: Session, user: User, artifact_run: ArtifactRun) -> Arti
             id=version.id,
             version_number=version.version_number,
             source_version_id=version.source_version_id,
+            context_manifest_id=version.context_manifest_id,
             source_version_number=source_version_number,
             content=version.content,
             provider=version.provider or "",
             model=version.model or "",
             prompt_version=version.prompt_version or "",
             prompt_hash=version.prompt_hash or "",
+            artifact_schema_version=version.artifact_schema_version,
         )
     return ArtifactRunDetail(
         artifact_run_id=artifact_run.id,
-        output_type=cast(
-            Literal["executive_summary", "linkedin_post", "x_post", "advisory", "presentation"],
-            artifact_run.output_type,
-        ),
+        output_type=OutputType(artifact_run.output_type),
         status=cast(Literal["pending", "running", "succeeded", "failed"], artifact_run.status),
         artifact_version=artifact_version,
     )
