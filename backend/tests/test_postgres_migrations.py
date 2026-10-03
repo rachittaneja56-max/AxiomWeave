@@ -27,6 +27,9 @@ from app.models import (
     ContextManifestEntry,
     Job,
     JobAttempt,
+    MediaAsset,
+    MediaRender,
+    MediaTask,
     RegionEmbedding,
     Source,
     SourceAsset,
@@ -243,7 +246,7 @@ def test_postgres_populated_legacy_auth_upgrade_preserves_data(
                 text("SELECT owner_id FROM sources WHERE title = 'Legacy source'")
             )
 
-        assert revision == "c4a91b0d7e22"
+        assert revision == "f5a127bb64d0"
         assert user["id"] == 42
         assert user["username"] == "legacy-migrated-42"
         assert user["password_hash"] == "!disabled-legacy-google!"
@@ -304,28 +307,42 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
             "artifact_block_dependencies",
             "source_region_alignments",
             "artifact_review_decisions",
+            "media_renders",
+            "media_tasks",
+            "media_assets",
+            "media_rights_records",
+            "media_review_decisions",
+            "media_operation_metrics",
             "alembic_version",
         } <= set(inspector.get_table_names())
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "c4a91b0d7e22"
+        assert revision == "f5a127bb64d0"
         asset_columns = {
             column["name"]: column for column in inspector.get_columns("source_assets")
         }
         assert asset_columns["extraction_profile"]["nullable"] is False
         assert asset_columns["extraction_profile_version"]["nullable"] is False
         assert asset_columns["extraction_coverage"]["nullable"] is False
+        assert asset_columns["extraction_details"]["nullable"] is True
         region_columns = {
             column["name"]: column for column in inspector.get_columns("source_regions")
         }
         assert region_columns["source_segment_id"]["nullable"] is True
         assert region_columns["text"]["nullable"] is True
+        assert region_columns["locator_kind"]["nullable"] is True
+        assert region_columns["locator_metadata"]["nullable"] is True
         artifact_version_columns = {
             column["name"]: column for column in inspector.get_columns("artifact_versions")
         }
         assert artifact_version_columns["artifact_schema_version"]["nullable"] is True
         assert "text_projection" in {
             column["name"] for column in inspector.get_columns("claim_scans")
+        }
+        job_columns = {column["name"]: column for column in inspector.get_columns("jobs")}
+        assert job_columns["media_task_id"]["nullable"] is True
+        assert "ck_jobs_target_matches_type" in {
+            constraint.get("name") for constraint in inspector.get_check_constraints("jobs")
         }
 
         unique_constraints = inspector.get_unique_constraints("artifact_runs")
@@ -346,49 +363,70 @@ def test_postgres_migrations_reach_head_from_an_empty_database(
         engine.dispose()
 
 
-def test_postgres_durable_jobs_migration_preserves_populated_current_data(
+def test_postgres_phase_five_migration_preserves_populated_current_data(
     postgres_test_database_url: URL,
 ) -> None:
-    _upgrade(postgres_test_database_url, "a17c0f5e2d91")
+    _upgrade(postgres_test_database_url, "c4a91b0d7e22")
     rendered_url = postgres_test_database_url.render_as_string(hide_password=False)
     engine = create_database_engine(rendered_url)
-    with create_session_factory(engine)() as session:
-        owner = _add_user(session, "pg_jobs_migration_owner")
-        source, source_version = _add_source_version(session, owner, "Existing PG source")
-        source_pack = session.scalar(select(SourcePack).where(SourcePack.source_id == source.id))
-        assert source_pack is not None
-        transformation = _add_transformation(session, owner, source_version)
-        artifact_run = ArtifactRun(
-            transformation_run_id=transformation.id,
-            output_type="advisory",
-            status="succeeded",
-        )
-        session.add(artifact_run)
-        session.flush()
-        artifact_version_id = session.scalar(
-            text(
-                "INSERT INTO artifact_versions "
-                "(artifact_run_id, version_number, source_version_id, content, "
-                "review_status, created_at) "
-                "VALUES (:run_id, 1, :source_id, 'Existing PG artifact.', "
-                "'draft', CURRENT_TIMESTAMP) "
-                "RETURNING id"
-            ),
-            {"run_id": artifact_run.id, "source_id": source_version.id},
-        )
-        assert artifact_version_id is not None
-        session.commit()
-        source_version_id = source_version.id
-        source_pack_id = source_pack.id
-        artifact_run_id = artifact_run.id
-    engine.dispose()
+    try:
+        with create_session_factory(engine)() as session:
+            owner = _add_user(session, "pg_jobs_migration_owner")
+            source = Source(owner_id=owner.id, title="PostgreSQL source")
+            session.add(source)
+            session.flush()
+            source_text = "Existing PG source"
+            source_version = SourceVersion(
+                source_id=source.id,
+                version_number=1,
+                source_text=source_text,
+                content_hash=source_content_hash(source_text),
+            )
+            session.add(source_version)
+            session.flush()
+            transformation = _add_transformation(session, owner, source_version)
+            artifact_run = ArtifactRun(
+                transformation_run_id=transformation.id,
+                output_type="advisory",
+                status="succeeded",
+            )
+            session.add(artifact_run)
+            session.flush()
+            artifact_version_id = session.scalar(
+                text(
+                    "INSERT INTO artifact_versions "
+                    "(artifact_run_id, version_number, source_version_id, content, "
+                    "review_status, created_at) "
+                    "VALUES (:run_id, 1, :source_id, 'Existing PG artifact.', "
+                    "'draft', CURRENT_TIMESTAMP) "
+                    "RETURNING id"
+                ),
+                {"run_id": artifact_run.id, "source_id": source_version.id},
+            )
+            assert artifact_version_id is not None
+            job_id = session.scalar(
+                text(
+                    "INSERT INTO jobs "
+                    "(artifact_run_id, source_version_id, job_type, resource_class, status, "
+                    "created_at, terminal_at) "
+                    "VALUES (:run_id, :source_id, 'artifact_generation', 'model_io', 'succeeded', "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id"
+                ),
+                {"run_id": artifact_run.id, "source_id": source_version.id},
+            )
+            assert job_id is not None
+            session.commit()
+            owner_id = owner.id
+            source_version_id = source_version.id
+            artifact_run_id = artifact_run.id
+    finally:
+        engine.dispose()
 
     _upgrade(postgres_test_database_url, "head")
     upgraded_engine = create_database_engine(rendered_url)
     try:
         with create_session_factory(upgraded_engine)() as session:
             assert session.get(SourceVersion, source_version_id) is not None
-            assert session.get(SourcePack, source_pack_id) is not None
             assert session.get(ArtifactRun, artifact_run_id) is not None
             persisted_version = session.get(ArtifactVersion, artifact_version_id)
             assert persisted_version is not None
@@ -404,8 +442,71 @@ def test_postgres_durable_jobs_migration_preserves_populated_current_data(
                 )
                 == []
             )
-            assert list(session.scalars(select(Job))) == []
+            persisted_job = session.get(Job, job_id)
+            assert persisted_job is not None
+            assert persisted_job.artifact_run_id == artifact_run_id
+            assert persisted_job.job_type == "artifact_generation"
+            assert persisted_job.resource_class == "model_io"
+            assert persisted_job.media_task_id is None
             assert list(session.scalars(select(JobAttempt))) == []
+
+            media_render = MediaRender(
+                owner_id=owner_id,
+                artifact_version_id=artifact_version_id,
+                artifact_family="infographic",
+                renderer_profile="postgres-fixture",
+                renderer_version="postgres-fixture-v1",
+                render_plan={"artifact_version_id": artifact_version_id},
+                render_plan_hash="a" * 64,
+                dependency_key="b" * 64,
+                status="ready_for_review",
+            )
+            session.add(media_render)
+            session.flush()
+            media_task = MediaTask(
+                owner_id=owner_id,
+                render_id=media_render.id,
+                task_key="infographic",
+                task_kind="infographic_render",
+                dependency_key="c" * 64,
+                status="succeeded",
+            )
+            session.add(media_task)
+            session.flush()
+            media_asset = MediaAsset(
+                owner_id=owner_id,
+                render_id=media_render.id,
+                task_id=media_task.id,
+                purpose="infographic_png",
+                media_type="image/png",
+                byte_size=4,
+                content_hash="d" * 64,
+                storage_key="postgres-phase-five-fixture",
+                width=1080,
+                height=1350,
+                renderer_profile="postgres-fixture",
+                renderer_version="postgres-fixture-v1",
+            )
+            session.add(media_asset)
+            session.flush()
+            media_render.primary_asset_id = media_asset.id
+            media_render_id = media_render.id
+            media_task_id = media_task.id
+            media_asset_id = media_asset.id
+            session.commit()
+            session.expire_all()
+
+            persisted_render = session.get(MediaRender, media_render_id)
+            assert persisted_render is not None
+            assert persisted_render.primary_asset_id == media_asset_id
+            assert persisted_render.artifact_version_id == artifact_version_id
+            persisted_task = session.get(MediaTask, media_task_id)
+            assert persisted_task is not None
+            assert persisted_task.render_id == media_render_id
+            persisted_asset = session.get(MediaAsset, media_asset_id)
+            assert persisted_asset is not None
+            assert persisted_asset.task_id == media_task_id
+            assert persisted_asset.content_hash == "d" * 64
     finally:
         upgraded_engine.dispose()
 
