@@ -257,6 +257,7 @@ describe("transformation request form", () => {
     let reviewStatus: "draft" | "accepted" = "draft";
     let sourceRevisionCreated = false;
     let failEvidenceAnalysisOnce = true;
+    let evidenceAnalyzed = false;
     const artifactVersion = () => ({
       id: 101,
       artifact_run_id: 41,
@@ -288,6 +289,18 @@ describe("transformation request form", () => {
       prompt_hash: "b".repeat(64),
       review_status: reviewStatus,
       created_at: "2026-09-29T00:00:00Z",
+      context_manifest: null,
+      claim_scan: evidenceAnalyzed
+        ? {
+            id: 501,
+            status: "complete",
+            total_batches: 1,
+            completed_batches: 1,
+            failed_batches: 0,
+            needs_review_batches: 0,
+            claims_found: 1,
+          }
+        : null,
     });
     const detail = () => ({
       transformation_run_id: 10,
@@ -429,6 +442,7 @@ describe("transformation request form", () => {
           failEvidenceAnalysisOnce = false;
           return Promise.resolve(jsonResponse({}, 502));
         }
+        evidenceAnalyzed = true;
         return Promise.resolve(
           jsonResponse([
             {
@@ -443,6 +457,38 @@ describe("transformation request form", () => {
               created_at: "2026-09-29T00:00:00Z",
             },
           ]),
+        );
+      }
+      if (input === "/api/artifact-versions/101/lineage") {
+        return Promise.resolve(
+          jsonResponse({
+            artifact_version_id: 101,
+            lineage_available: true,
+            blocks: [
+              {
+                id: 601,
+                block_key: "paragraph:1",
+                ordinal: 1,
+                block_type: "paragraph",
+                visible_text: "The center opened on Saturday.",
+                content_hash: "d".repeat(64),
+                material_claim_ids: [701],
+                dependencies: [],
+              },
+            ],
+            claims: [
+              {
+                id: 701,
+                proposition: "The center opened on Saturday.",
+                artifact_quote: "The center opened on Saturday.",
+                block_mapping_state: "validated",
+                block_keys: ["paragraph:1"],
+              },
+            ],
+            proposals: [],
+            assessments: [],
+            review_decisions: [],
+          }),
         );
       }
       if (input === "/api/source-versions/30") {
@@ -646,7 +692,7 @@ describe("transformation request form", () => {
         selector: "blockquote",
       }),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "View in source" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show in source" }));
     expect(
       await screen.findByRole("dialog", { name: "Source V1" }),
     ).toBeInTheDocument();

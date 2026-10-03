@@ -184,10 +184,27 @@ describe("ReviewWorkspace asynchronous generation", () => {
         scenes: [
           {
             title: "Opening day",
-            narration: "The clinic opens on Monday.",
+            narration: "The clinic opens on Monday. ".repeat(25),
             on_screen_text: ["Opens Monday"],
             visual_direction: "Show the clinic entrance.",
             transition_notes: "Fade to the closing card.",
+          },
+          {
+            title: "First week",
+            narration:
+              "Staff welcome visitors throughout the first week. ".repeat(20),
+            on_screen_text: ["Welcome"],
+            visual_direction: "Show the reception team.",
+            transition_notes: "Move to the community notice.",
+          },
+          {
+            title: "Community notice",
+            narration: "Visitors can ask staff for more information. ".repeat(
+              20,
+            ),
+            on_screen_text: ["Ask staff"],
+            visual_direction: "Show the notice board.",
+            transition_notes: "Fade out.",
           },
         ],
       },
@@ -248,6 +265,30 @@ describe("ReviewWorkspace asynchronous generation", () => {
         expect(
           screen.getByText("Show the clinic entrance."),
         ).toBeInTheDocument();
+        const sceneGrid = document.querySelector(
+          ".structured-artifact__scenes",
+        );
+        expect(sceneGrid).toHaveClass("structured-artifact__scenes--long");
+        expect(
+          screen.getByRole("heading", { name: "First week" }),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByRole("heading", { name: "Community notice" }),
+        ).toBeInTheDocument();
+        const artifactContent = document.querySelector(".structured-artifact");
+        const mediaPanel = document.querySelector(".media-workflow-panel");
+        expect(
+          artifactContent !== null &&
+            mediaPanel !== null &&
+            Boolean(
+              artifactContent.compareDocumentPosition(mediaPanel) &
+              Node.DOCUMENT_POSITION_FOLLOWING,
+            ),
+        ).toBe(true);
+        const guidance = screen
+          .getAllByText("Production guidance")
+          .find((element) => element.closest("details"));
+        expect(guidance?.closest("details")).not.toHaveAttribute("open");
       }
       fireEvent.click(screen.getByRole("button", { name: "Edit" }));
       const titleInput = document.getElementById(

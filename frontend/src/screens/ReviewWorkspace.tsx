@@ -264,6 +264,62 @@ export function ReviewWorkspace({
     latestVersion ??
     null;
 
+  const claimScanInProgress =
+    selectedVersion?.claim_scan?.status === "pending" ||
+    selectedVersion?.claim_scan?.status === "running";
+  const claimScanVersionId = selectedVersion?.id;
+
+  useEffect(() => {
+    if (!claimScanInProgress || claimScanVersionId === undefined) return;
+    let active = true;
+    let timeoutId: number | undefined;
+    let pollCount = 0;
+    const versionId = claimScanVersionId;
+
+    async function poll() {
+      if (!active || pollCount >= 150) return;
+      pollCount += 1;
+      try {
+        const [detailBody, lineageBody] = await Promise.all([
+          api.transformation(transformationId),
+          api.lineage(versionId),
+        ]);
+        if (!active || !isTransformationDetail(detailBody)) return;
+        setDetail(detailBody);
+        if (
+          isRecord(lineageBody) &&
+          Array.isArray(lineageBody.blocks) &&
+          Array.isArray(lineageBody.claims) &&
+          Array.isArray(lineageBody.assessments)
+        ) {
+          setLineageByVersion((current) => ({
+            ...current,
+            [versionId]: lineageBody as unknown as ArtifactLineage,
+          }));
+        }
+        const refreshedVersion = detailBody.artifact_runs
+          .flatMap((artifact) => artifact.versions)
+          .find((version) => version.id === versionId);
+        const stillRunning =
+          refreshedVersion?.claim_scan?.status === "pending" ||
+          refreshedVersion?.claim_scan?.status === "running";
+        if (stillRunning && pollCount < 150) {
+          timeoutId = window.setTimeout(() => void poll(), 2000);
+        }
+      } catch {
+        if (active && pollCount < 150) {
+          timeoutId = window.setTimeout(() => void poll(), 5000);
+        }
+      }
+    }
+
+    timeoutId = window.setTimeout(() => void poll(), 1500);
+    return () => {
+      active = false;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
+  }, [claimScanInProgress, claimScanVersionId, transformationId]);
+
   useEffect(() => {
     onAssistantContextChange(
       activeArtifact

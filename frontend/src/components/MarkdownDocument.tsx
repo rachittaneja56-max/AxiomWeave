@@ -1,6 +1,16 @@
 import ReactMarkdown from "react-markdown";
+import { markdownWithoutDuplicateHeading } from "./markdownUtils";
 
-export function MarkdownDocument({ content }: { content: string }) {
+export function MarkdownDocument({
+  content,
+  suppressFirstHeading,
+}: {
+  content: string;
+  suppressFirstHeading?: string;
+}) {
+  const renderedContent = suppressFirstHeading
+    ? markdownWithoutDuplicateHeading(content, suppressFirstHeading)
+    : content;
   return (
     <div className="markdown-document">
       <ReactMarkdown
@@ -20,7 +30,7 @@ export function MarkdownDocument({ content }: { content: string }) {
           },
         }}
       >
-        {content}
+        {renderedContent}
       </ReactMarkdown>
     </div>
   );

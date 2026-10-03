@@ -23,10 +23,10 @@ export function InfographicViewer({ value }: { value: InfographicDocument }) {
           <InfographicBlockView key={index} block={block} />
         ))}
       </div>
-      <aside className="structured-artifact__direction">
-        <strong>Visual direction</strong>
+      <details className="structured-artifact__guidance">
+        <summary>Production guidance</summary>
         <p>{value.visual_direction}</p>
-      </aside>
+      </details>
     </article>
   );
 }
@@ -334,6 +334,16 @@ export function InfographicEditor({
 }
 
 export function VideoPackageViewer({ value }: { value: VideoPackageDocument }) {
+  const sceneLengths = value.scenes.map(
+    (scene) =>
+      scene.narration.length +
+      scene.on_screen_text.reduce((sum, line) => sum + line.length, 0),
+  );
+  const averageSceneLength =
+    sceneLengths.reduce((sum, length) => sum + length, 0) /
+    Math.max(1, sceneLengths.length);
+  const longForm =
+    averageSceneLength > 460 || Math.max(0, ...sceneLengths) > 760;
   return (
     <article className="structured-artifact structured-artifact--video">
       <header>
@@ -341,13 +351,18 @@ export function VideoPackageViewer({ value }: { value: VideoPackageDocument }) {
         <h2>{value.title}</h2>
         <p className="structured-artifact__message">{value.concept}</p>
       </header>
-      <div className="structured-artifact__scenes">
+      <div
+        className={
+          "structured-artifact__scenes" +
+          (longForm ? " structured-artifact__scenes--long" : "")
+        }
+      >
         {value.scenes.map((scene, index) => (
           <section className="structured-artifact__card" key={index}>
             <p className="eyebrow">Scene {index + 1}</p>
             <h3>{scene.title}</h3>
             {scene.narration && (
-              <div>
+              <div className="structured-artifact__narration">
                 <strong>Narration</strong>
                 <p>{scene.narration}</p>
               </div>
@@ -362,14 +377,24 @@ export function VideoPackageViewer({ value }: { value: VideoPackageDocument }) {
                 </ul>
               </div>
             )}
-            <div>
-              <strong>Visual direction</strong>
-              <p>{scene.visual_direction}</p>
-            </div>
-            {scene.transition_notes && (
-              <p>
-                <strong>Transition notes:</strong> {scene.transition_notes}
-              </p>
+            {(scene.visual_direction || scene.transition_notes) && (
+              <details className="structured-artifact__guidance">
+                <summary>Production guidance</summary>
+                {scene.visual_direction && (
+                  <p>
+                    <strong>Visual direction</strong>
+                    <br />
+                    {scene.visual_direction}
+                  </p>
+                )}
+                {scene.transition_notes && (
+                  <p>
+                    <strong>Transition notes</strong>
+                    <br />
+                    {scene.transition_notes}
+                  </p>
+                )}
+              </details>
             )}
           </section>
         ))}

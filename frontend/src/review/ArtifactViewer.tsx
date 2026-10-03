@@ -30,6 +30,10 @@ import { StatusBadge } from "../components/StatusBadge";
 import { MediaWorkflowPanel } from "./MediaWorkflowPanel";
 import type { PresentationDocument } from "../types";
 import {
+  getScheduleItems,
+  resolvePresentationLayout,
+} from "../presentationLayout";
+import {
   InfographicEditor,
   InfographicViewer,
   VideoPackageEditor,
@@ -94,23 +98,12 @@ function PresentationEditor({
           ))}
         </nav>
         <div className="presentation-editor__content">
-          <div className="slide-canvas slide-canvas--16x9">
-            <div className="slide-canvas__eyebrow">{value.title}</div>
-            <span className="slide-canvas__number">
-              {String(activeIndex + 1).padStart(2, "0")}
-            </span>
-            <h3>{slide.title || "Slide title"}</h3>
-            <p className="slide-canvas__message">{slide.key_message}</p>
-            <ul>
-              {slide.bullets.filter(Boolean).map((bullet, index) => (
-                <li key={index}>{bullet}</li>
-              ))}
-            </ul>
-            <div className="slide-visual-note">
-              <span>Visual direction</span>
-              <p>{slide.visual_recommendation}</p>
-            </div>
-          </div>
+          <PresentationSlideCanvas
+            deckTitle={value.title}
+            slide={slide}
+            slideNumber={activeIndex + 1}
+            slideCount={value.slides.length}
+          />
           <fieldset className="presentation-editor__slide">
             <legend>Edit slide {activeIndex + 1}</legend>
             <label htmlFor="slide-title">Title</label>
@@ -137,15 +130,18 @@ function PresentationEditor({
                 updateSlide("bullets", event.target.value.split("\n"))
               }
             />
-            <label htmlFor="slide-visual">Visual recommendation</label>
-            <textarea
-              id="slide-visual"
-              rows={2}
-              value={slide.visual_recommendation}
-              onChange={(event) =>
-                updateSlide("visual_recommendation", event.target.value)
-              }
-            />
+            <details className="presentation-guidance">
+              <summary>Layout guidance</summary>
+              <label htmlFor="slide-visual">Visual recommendation</label>
+              <textarea
+                id="slide-visual"
+                rows={2}
+                value={slide.visual_recommendation}
+                onChange={(event) =>
+                  updateSlide("visual_recommendation", event.target.value)
+                }
+              />
+            </details>
             <label htmlFor="slide-notes">Speaker notes</label>
             <textarea
               id="slide-notes"
@@ -159,6 +155,92 @@ function PresentationEditor({
         </div>
       </div>
     </div>
+  );
+}
+
+function PresentationSlideCanvas({
+  deckTitle,
+  slide,
+  slideNumber,
+  slideCount,
+}: {
+  deckTitle: string;
+  slide: PresentationDocument["slides"][number];
+  slideNumber: number;
+  slideCount: number;
+}) {
+  const layout = resolvePresentationLayout(slide);
+  const bullets = slide.bullets.filter(Boolean);
+  return (
+    <div
+      className={`slide-canvas slide-canvas--16x9 slide-canvas--${layout}`}
+      data-layout={layout}
+    >
+      <div className="slide-canvas__eyebrow">{deckTitle}</div>
+      <span className="slide-canvas__number">
+        {String(slideNumber).padStart(2, "0")} /{" "}
+        {String(slideCount).padStart(2, "0")}
+      </span>
+      <h3>{slide.title || "Slide title"}</h3>
+      <p className="slide-canvas__message">{slide.key_message}</p>
+      <PresentationSlideContent layout={layout} bullets={bullets} />
+    </div>
+  );
+}
+
+function PresentationSlideContent({
+  layout,
+  bullets,
+}: {
+  layout: ReturnType<typeof resolvePresentationLayout>;
+  bullets: string[];
+}) {
+  if (layout === "timeline") {
+    return (
+      <ol className="slide-content slide-content--timeline">
+        {bullets.map((bullet, index) => (
+          <li key={index}>{bullet}</li>
+        ))}
+      </ol>
+    );
+  }
+  if (layout === "schedule") {
+    const { primary, supporting } = getScheduleItems(bullets);
+    return (
+      <div className="slide-content slide-content--schedule">
+        {primary && <div className="slide-content__primary">{primary}</div>}
+        <ul className="slide-content__cards">
+          {supporting.map((bullet, index) => (
+            <li key={index}>{bullet}</li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+  if (layout === "comparison") {
+    const splitAt = Math.ceil(bullets.length / 2);
+    return (
+      <div className="slide-content slide-content--comparison">
+        {[bullets.slice(0, splitAt), bullets.slice(splitAt)]
+          .filter((group) => group.length > 0)
+          .map((group, index) => (
+            <ul key={index}>
+              {group.map((bullet, bulletIndex) => (
+                <li key={bulletIndex}>{bullet}</li>
+              ))}
+            </ul>
+          ))}
+      </div>
+    );
+  }
+  return (
+    <ul
+      className={`slide-content slide-content--cards${layout === "standard" ? " slide-content--standard" : ""}`}
+    >
+      {bullets.map((bullet, index) => (
+        <li key={index}>{bullet}</li>
+      ))}
+    </ul>
   );
 }
 
@@ -199,23 +281,12 @@ function PresentationViewer({ content }: { content: string }) {
         ))}
       </nav>
       <div className="slide-review">
-        <div className="slide-canvas slide-canvas--16x9">
-          <div className="slide-canvas__eyebrow">{presentation.title}</div>
-          <span className="slide-canvas__number">
-            {String(activeSlide + 1).padStart(2, "0")}
-          </span>
-          <h3>{slide.title}</h3>
-          <p className="slide-canvas__message">{slide.key_message}</p>
-          <ul>
-            {slide.bullets.map((bullet, index) => (
-              <li key={index}>{bullet}</li>
-            ))}
-          </ul>
-          <div className="slide-visual-note">
-            <span>Visual direction</span>
-            <p>{slide.visual_recommendation}</p>
-          </div>
-        </div>
+        <PresentationSlideCanvas
+          deckTitle={presentation.title}
+          slide={slide}
+          slideNumber={activeSlide + 1}
+          slideCount={presentation.slides.length}
+        />
         <div className="slide-controls">
           <span>
             Slide {activeSlide + 1} of {presentation.slides.length}
@@ -611,7 +682,10 @@ export function ArtifactViewer({
                 {Array.from(version.content.trim()).length} / 280 characters
               </p>
             )}
-            <MarkdownDocument content={version.content} />
+            <MarkdownDocument
+              content={version.content}
+              suppressFirstHeading={label}
+            />
           </article>
         )
       ) : artifact.status === "running" || artifact.status === "pending" ? (
