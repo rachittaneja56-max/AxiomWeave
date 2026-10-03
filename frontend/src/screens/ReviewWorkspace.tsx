@@ -135,7 +135,6 @@ export function ReviewWorkspace({
     let active = true;
     async function load() {
       setLoading(true);
-      setError(null);
       try {
         const detailBody = await api.transformation(transformationId);
         if (!isTransformationDetail(detailBody)) {
@@ -556,7 +555,10 @@ export function ReviewWorkspace({
         <button
           type="button"
           className="button-secondary"
-          onClick={() => setReload((value) => value + 1)}
+          onClick={() => {
+            setError(null);
+            setReload((value) => value + 1);
+          }}
         >
           <RefreshCw aria-hidden="true" />
           Retry
