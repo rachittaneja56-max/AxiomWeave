@@ -7,6 +7,8 @@ import {
 } from "react";
 import {
   Check,
+  ChevronLeft,
+  Ellipsis,
   FileUp,
   Link2,
   LoaderCircle,
@@ -133,6 +135,8 @@ export function WeaveAssistant({
   transformationId,
   contextLabel,
   creationMode,
+  creationPage = false,
+  onExitCreationPage = () => {},
   onNavigateNew,
   onTransformationCreated,
   onWorkspaceChanged,
@@ -140,6 +144,8 @@ export function WeaveAssistant({
   transformationId: number | null;
   contextLabel: string;
   creationMode: boolean;
+  creationPage?: boolean;
+  onExitCreationPage?: () => void;
   onNavigateNew: () => void;
   onTransformationCreated: (
     id: number,
@@ -163,6 +169,7 @@ export function WeaveAssistant({
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLElement>(null);
+  const visible = creationPage || open;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -184,15 +191,11 @@ export function WeaveAssistant({
   }, [transformationId]);
 
   useEffect(() => {
-    if (creationMode) setOpen(true);
-  }, [creationMode]);
-
-  useEffect(() => {
-    if (open) {
+    if (visible) {
       void refresh();
       requestAnimationFrame(() => composerRef.current?.focus());
     }
-  }, [open, refresh]);
+  }, [visible, refresh]);
 
   useEffect(() => {
     if (transformationId === null) return;
@@ -203,24 +206,26 @@ export function WeaveAssistant({
   }, [transformationId]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!visible) return;
     function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && creationPage) {
+        onExitCreationPage();
+      } else if (event.key === "Escape") {
         setOpen(false);
         launcherRef.current?.focus();
       }
     }
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [open]);
+  }, [visible, creationPage, onExitCreationPage]);
 
   useEffect(() => {
-    if (!open || !panelRef.current) return;
+    if (!visible || !panelRef.current) return;
     const history = panelRef.current.querySelector<HTMLElement>(
       ".weave-panel__history",
     );
     if (history) history.scrollTop = history.scrollHeight;
-  }, [open, state.messages, busy, sourceMode]);
+  }, [visible, state.messages, busy, sourceMode]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -386,23 +391,28 @@ export function WeaveAssistant({
 
   return (
     <>
-      {open && (
+      {visible && (
         <>
-          <button
-            type="button"
-            className="weave-panel-scrim"
-            aria-label="Close Weave assistant"
-            onClick={() => {
-              setOpen(false);
-              launcherRef.current?.focus();
-            }}
-          />
+          {!creationPage && (
+            <button
+              type="button"
+              className="weave-panel-scrim"
+              aria-label="Close Weave assistant"
+              onClick={() => {
+                setOpen(false);
+                launcherRef.current?.focus();
+              }}
+            />
+          )}
           <section
-            className="weave-panel"
+            className={
+              "weave-panel" +
+              (creationPage ? " weave-panel--creation-page" : "")
+            }
             id="weave-panel"
             aria-label="Weave assistant"
-            aria-modal="false"
-            role="dialog"
+            aria-modal={creationPage ? undefined : "false"}
+            role={creationPage ? "region" : "dialog"}
             ref={panelRef}
           >
             <header className="weave-panel__header">
@@ -411,43 +421,61 @@ export function WeaveAssistant({
                   <MessageCircle />
                 </span>
                 <div>
-                  <strong>Weave</strong>
+                  <strong id="weave-panel-title">Weave</strong>
                   <span>AxiomWeave assistant</span>
                   <small>{contextLabel}</small>
                 </div>
               </div>
               <div className="weave-panel__controls">
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Clear message and source draft"
-                  title="Clear draft"
-                  onClick={clearDraft}
-                >
-                  <span className="weave-panel__clear-label">Clear draft</span>
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Minimize Weave assistant"
-                  onClick={() => {
-                    setOpen(false);
-                    launcherRef.current?.focus();
-                  }}
-                >
-                  <Minus aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Close Weave assistant"
-                  onClick={() => {
-                    setOpen(false);
-                    launcherRef.current?.focus();
-                  }}
-                >
-                  <X aria-hidden="true" />
-                </button>
+                <details className="weave-panel__overflow">
+                  <summary
+                    role="button"
+                    className="icon-button"
+                    aria-label="More Weave actions"
+                  >
+                    <Ellipsis aria-hidden="true" />
+                  </summary>
+                  <div className="weave-panel__overflow-menu">
+                    <button type="button" onClick={clearDraft}>
+                      Reset draft
+                    </button>
+                  </div>
+                </details>
+                {creationPage ? (
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Back to start options"
+                    onClick={onExitCreationPage}
+                  >
+                    <ChevronLeft aria-hidden="true" />
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="Minimize Weave assistant"
+                      onClick={() => {
+                        setOpen(false);
+                        launcherRef.current?.focus();
+                      }}
+                    >
+                      <Minus aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="Close Weave assistant"
+                      onClick={() => {
+                        setOpen(false);
+                        launcherRef.current?.focus();
+                      }}
+                    >
+                      <X aria-hidden="true" />
+                    </button>
+                  </>
+                )}
               </div>
             </header>
             <div className="weave-panel__history" aria-live="polite">
@@ -514,7 +542,15 @@ export function WeaveAssistant({
                       {item.role === "assistant" &&
                         plan &&
                         plan.steps.length > 0 && (
-                          <PlanCard plan={plan} busy={busy} onDecide={decide} />
+                          <PlanCard
+                            plan={plan}
+                            busy={busy}
+                            sourceLabel={
+                              sourceName ||
+                              (sourceDraft ? "Pasted source" : null)
+                            }
+                            onDecide={decide}
+                          />
                         )}
                     </article>
                   );
@@ -668,18 +704,20 @@ export function WeaveAssistant({
           </section>
         </>
       )}
-      <button
-        type="button"
-        className="weave-launcher"
-        aria-label={open ? "Close Weave assistant" : "Open Weave assistant"}
-        aria-controls="weave-panel"
-        aria-expanded={open}
-        ref={launcherRef}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <MessageCircle aria-hidden="true" />
-        <span>Weave</span>
-      </button>
+      {!creationPage && (
+        <button
+          type="button"
+          className="weave-launcher"
+          aria-label={open ? "Close Weave assistant" : "Open Weave assistant"}
+          aria-controls="weave-panel"
+          aria-expanded={open}
+          ref={launcherRef}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <MessageCircle aria-hidden="true" />
+          <span>Weave</span>
+        </button>
+      )}
     </>
   );
 }
@@ -687,21 +725,28 @@ export function WeaveAssistant({
 function PlanCard({
   plan,
   busy,
+  sourceLabel,
   onDecide,
 }: {
   plan: ActionPlan;
   busy: boolean;
+  sourceLabel: string | null;
   onDecide: (plan: ActionPlan, decision: "confirm" | "reject") => Promise<void>;
 }) {
+  const createsTransformation = plan.steps.some(
+    (step) => step.command_type === "create_transformation",
+  );
   return (
     <section className="weave-plan" aria-label="Weave proposal">
       <div className="weave-plan__heading">
         <div>
           <span>Weave proposes</span>
           <strong>
-            {plan.steps.length === 1
-              ? plan.steps[0].summary
-              : `Plan · ${plan.steps.length} actions`}
+            {createsTransformation
+              ? "Review transformation setup"
+              : plan.steps.length === 1
+                ? plan.steps[0].summary
+                : `Plan · ${plan.steps.length} actions`}
           </strong>
         </div>
         {plan.status === "awaiting_confirmation" && (
@@ -735,8 +780,8 @@ function PlanCard({
                     })}
                   {request && typeof request.source_text === "string" && (
                     <li>
-                      Source: {request.source_text.length.toLocaleString()}{" "}
-                      characters
+                      Source: {sourceLabel ? `${sourceLabel} · ` : ""}
+                      {request.source_text.length.toLocaleString()} characters
                     </li>
                   )}
                 </ul>
@@ -769,7 +814,7 @@ function PlanCard({
               disabled={busy}
               onClick={() => void onDecide(plan, "confirm")}
             >
-              Confirm
+              {createsTransformation ? "Create transformation" : "Confirm"}
             </button>
           </div>
         )}

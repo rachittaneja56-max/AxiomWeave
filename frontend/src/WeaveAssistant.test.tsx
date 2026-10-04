@@ -3,6 +3,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -126,6 +127,19 @@ describe("global Weave assistant", () => {
       screen.getByRole("button", { name: "Open Weave assistant" }),
     );
     expect(await screen.findByText("Executive Summary")).toBeInTheDocument();
+    expect(screen.queryByText("Clear draft")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More Weave actions" }));
+    expect(screen.getByRole("button", { name: "Reset draft" })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Minimize Weave assistant" }),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("dialog", { name: "Weave assistant" })).getByRole(
+        "button",
+        { name: "Close Weave assistant" },
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "More Weave actions" }));
     view.rerender(
       <WeaveAssistant
         transformationId={4}
@@ -267,13 +281,15 @@ describe("global Weave assistant", () => {
         transformationId={null}
         contextLabel="Creating a transformation"
         creationMode
+        creationPage
+        onExitCreationPage={() => {}}
         onNavigateNew={() => {}}
         onTransformationCreated={onTransformationCreated}
         onWorkspaceChanged={() => {}}
       />,
     );
     expect(
-      await screen.findByRole("dialog", { name: "Weave assistant" }),
+      await screen.findByRole("region", { name: "Weave assistant" }),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Add a source" }));
     fireEvent.change(screen.getByLabelText("Paste your source"), {
@@ -287,7 +303,9 @@ describe("global Weave assistant", () => {
       await screen.findByText("Outputs: Executive Summary, Presentation"),
     ).toBeInTheDocument();
     expect(onTransformationCreated).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create transformation" }),
+    );
     await waitFor(() =>
       expect(onTransformationCreated).toHaveBeenCalledWith(
         21,

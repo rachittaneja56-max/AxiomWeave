@@ -9,6 +9,9 @@ import {
   Megaphone,
   MessageCircle,
   Presentation,
+  ArrowRight,
+  Settings2,
+  Sparkles,
   Upload,
   X,
 } from "lucide-react";
@@ -60,9 +63,17 @@ type Phase = "idle" | "saving" | "generating" | "ready";
 type SourceMode = "paste" | "upload" | "url";
 
 export function NewTransformationScreen({
+  path,
+  onChooseWeave,
+  onChooseManual,
+  onBackToOptions,
   onOpenReview,
   onBack,
 }: {
+  path: "choose" | "weave" | "manual";
+  onChooseWeave: () => void;
+  onChooseManual: () => void;
+  onBackToOptions: () => void;
   onOpenReview: (
     id: number,
     title: string,
@@ -83,7 +94,6 @@ export function NewTransformationScreen({
   const [retryingArtifact, setRetryingArtifact] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
-  const [manualSetup, setManualSetup] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const isLocked =
     phase === "saving" || phase === "generating" || Boolean(saved);
@@ -344,26 +354,75 @@ export function NewTransformationScreen({
 
   const sourceCount = sourceCharacterCount(request.source_text);
 
-  if (!manualSetup && phase === "idle" && !saved) {
+  if (path === "choose") {
     return (
       <section
-        className="creation-start"
+        className="creation-choice"
         aria-labelledby="creation-start-title"
       >
-        <p className="eyebrow">Start with Weave</p>
-        <h2 id="creation-start-title">Tell Weave what you’re working with</h2>
-        <p>
-          Describe the source and the materials you need. Add a document, paste
-          text, or import a public page in the Weave panel. You’ll review the
-          proposed setup before anything is created.
+        <p className="eyebrow">A new transformation</p>
+        <h2 id="creation-start-title">How would you like to start?</h2>
+        <p className="creation-choice__intro">
+          Choose a guided conversation or set up each detail yourself.
         </p>
-        <button
-          type="button"
-          className="button-secondary"
-          onClick={() => setManualSetup(true)}
-        >
-          Use manual setup
+        <div className="creation-choice__cards">
+          <button
+            type="button"
+            className="creation-choice__card"
+            onClick={onChooseWeave}
+          >
+            <span className="creation-choice__icon">
+              <Sparkles aria-hidden="true" />
+            </span>
+            <span className="creation-choice__copy">
+              <strong>Create with Weave</strong>
+              <span>
+                Describe what you need in natural language and review the
+                proposed setup.
+              </span>
+              <span className="creation-choice__action">
+                Continue with Weave <ArrowRight aria-hidden="true" />
+              </span>
+            </span>
+          </button>
+          <button
+            type="button"
+            className="creation-choice__card"
+            onClick={onChooseManual}
+          >
+            <span className="creation-choice__icon">
+              <Settings2 aria-hidden="true" />
+            </span>
+            <span className="creation-choice__copy">
+              <strong>Manual setup</strong>
+              <span>
+                Configure the source, outputs, audience and controls directly.
+              </span>
+              <span className="creation-choice__action">
+                Open manual setup <ArrowRight aria-hidden="true" />
+              </span>
+            </span>
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  if (path === "weave") {
+    return (
+      <section
+        className="creation-weave-intro"
+        aria-labelledby="creation-weave-title"
+      >
+        <button type="button" className="text-button" onClick={onBackToOptions}>
+          Back to start options
         </button>
+        <p className="eyebrow">Create with Weave</p>
+        <h2 id="creation-weave-title">Describe what you want to create</h2>
+        <p>
+          Share your source and goals. Weave will prepare a setup for you to
+          review before you confirm creation.
+        </p>
       </section>
     );
   }
@@ -374,10 +433,10 @@ export function NewTransformationScreen({
         <button
           type="button"
           className="text-button"
-          onClick={() => setManualSetup(false)}
+          onClick={onBackToOptions}
           disabled={isLocked}
         >
-          Back to chat-first setup
+          Back to start options
         </button>
       </div>
       <form

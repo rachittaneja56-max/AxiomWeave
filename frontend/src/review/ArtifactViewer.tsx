@@ -334,6 +334,9 @@ function PresentationViewer({ content }: { content: string }) {
 export function ArtifactViewer({
   artifact,
   version,
+  selectedVersionId,
+  versions,
+  onSelectVersion,
   projectTitle,
   currentSourceVersion,
   isLatest,
@@ -352,6 +355,9 @@ export function ArtifactViewer({
 }: {
   artifact: ReviewArtifactRun;
   version: ReviewArtifactVersion | null;
+  selectedVersionId: number | null;
+  versions: ReviewArtifactVersion[];
+  onSelectVersion: (versionId: number) => void;
   projectTitle: string;
   currentSourceVersion: number;
   isLatest: boolean;
@@ -415,8 +421,47 @@ export function ArtifactViewer({
           <p className="artifact-project-meta">
             {projectTitle} <span aria-hidden="true">·</span> Source V
             {currentSourceVersion}
-            {version && <span> · Version {version.version_number}</span>}
           </p>
+          {version && (
+            <details className="artifact-version-switcher">
+              <summary
+                role="button"
+                aria-label={`Version ${version.version_number} of ${versions.length}`}
+              >
+                Version {version.version_number} of {versions.length}
+                <ChevronDown aria-hidden="true" />
+              </summary>
+              <div
+                className="artifact-version-switcher__menu"
+                role="group"
+                aria-label="Artifact versions"
+              >
+                {[...versions].reverse().map((item) => (
+                  <button
+                    type="button"
+                    key={item.id}
+                    aria-current={
+                      item.id === selectedVersionId ? "true" : undefined
+                    }
+                    onClick={(event) => {
+                      onSelectVersion(item.id);
+                      const parent = event.currentTarget.closest("details");
+                      if (parent) parent.open = false;
+                    }}
+                  >
+                    <span>Version {item.version_number}</span>
+                    <small>
+                      {item.review_status === "draft"
+                        ? "Draft"
+                        : item.review_status === "accepted"
+                          ? "Accepted"
+                          : "Rejected"}
+                    </small>
+                  </button>
+                ))}
+              </div>
+            </details>
+          )}
           {artifact.output_type === "infographic" && (
             <p className="artifact-capability">
               Editable infographic specification
@@ -442,19 +487,9 @@ export function ArtifactViewer({
         </div>
         {version && isLatest && !editing && (
           <div className="artifact-toolbar" aria-label="Artifact actions">
-            {artifact.output_type === "presentation" && (
-              <button
-                type="button"
-                className="button-secondary"
-                onClick={() => onPowerpointExport(version.content)}
-              >
-                <Download aria-hidden="true" />
-                Download PowerPoint
-              </button>
-            )}
             <button
               type="button"
-              className="button-primary button-primary--small"
+              className="button-primary button-primary--small artifact-toolbar__edit"
               onClick={beginEdit}
             >
               <Pencil aria-hidden="true" />
@@ -462,7 +497,7 @@ export function ArtifactViewer({
             </button>
             <button
               type="button"
-              className="button-secondary traceability-action"
+              className="button-secondary traceability-action artifact-toolbar__traceability"
               onClick={(event) => onTraceability(event.currentTarget)}
             >
               <GitBranch aria-hidden="true" />
@@ -470,7 +505,7 @@ export function ArtifactViewer({
             </button>
             <button
               type="button"
-              className="button-secondary"
+              className="button-secondary artifact-toolbar__regenerate"
               onClick={onRegenerate}
               disabled={busy}
             >
@@ -493,20 +528,30 @@ export function ArtifactViewer({
                 Accepted
               </span>
             ) : null}
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Copy artifact"
-              onClick={() => onCopy(artifact.output_type, version.content)}
-            >
-              <Copy aria-hidden="true" />
-            </button>
+            {artifact.output_type === "presentation" && (
+              <button
+                type="button"
+                className="button-secondary artifact-toolbar__powerpoint"
+                onClick={() => onPowerpointExport(version.content)}
+              >
+                <Download aria-hidden="true" />
+                Download PowerPoint
+              </button>
+            )}
             <details className="artifact-more">
-              <summary aria-label="More artifact actions">
+              <summary role="button" aria-label="More artifact actions">
                 <ChevronDown aria-hidden="true" />
                 <span>More</span>
               </summary>
               <div className="artifact-more__menu">
+                <button
+                  type="button"
+                  className="artifact-more__copy"
+                  onClick={() => onCopy(artifact.output_type, version.content)}
+                >
+                  <Copy aria-hidden="true" />
+                  Copy artifact
+                </button>
                 <button
                   type="button"
                   onClick={() =>

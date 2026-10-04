@@ -1,7 +1,10 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReviewArtifactRun, ReviewArtifactVersion } from "../types";
 import { ArtifactViewer } from "./ArtifactViewer";
+
+const styles = readFileSync("src/styles.css", "utf8");
 
 afterEach(cleanup);
 
@@ -29,7 +32,7 @@ const presentation = {
 function renderViewer() {
   const version = {
     id: 50,
-    version_number: 1,
+    version_number: 2,
     source_version_id: 30,
     source_version_number: 1,
     content: JSON.stringify(presentation),
@@ -42,18 +45,29 @@ function renderViewer() {
     context_manifest: null,
     claim_scan: null,
   } as ReviewArtifactVersion;
+  const previousVersion = {
+    ...version,
+    id: 49,
+    version_number: 1,
+    content: "Earlier draft",
+    review_status: "accepted",
+  } as ReviewArtifactVersion;
   const artifact = {
     artifact_run_id: 40,
     output_type: "presentation",
     status: "succeeded",
-    versions: [version],
+    versions: [previousVersion, version],
   } as ReviewArtifactRun;
   const onSave = vi.fn();
+  const onSelectVersion = vi.fn();
 
   render(
     <ArtifactViewer
       artifact={artifact}
       version={version}
+      versions={artifact.versions}
+      selectedVersionId={version.id}
+      onSelectVersion={onSelectVersion}
       projectTitle="Project Asteria"
       currentSourceVersion={1}
       isLatest
@@ -71,7 +85,7 @@ function renderViewer() {
       onTraceability={() => {}}
     />,
   );
-  return { onSave };
+  return { onSave, onSelectVersion };
 }
 
 function renderExecutiveSummary() {
@@ -100,6 +114,9 @@ function renderExecutiveSummary() {
     <ArtifactViewer
       artifact={artifact}
       version={version}
+      versions={artifact.versions}
+      selectedVersionId={version.id}
+      onSelectVersion={() => {}}
       projectTitle="Project Asteria"
       currentSourceVersion={1}
       isLatest
@@ -136,6 +153,50 @@ describe("presentation artifact view and editor", () => {
       document.querySelector(".slide-canvas")?.getAttribute("data-layout"),
     ).toBe("standard");
     expect(screen.queryByText(guidance)).not.toBeInTheDocument();
+  });
+
+  it("switches between immutable versions from the artifact header", () => {
+    const { onSave, onSelectVersion } = renderViewer();
+    fireEvent.click(
+      screen
+        .getByRole("group", { name: "Artifact versions" })
+        .parentElement!.querySelector("summary")!,
+    );
+    expect(
+      screen.getByRole("button", { name: /Version 1 Accepted/ }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Version 1 Accepted/ }));
+    expect(onSelectVersion).toHaveBeenCalledWith(49);
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("keeps primary actions visible and secondary actions available in More", () => {
+    renderViewer();
+    expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Traceability" }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "More artifact actions" }),
+    );
+    expect(screen.getByRole("button", { name: "Copy artifact" })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Download Markdown" }),
+    ).toBeVisible();
+  });
+
+  it("provides mobile thumbnail strips and a stacked editor structure", () => {
+    renderViewer();
+    expect(
+      document.querySelector(".presentation-viewer > .slide-rail"),
+    ).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(
+      document.querySelector(".presentation-editor__workspace > .slide-rail"),
+    ).not.toBeNull();
+    expect(styles).toContain(".presentation-viewer > .slide-rail");
+    expect(styles).toContain(".presentation-editor__workspace > .slide-rail");
+    expect(styles).toContain("grid-template-columns: minmax(0, 1fr)");
   });
 
   it("keeps editable layout guidance in a disclosure and exposes all controls", () => {

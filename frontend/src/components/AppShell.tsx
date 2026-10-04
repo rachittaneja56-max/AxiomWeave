@@ -19,6 +19,8 @@ type AppShellProps = {
   sourceVersion?: number | null;
   assistantContext: string;
   transformationId: number | null;
+  creationPage?: boolean;
+  onExitCreationPage?: () => void;
   onTransformationCreated: (
     id: number,
     title: string,
@@ -42,6 +44,8 @@ export function AppShell({
   sourceVersion,
   assistantContext,
   transformationId,
+  creationPage = false,
+  onExitCreationPage = () => {},
   onTransformationCreated,
   onWorkspaceChanged,
 }: AppShellProps) {
@@ -167,15 +171,17 @@ export function AppShell({
           )}
           {children}
         </main>
+        <WeaveAssistant
+          transformationId={transformationId}
+          contextLabel={assistantContext}
+          creationMode={creationPage}
+          creationPage={creationPage}
+          onExitCreationPage={onExitCreationPage}
+          onNavigateNew={() => navigate("new")}
+          onTransformationCreated={onTransformationCreated}
+          onWorkspaceChanged={onWorkspaceChanged}
+        />
       </div>
-      <WeaveAssistant
-        transformationId={transformationId}
-        contextLabel={assistantContext}
-        creationMode={screen === "new"}
-        onNavigateNew={() => navigate("new")}
-        onTransformationCreated={onTransformationCreated}
-        onWorkspaceChanged={onWorkspaceChanged}
-      />
     </div>
   );
 }

@@ -83,11 +83,15 @@ async function renderAuthenticatedWorkspace() {
   await screen.findByRole("heading", { name: "New transformation" });
   expect(
     await screen.findByRole("heading", {
-      name: "Tell Weave what you’re working with",
+      name: "How would you like to start?",
     }),
   ).toBeVisible();
-  expect(screen.getByRole("dialog", { name: "Weave assistant" })).toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "Use manual setup" }));
+  expect(
+    screen.getByRole("button", { name: /Create with Weave/ }),
+  ).toBeVisible();
+  expect(screen.getByRole("button", { name: /Manual setup/ })).toBeVisible();
+  expect(screen.queryByRole("dialog", { name: "Weave assistant" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /Manual setup/ }));
 }
 
 function fillRequiredControls() {
@@ -251,6 +255,38 @@ describe("transformation request form", () => {
       fireEvent.click(screen.getByRole("checkbox", { name: output }));
     }
     expect(screen.getByText("7 selected")).toBeInTheDocument();
+  });
+
+  it("opens a full-page Weave creation path without opening the floating assistant", async () => {
+    installWorkspaceFetch(vi.fn());
+    render(<App />);
+    await screen.findByRole("heading", { name: "Transformations" });
+    fireEvent.click(
+      within(
+        screen.getByRole("navigation", { name: "Main navigation" }),
+      ).getByRole("button", { name: "New transformation" }),
+    );
+    await screen.findByRole("heading", {
+      name: "How would you like to start?",
+    });
+    expect(
+      screen.queryByRole("dialog", { name: "Weave assistant" }),
+    ).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Create with Weave/ }));
+    expect(
+      await screen.findByRole("region", { name: "Weave assistant" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: "Describe what you want to create" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("dialog", { name: "Weave assistant" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Open Weave assistant" }),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Add a source" })).toBeVisible();
   });
 
   it("opens a saved artifact history and records an acceptance decision", async () => {

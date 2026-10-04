@@ -804,6 +804,14 @@ export function ReviewWorkspace({
             <ArtifactViewer
               artifact={activeArtifact}
               version={selectedVersion}
+              versions={activeArtifact.versions}
+              selectedVersionId={selectedVersion?.id ?? null}
+              onSelectVersion={(versionId) =>
+                setSelectedVersions((current) => ({
+                  ...current,
+                  [activeArtifact.artifact_run_id]: versionId,
+                }))
+              }
               projectTitle={projectTitle}
               currentSourceVersion={detail.source_version.version_number}
               isLatest={isLatest}

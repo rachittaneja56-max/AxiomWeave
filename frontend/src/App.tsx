@@ -26,6 +26,9 @@ function Workspace({
   const [reviewRefresh, setReviewRefresh] = useState(0);
   const [logoutError, setLogoutError] = useState(false);
   const [pendingOutput, setPendingOutput] = useState<OutputType | undefined>();
+  const [creationPath, setCreationPath] = useState<
+    "choose" | "weave" | "manual"
+  >("choose");
 
   function openReview(
     id: number,
@@ -43,6 +46,7 @@ function Workspace({
 
   function navigate(destination: "dashboard" | "new") {
     setScreen(destination);
+    if (destination === "new") setCreationPath("choose");
     setLogoutError(false);
   }
 
@@ -94,6 +98,8 @@ function Workspace({
             : assistantContext
       }
       transformationId={screen === "review" ? reviewId : null}
+      creationPage={screen === "new" && creationPath === "weave"}
+      onExitCreationPage={() => setCreationPath("choose")}
       onNavigate={navigate}
       onLogout={() => void handleLogout()}
       onTransformationCreated={(id, title, sourceVersion) =>
@@ -109,6 +115,10 @@ function Workspace({
       )}
       {screen === "new" && (
         <NewTransformationScreen
+          path={creationPath}
+          onChooseWeave={() => setCreationPath("weave")}
+          onChooseManual={() => setCreationPath("manual")}
+          onBackToOptions={() => setCreationPath("choose")}
           onBack={() => navigate("dashboard")}
           onOpenReview={openReview}
         />
