@@ -24,23 +24,27 @@ function Workspace({
   const [reviewSourceVersion, setReviewSourceVersion] = useState(1);
   const [assistantContext, setAssistantContext] = useState("Project overview");
   const [reviewRefresh, setReviewRefresh] = useState(0);
+  const [reviewNotice, setReviewNotice] = useState<string | undefined>();
   const [logoutError, setLogoutError] = useState(false);
   const [pendingOutput, setPendingOutput] = useState<OutputType | undefined>();
   const [creationPath, setCreationPath] = useState<
     "choose" | "weave" | "manual"
   >("choose");
+  const [creationSessionId, setCreationSessionId] = useState(0);
 
   function openReview(
     id: number,
     title: string,
     sourceVersion: number,
     outputType?: OutputType,
+    notice?: string,
   ) {
     setReviewId(id);
     setReviewTitle(title || "Untitled transformation");
     setReviewSourceVersion(sourceVersion);
     setAssistantContext("Project overview");
     setPendingOutput(outputType);
+    setReviewNotice(notice);
     setScreen("review");
   }
 
@@ -99,11 +103,14 @@ function Workspace({
       }
       transformationId={screen === "review" ? reviewId : null}
       creationPage={screen === "new" && creationPath === "weave"}
+      immersive={screen === "new" && creationPath === "weave"}
+      creationSessionId={creationSessionId}
       onExitCreationPage={() => setCreationPath("choose")}
+      onManualSetup={() => setCreationPath("manual")}
       onNavigate={navigate}
       onLogout={() => void handleLogout()}
-      onTransformationCreated={(id, title, sourceVersion) =>
-        openReview(id, title, sourceVersion)
+      onTransformationCreated={(id, title, sourceVersion, outputType, notice) =>
+        openReview(id, title, sourceVersion, outputType, notice)
       }
       onWorkspaceChanged={() => setReviewRefresh((value) => value + 1)}
     >
@@ -116,7 +123,10 @@ function Workspace({
       {screen === "new" && (
         <NewTransformationScreen
           path={creationPath}
-          onChooseWeave={() => setCreationPath("weave")}
+          onChooseWeave={() => {
+            setCreationSessionId((value) => value + 1);
+            setCreationPath("weave");
+          }}
           onChooseManual={() => setCreationPath("manual")}
           onBackToOptions={() => setCreationPath("choose")}
           onBack={() => navigate("dashboard")}
@@ -134,6 +144,7 @@ function Workspace({
           onAssistantContextChange={setAssistantContext}
           projectTitle={reviewTitle}
           refreshKey={reviewRefresh}
+          initialNotice={reviewNotice}
         />
       )}
     </AppShell>

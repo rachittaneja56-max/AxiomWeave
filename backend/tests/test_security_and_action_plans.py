@@ -86,7 +86,7 @@ def create_transformation_proposal(source_text: str) -> ActionPlanProposal:
         explanation="I prepared a transformation draft for your review.",
         steps=[
             ProposedActionStep(
-                command_type="create_transformation",
+                command_type="create_transformation_and_generate",
                 arguments={
                     "request": {
                         "source_text": source_text,
@@ -191,9 +191,13 @@ def test_global_weave_create_waits_for_confirmation_and_uses_typed_handler(
     assert plan["transformation_run_id"] is None
     assert plan["status"] == "awaiting_confirmation"
     assert plan["requires_confirmation"] is True
-    assert plan["steps"][0]["command_type"] == "create_transformation"
+    assert plan["steps"][0]["command_type"] == "create_transformation_and_generate"
+    assert "generate:" in plan["steps"][0]["summary"]
+    assert "Executive Summary" in plan["steps"][0]["summary"]
     with factory() as session:
         assert session.scalar(select(TransformationRun)) is None
+        assert session.scalar(select(ArtifactRun)) is None
+        assert session.scalar(select(Job)) is None
 
     decision = {"plan_hash": plan["plan_hash"], "plan_version": plan["plan_version"]}
     confirmed = client.post(f"/api/action-plans/{plan['id']}/confirm", json=decision)
@@ -202,6 +206,13 @@ def test_global_weave_create_waits_for_confirmation_and_uses_typed_handler(
     assert confirmed.json()["steps"][0]["status"] == "completed"
     reference = confirmed.json()["steps"][0]["result_reference"]
     assert reference is not None and reference.startswith("transformation_run_id:")
+    assert "source_version_number:1" in reference
+    assert "generation_status:running" in reference
+    target_ids = confirmed.json()["steps"][0]["target_ids"]
+    assert target_ids["transformation_run_id"] > 0
+    assert target_ids["source_version_id"] > 0
+    assert target_ids["artifact_run_executive_summary_id"] > 0
+    assert target_ids["artifact_run_presentation_id"] > 0
     assert client.post(f"/api/action-plans/{plan['id']}/confirm", json=decision).status_code == 409
 
     history = client.get("/api/weave/chat")
@@ -210,12 +221,133 @@ def test_global_weave_create_waits_for_confirmation_and_uses_typed_handler(
     with factory() as session:
         created = session.scalars(select(TransformationRun)).one()
         assert created.selected_output_types == ["executive_summary", "presentation"]
+        artifact_runs = list(session.scalars(select(ArtifactRun).order_by(ArtifactRun.id)))
+        jobs = list(session.scalars(select(Job).order_by(Job.id)))
+        assert [run.output_type for run in artifact_runs] == [
+            "executive_summary",
+            "presentation",
+        ]
+        assert all(run.status == "pending" for run in artifact_runs)
+        assert len(jobs) == 2
+        assert all(job.resource_class == "model_io" for job in jobs)
+        assert all(job.status == "queued" for job in jobs)
         action_names = list(session.scalars(select(AuditEvent.action_type).order_by(AuditEvent.id)))
         assert action_names == [
             "transformation.created",
-            "create_transformation",
+            "generation.requested",
+            "create_transformation_and_generate",
             "action_plan.confirmed",
         ]
+
+
+def test_global_weave_requires_source_and_persists_a_visible_clarification(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+    monkeypatch: Any,
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    install_planner(
+        monkeypatch,
+        PlannerStub(
+            ActionPlanProposal(
+                explanation="Add a source first.",
+                steps=[],
+            )
+        ),
+    )
+
+    proposed = client.post("/api/weave/chat", json={"message": "Create an infographic."})
+    assert proposed.status_code == 201
+    assert proposed.json()["steps"] == []
+    assert proposed.json()["explanation"] == (
+        "I can create that. Add the source material you want it grounded in first."
+    )
+    history = client.get("/api/weave/chat").json()
+    assert history["messages"][-1]["content"] == proposed.json()["explanation"]
+    with factory() as session:
+        assert session.scalar(select(TransformationRun)) is None
+        assert session.scalar(select(ArtifactRun)) is None
+        assert session.scalar(select(Job)) is None
+
+
+def test_global_weave_confirmed_infographic_creates_run_and_queues_model_job(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+    monkeypatch: Any,
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    source = "The city is piloting a new emergency coordination center this summer."
+    request = {
+        "source_text": source,
+        "output_types": ["infographic"],
+        "audience": "Municipal leadership",
+        "tone": "Professional",
+        "language": "English",
+        "detail_level": "brief",
+        "objective": "Explain the pilot clearly",
+        "style": "Plain language",
+        "supporting_context": "",
+    }
+    planner = PlannerStub(
+        ActionPlanProposal(
+            explanation="I prepared the infographic setup for review.",
+            steps=[
+                ProposedActionStep(
+                    command_type="create_transformation_and_generate",
+                    arguments={"request": request},
+                    summary="Create this transformation and generate: Infographic",
+                )
+            ],
+        )
+    )
+    install_planner(monkeypatch, planner)
+
+    proposed = client.post(
+        "/api/weave/chat",
+        json={
+            "message": (
+                "Create an infographic for municipal leadership. Keep it concise and professional."
+            ),
+            "source_text": source,
+        },
+    )
+    assert proposed.status_code == 201
+    plan = proposed.json()
+    assert plan["steps"][0]["command_type"] == "create_transformation_and_generate"
+    decision = {"plan_hash": plan["plan_hash"], "plan_version": plan["plan_version"]}
+    confirmed = client.post(f"/api/action-plans/{plan['id']}/confirm", json=decision)
+    assert confirmed.status_code == 200
+    assert confirmed.json()["steps"][0]["status"] == "completed"
+
+    with factory() as session:
+        transformation = session.scalars(select(TransformationRun)).one()
+        artifact = session.scalars(select(ArtifactRun)).one()
+        job = session.scalars(select(Job)).one()
+        assert transformation.selected_output_types == ["infographic"]
+        assert artifact.output_type == "infographic"
+        assert artifact.status == "pending"
+        assert job.artifact_run_id == artifact.id
+        assert job.resource_class == "model_io"
+        assert job.status == "queued"
+
+
+def test_incomplete_global_proposal_cannot_execute_before_confirmation(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+    monkeypatch: Any,
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    source = "The city will open a community center."
+    install_planner(monkeypatch, PlannerStub(create_transformation_proposal(source)))
+    proposed = client.post(
+        "/api/weave/chat",
+        json={"message": "Create the infographic.", "source_text": source},
+    )
+    assert proposed.status_code == 201
+    with factory() as session:
+        assert session.scalar(select(TransformationRun)) is None
+        assert session.scalar(select(ArtifactRun)) is None
+        assert session.scalar(select(Job)) is None
 
 
 def test_global_weave_rejects_incomplete_creation_and_workspace_commands(
@@ -244,7 +376,10 @@ def test_global_weave_rejects_incomplete_creation_and_workspace_commands(
         ],
     )
     install_planner(monkeypatch, PlannerStub(invalid))
-    response = client.post("/api/weave/chat", json={"message": "Create this."})
+    response = client.post(
+        "/api/weave/chat",
+        json={"message": "Create this.", "source_text": "A supplied source."},
+    )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "invalid_action_plan"
     with factory() as session:
@@ -262,7 +397,10 @@ def test_global_weave_rejects_incomplete_creation_and_workspace_commands(
         ],
     )
     install_planner(monkeypatch, PlannerStub(wrong_scope))
-    wrong_scope_response = client.post("/api/weave/chat", json={"message": "Generate artifacts."})
+    wrong_scope_response = client.post(
+        "/api/weave/chat",
+        json={"message": "Generate artifacts.", "source_text": "A source."},
+    )
     assert wrong_scope_response.status_code == 422
     assert wrong_scope_response.json()["error"]["code"] == "invalid_action_plan"
 
@@ -584,6 +722,90 @@ def test_chat_confirmation_obeys_generation_rate_limit(
         assert persisted_plan is not None
         assert persisted_plan.status == "awaiting_confirmation"
         assert session.scalar(select(Job)) is None
+
+
+def test_global_composite_creation_obeys_generation_rate_limit(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+    monkeypatch: Any,
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+    source = "The city will open a new public learning center in June."
+    install_planner(monkeypatch, PlannerStub(create_transformation_proposal(source)))
+    proposed = client.post(
+        "/api/weave/chat",
+        json={"message": "Create a summary and presentation.", "source_text": source},
+    )
+    assert proposed.status_code == 201
+    plan = proposed.json()
+
+    with factory() as session:
+        persisted_plan = session.get(ActionPlan, plan["id"])
+        assert persisted_plan is not None
+        for _ in range(12):
+            consume_rate_limit(
+                session,
+                scope="artifact_generation",
+                key=f"user:{persisted_plan.owner_id}",
+                limit=12,
+                window_seconds=60,
+            )
+
+    rejected = client.post(
+        f"/api/action-plans/{plan['id']}/confirm",
+        json={"plan_hash": plan["plan_hash"], "plan_version": plan["plan_version"]},
+    )
+    assert rejected.status_code == 429
+    with factory() as session:
+        persisted_plan = session.get(ActionPlan, plan["id"])
+        assert persisted_plan is not None
+        assert persisted_plan.status == "awaiting_confirmation"
+        assert session.scalar(select(TransformationRun)) is None
+        assert session.scalar(select(ArtifactRun)) is None
+        assert session.scalar(select(Job)) is None
+
+
+def test_composite_enqueue_failure_keeps_created_transformation_and_reports_failure(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+    monkeypatch: Any,
+) -> None:
+    from fastapi import HTTPException
+
+    client, _engine, factory = auth_database
+    login(client)
+    source = "The city will open a new public learning center in June."
+    install_planner(monkeypatch, PlannerStub(create_transformation_proposal(source)))
+
+    def fail_enqueue(_transformation_id: int, _user: Any, _session: Any) -> None:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "queue_unavailable", "message": "queue is unavailable"},
+        )
+
+    monkeypatch.setattr("app.api.generation.execute_generate_selected_artifacts", fail_enqueue)
+    proposed = client.post(
+        "/api/weave/chat",
+        json={"message": "Create a summary and presentation.", "source_text": source},
+    )
+    assert proposed.status_code == 201
+    plan = proposed.json()
+    confirmed = client.post(
+        f"/api/action-plans/{plan['id']}/confirm",
+        json={"plan_hash": plan["plan_hash"], "plan_version": plan["plan_version"]},
+    )
+    assert confirmed.status_code == 200
+    step = confirmed.json()["steps"][0]
+    assert step["status"] == "completed"
+    assert "generation_status:failed" in step["result_reference"]
+
+    with factory() as session:
+        assert session.scalar(select(TransformationRun)) is not None
+        assert session.scalar(select(ArtifactRun)) is None
+        assert session.scalar(select(Job)) is None
+        failure = session.scalar(
+            select(AuditEvent).where(AuditEvent.action_type == "generation.request_failed")
+        )
+        assert failure is not None and failure.outcome == "failed"
 
 
 def test_planner_output_cannot_add_commands_or_change_server_policy(

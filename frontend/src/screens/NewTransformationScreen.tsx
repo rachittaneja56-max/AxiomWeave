@@ -409,22 +409,7 @@ export function NewTransformationScreen({
   }
 
   if (path === "weave") {
-    return (
-      <section
-        className="creation-weave-intro"
-        aria-labelledby="creation-weave-title"
-      >
-        <button type="button" className="text-button" onClick={onBackToOptions}>
-          Back to start options
-        </button>
-        <p className="eyebrow">Create with Weave</p>
-        <h2 id="creation-weave-title">Describe what you want to create</h2>
-        <p>
-          Share your source and goals. Weave will prepare a setup for you to
-          review before you confirm creation.
-        </p>
-      </section>
-    );
+    return null;
   }
 
   return (

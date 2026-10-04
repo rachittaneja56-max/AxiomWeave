@@ -12,14 +12,17 @@ import {
   FileUp,
   Link2,
   LoaderCircle,
+  Menu,
   MessageCircle,
   Minus,
   Paperclip,
+  Plus,
   Send,
+  Sparkles,
   X,
 } from "lucide-react";
 import { ApiError, api } from "../api";
-import { OUTPUT_TYPES } from "../types";
+import { OUTPUT_TYPES, type OutputType } from "../types";
 import { deriveTransformationTitle, isExtractedText, isRecord } from "../utils";
 
 type ChatMessage = {
@@ -39,6 +42,7 @@ type PlanStep = {
   status: "waiting" | "running" | "completed" | "failed" | "skipped";
   error_code: string | null;
   result_reference: string | null;
+  target_ids?: Record<string, number>;
 };
 
 type ActionPlan = {
@@ -79,7 +83,12 @@ function isStep(value: unknown): value is PlanStep {
     ) &&
     (typeof value.error_code === "string" || value.error_code === null) &&
     (typeof value.result_reference === "string" ||
-      value.result_reference === null)
+      value.result_reference === null) &&
+    (value.target_ids === undefined ||
+      (isRecord(value.target_ids) &&
+        Object.values(value.target_ids).every(
+          (item) => typeof item === "number",
+        )))
   );
 }
 
@@ -119,7 +128,7 @@ function safeError(error: unknown): string {
   if (error instanceof ApiError && error.status === 422) {
     return "We need a little more detail before this can be planned.";
   }
-  return "Weave could not complete that request. Your workspace controls are still available.";
+  return "Weave couldn't prepare that setup. Try again.";
 }
 
 function outputNames(arguments_: Record<string, unknown>): string[] {
@@ -136,7 +145,10 @@ export function WeaveAssistant({
   contextLabel,
   creationMode,
   creationPage = false,
+  creationSessionId = 0,
   onExitCreationPage = () => {},
+  onManualSetup = () => {},
+  onToggleNavigation = () => {},
   onNavigateNew,
   onTransformationCreated,
   onWorkspaceChanged,
@@ -145,12 +157,17 @@ export function WeaveAssistant({
   contextLabel: string;
   creationMode: boolean;
   creationPage?: boolean;
+  creationSessionId?: number;
   onExitCreationPage?: () => void;
+  onManualSetup?: () => void;
+  onToggleNavigation?: () => void;
   onNavigateNew: () => void;
   onTransformationCreated: (
     id: number,
     title: string,
     sourceVersion: number,
+    outputType?: OutputType,
+    notice?: string,
   ) => void;
   onWorkspaceChanged: () => void;
 }) {
@@ -163,35 +180,64 @@ export function WeaveAssistant({
   const [sourceDraft, setSourceDraft] = useState("");
   const [sourceName, setSourceName] = useState("");
   const [sourceMode, setSourceMode] = useState<SourceMode>(null);
+  const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
   const [sourceUrl, setSourceUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [planning, setPlanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
   const launcherRef = useRef<HTMLButtonElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLElement>(null);
+  const busyRef = useRef(false);
+  const creationSessionRef = useRef<number | null>(null);
+  const creationHistoryCutoffRef = useRef(0);
   const visible = creationPage || open;
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const body =
-        transformationId === null
-          ? await api.weaveChat()
-          : await api.chatWorkspace(transformationId);
-      if (isChatState(body)) setState(body);
-      else throw new Error("invalid chat response");
-      setError(null);
-    } catch {
-      setError(
-        "Conversation history could not be loaded. Try again in a moment.",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [transformationId]);
+  const refresh = useCallback(
+    async (showLoading = true) => {
+      if (showLoading) setLoading(true);
+      try {
+        const body =
+          transformationId === null
+            ? await api.weaveChat()
+            : await api.chatWorkspace(transformationId);
+        if (!isChatState(body)) throw new Error("invalid chat response");
+        let messages = body.messages;
+        if (creationPage && transformationId === null) {
+          if (creationSessionRef.current !== creationSessionId) {
+            creationSessionRef.current = creationSessionId;
+            creationHistoryCutoffRef.current = Math.max(
+              0,
+              ...body.messages.map((item) => item.id),
+            );
+          }
+          messages = body.messages.filter(
+            (item) => item.id > creationHistoryCutoffRef.current,
+          );
+        }
+        const visiblePlanIds = new Set(
+          messages.flatMap((item) =>
+            item.action_plan_id === null ? [] : [item.action_plan_id],
+          ),
+        );
+        setState({
+          messages,
+          plans: body.plans.filter((plan) => visiblePlanIds.has(plan.id)),
+        });
+        setError(null);
+      } catch {
+        setError(
+          "Conversation history could not be loaded. Try again in a moment.",
+        );
+      } finally {
+        if (showLoading) setLoading(false);
+      }
+    },
+    [creationPage, creationSessionId, transformationId],
+  );
 
   useEffect(() => {
     if (visible) {
@@ -207,6 +253,18 @@ export function WeaveAssistant({
     setSourceMode(null);
     setSourceUrl("");
   }, [transformationId]);
+
+  useEffect(() => {
+    if (!creationPage) return;
+    setOpen(false);
+    setMessage("");
+    setSourceDraft("");
+    setSourceName("");
+    setSourceMode(null);
+    setSourceMenuOpen(false);
+    setSourceUrl("");
+    setSourceError(null);
+  }, [creationPage, creationSessionId]);
 
   useEffect(() => {
     if (!visible) return;
@@ -228,15 +286,30 @@ export function WeaveAssistant({
       ".weave-panel__history",
     );
     if (history) history.scrollTop = history.scrollHeight;
-  }, [visible, state.messages, busy, sourceMode]);
+  }, [visible, state.messages, busy, planning, sourceMode]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const request = message.trim();
-    if (!request || busy) return;
+    if (!request || busyRef.current || loading) return;
+    busyRef.current = true;
     setBusy(true);
+    setPlanning(true);
     setError(null);
     setMessage("");
+    const optimisticId = -Date.now();
+    setState((current) => ({
+      ...current,
+      messages: [
+        ...current.messages,
+        {
+          id: optimisticId,
+          role: "user",
+          content: request,
+          action_plan_id: null,
+        },
+      ],
+    }));
     try {
       let proposedPlan: unknown;
       if (transformationId === null) {
@@ -254,19 +327,28 @@ export function WeaveAssistant({
           [proposedPlan.id]: sourceLabel,
         }));
       }
-      await refresh();
+      await refresh(false);
       setSourceMode(null);
+      setSourceMenuOpen(false);
     } catch (submitError) {
+      setState((current) => ({
+        ...current,
+        messages: current.messages.filter((item) => item.id !== optimisticId),
+      }));
+      await refresh(false);
       setError(safeError(submitError));
       setMessage(request);
     } finally {
+      busyRef.current = false;
       setBusy(false);
+      setPlanning(false);
       composerRef.current?.focus();
     }
   }
 
   async function decide(plan: ActionPlan, decision: "confirm" | "reject") {
-    if (busy) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -283,23 +365,54 @@ export function WeaveAssistant({
               plan.plan_version,
             );
       if (!isPlan(result)) throw new Error("invalid plan response");
-      await refresh();
+      await refresh(false);
       const createStep = result.steps.find(
         (step) =>
-          step.command_type === "create_transformation" &&
+          step.command_type === "create_transformation_and_generate" &&
           step.status === "completed",
       );
-      const createdId = createStep?.result_reference?.match(
-        /^transformation_run_id:(\d+)$/,
-      )?.[1];
+      const createdId =
+        createStep?.target_ids?.transformation_run_id ??
+        Number(
+          createStep?.result_reference?.match(
+            /transformation_run_id:(\d+)/,
+          )?.[1],
+        );
       if (decision === "confirm" && createStep && createdId) {
         const request = createStep.arguments.request;
         const source = isRecord(request) ? request.source_text : "";
+        const selected =
+          isRecord(request) && Array.isArray(request.output_types)
+            ? request.output_types
+            : [];
+        const initialOutput = OUTPUT_TYPES.find((output) =>
+          selected.includes(output.value),
+        )?.value;
+        const sourceVersionCandidate =
+          createStep.target_ids?.source_version_number ??
+          Number(
+            createStep.result_reference?.match(
+              /source_version_number:(\d+)/,
+            )?.[1],
+          );
+        const generationFailed = createStep.result_reference?.includes(
+          "generation_status:failed",
+        );
         const title =
           typeof source === "string"
             ? deriveTransformationTitle(source)
             : "New transformation";
-        onTransformationCreated(Number(createdId), title, 1);
+        onTransformationCreated(
+          Number(createdId),
+          title,
+          Number.isInteger(sourceVersionCandidate) && sourceVersionCandidate > 0
+            ? sourceVersionCandidate
+            : 1,
+          initialOutput,
+          generationFailed
+            ? "Transformation created, but artifact generation could not be queued. Ask Weave to retry generation."
+            : undefined,
+        );
       } else if (
         decision === "confirm" &&
         result.status === "completed" &&
@@ -309,14 +422,16 @@ export function WeaveAssistant({
       }
     } catch (decisionError) {
       setError(safeError(decisionError));
-      await refresh();
+      await refresh(false);
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
 
   async function extractFile(file: File | undefined) {
-    if (!file) return;
+    if (!file || busyRef.current) return;
+    busyRef.current = true;
     setSourceError(null);
     setBusy(true);
     try {
@@ -332,12 +447,14 @@ export function WeaveAssistant({
     } catch {
       setSourceError("This document could not be read. Try another file.");
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
 
   async function importUrl() {
-    if (!sourceUrl.trim()) return;
+    if (!sourceUrl.trim() || busyRef.current) return;
+    busyRef.current = true;
     setSourceError(null);
     setBusy(true);
     try {
@@ -361,6 +478,7 @@ export function WeaveAssistant({
         "This page could not be imported. Check the address and retry.",
       );
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
@@ -371,13 +489,19 @@ export function WeaveAssistant({
     setSourceName("");
     setSourceUrl("");
     setSourceMode(null);
+    setSourceMenuOpen(false);
     setSourceError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   const plansById = new Map(state.plans.map((plan) => [plan.id, plan]));
-  const suggestions =
-    creationMode || transformationId === null
+  const suggestions = creationMode
+    ? [
+        "Create an infographic",
+        "Make a presentation and summary",
+        "Turn a report into social posts",
+      ]
+    : transformationId === null
       ? [
           "Create an executive summary and presentation",
           "What can AxiomWeave create?",
@@ -393,7 +517,7 @@ export function WeaveAssistant({
                 "Check its evidence",
                 "Update from the latest source",
               ];
-  const placeholder = creationMode
+  const placeholder = creationPage
     ? "Describe what you want to create from your source…"
     : transformationId === null
       ? "What do you want to create?"
@@ -402,6 +526,13 @@ export function WeaveAssistant({
           )
         ? "Ask about or modify this artifact…"
         : "Ask Weave to update, regenerate or review this workspace…";
+
+  const composerPlaceholder = creationPage
+    ? "Ask Weave what you want to create..."
+    : placeholder;
+  const attachedSourceLabel = sourceDraft.trim()
+    ? `${sourceName || "Pasted source"} · ${sourceDraft.length.toLocaleString()} characters`
+    : "";
 
   return (
     <>
@@ -430,16 +561,41 @@ export function WeaveAssistant({
             ref={panelRef}
           >
             <header className="weave-panel__header">
-              <div className="weave-panel__identity">
-                <span className="weave-panel__mark" aria-hidden="true">
-                  <MessageCircle />
-                </span>
-                <div>
-                  <strong id="weave-panel-title">Weave</strong>
-                  <span>AxiomWeave assistant</span>
-                  <small>{contextLabel}</small>
+              {creationPage ? (
+                <div className="weave-creation-heading">
+                  <button
+                    type="button"
+                    className="icon-button weave-creation-heading__menu"
+                    aria-label="Open navigation menu"
+                    onClick={onToggleNavigation}
+                  >
+                    <Menu aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button weave-creation-heading__back"
+                    aria-label="Back to start options"
+                    onClick={onExitCreationPage}
+                  >
+                    <ChevronLeft aria-hidden="true" />
+                  </button>
+                  <div>
+                    <strong id="weave-panel-title">New transformation</strong>
+                    <span>Weave · Creating a transformation</span>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="weave-panel__identity">
+                  <span className="weave-panel__mark" aria-hidden="true">
+                    <MessageCircle />
+                  </span>
+                  <div>
+                    <strong id="weave-panel-title">Weave</strong>
+                    <span>AxiomWeave assistant</span>
+                    <small>{contextLabel}</small>
+                  </div>
+                </div>
+              )}
               <div className="weave-panel__controls">
                 <details className="weave-panel__overflow">
                   <summary
@@ -458,11 +614,10 @@ export function WeaveAssistant({
                 {creationPage ? (
                   <button
                     type="button"
-                    className="icon-button"
-                    aria-label="Back to start options"
-                    onClick={onExitCreationPage}
+                    className="button-secondary weave-creation-manual"
+                    onClick={onManualSetup}
                   >
-                    <ChevronLeft aria-hidden="true" />
+                    Manual setup
                   </button>
                 ) : (
                   <>
@@ -499,17 +654,32 @@ export function WeaveAssistant({
                   Opening your conversation…
                 </p>
               ) : state.messages.length === 0 ? (
-                <div className="weave-welcome">
-                  <p className="weave-welcome__label">Weave</p>
-                  <p>
-                    {creationMode
-                      ? "Tell me about your source and what you want to make. You can add a document or paste the source here."
-                      : transformationId === null
-                        ? "What would you like to create? I can help shape a source into clear, useful materials."
-                        : contextLabel === "Project overview"
-                          ? "Your transformation is ready. What would you like Weave to do next?"
-                          : `What would you like to do with ${contextLabel}?`}
-                  </p>
+                <div
+                  className={
+                    "weave-welcome" +
+                    (creationPage ? " weave-welcome--creation" : "")
+                  }
+                >
+                  {creationPage ? (
+                    <>
+                      <span className="weave-welcome__mark" aria-hidden="true">
+                        <Sparkles />
+                      </span>
+                      <h2>What do you want to create?</h2>
+                      <p>Add your source and tell me what outputs you need.</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="weave-welcome__label">Weave</p>
+                      <p>
+                        {transformationId === null
+                          ? "What would you like to create? I can help shape a source into clear, useful materials."
+                          : contextLabel === "Project overview"
+                            ? "Your transformation is ready. What would you like Weave to do next?"
+                            : `What would you like to do with ${contextLabel}?`}
+                      </p>
+                    </>
+                  )}
                   {suggestions.length > 0 && (
                     <div className="weave-suggestions" aria-label="Suggestions">
                       {suggestions.map((item) => (
@@ -560,12 +730,19 @@ export function WeaveAssistant({
                             plan={plan}
                             busy={busy}
                             sourceLabel={sourceLabelsByPlanId[plan.id] ?? null}
+                            draftSource={sourceDraft}
                             onDecide={decide}
                           />
                         )}
                     </article>
                   );
                 })
+              )}
+              {planning && (
+                <p className="weave-thinking" role="status">
+                  <LoaderCircle className="status-spin" aria-hidden="true" />
+                  Weave is preparing your setup...
+                </p>
               )}
             </div>
             {error && (
@@ -575,14 +752,15 @@ export function WeaveAssistant({
             )}
             {transformationId === null && (
               <div className="weave-source">
-                {sourceName && (
+                {attachedSourceLabel && (
                   <div className="weave-source__attached" role="status">
                     <FileUp aria-hidden="true" />
-                    <span>{sourceName}</span>
+                    <span>{attachedSourceLabel}</span>
                     <button
                       type="button"
                       className="icon-button"
                       aria-label="Remove source"
+                      disabled={busy}
                       onClick={() => {
                         setSourceDraft("");
                         setSourceName("");
@@ -651,30 +829,57 @@ export function WeaveAssistant({
               onSubmit={(event) => void submit(event)}
             >
               {transformationId === null && (
-                <div className="weave-composer__attachments">
-                  <button
-                    type="button"
-                    aria-label="Add a source"
-                    aria-expanded={sourceMode !== null}
-                    onClick={() =>
-                      setSourceMode((current) => (current ? null : "paste"))
-                    }
-                  >
-                    <Paperclip aria-hidden="true" />
-                    Add source
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <FileUp aria-hidden="true" />
-                    Upload
-                  </button>
-                  <button type="button" onClick={() => setSourceMode("url")}>
-                    <Link2 aria-hidden="true" />
-                    Import URL
-                  </button>
-                </div>
+                <>
+                  <div className="weave-composer__attachments">
+                    <button
+                      type="button"
+                      aria-label="Add a source"
+                      aria-expanded={sourceMenuOpen}
+                      disabled={busy}
+                      onClick={() => {
+                        setSourceMode(null);
+                        setSourceMenuOpen((current) => !current);
+                      }}
+                    >
+                      <Plus aria-hidden="true" />
+                      Add source
+                    </button>
+                  </div>
+                  {sourceMenuOpen && (
+                    <div
+                      className="weave-source-menu"
+                      aria-label="Source options"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSourceMenuOpen(false);
+                          fileInputRef.current?.click();
+                        }}
+                      >
+                        <FileUp aria-hidden="true" /> Upload source
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSourceMenuOpen(false);
+                          setSourceMode("paste");
+                        }}
+                      >
+                        <Paperclip aria-hidden="true" /> Paste source
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSourceMenuOpen(false);
+                          setSourceMode("url");
+                        }}
+                      >
+                        <Link2 aria-hidden="true" /> Import public URL
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
               <label className="visually-hidden" htmlFor="weave-message">
                 Message Weave
@@ -686,7 +891,7 @@ export function WeaveAssistant({
                   value={message}
                   maxLength={2_000}
                   rows={3}
-                  placeholder={placeholder}
+                  placeholder={composerPlaceholder}
                   onChange={(event) => setMessage(event.target.value)}
                   onKeyDown={(event) => {
                     if (
@@ -701,7 +906,7 @@ export function WeaveAssistant({
                 <button
                   type="submit"
                   aria-label="Send message"
-                  disabled={busy || !message.trim()}
+                  disabled={busy || loading || !message.trim()}
                 >
                   {busy ? (
                     <LoaderCircle className="status-spin" aria-hidden="true" />
@@ -737,16 +942,27 @@ function PlanCard({
   plan,
   busy,
   sourceLabel,
+  draftSource,
   onDecide,
 }: {
   plan: ActionPlan;
   busy: boolean;
   sourceLabel: string | null;
+  draftSource: string;
   onDecide: (plan: ActionPlan, decision: "confirm" | "reject") => Promise<void>;
 }) {
   const createsTransformation = plan.steps.some(
-    (step) => step.command_type === "create_transformation",
+    (step) => step.command_type === "create_transformation_and_generate",
   );
+  const plannedRequest = createsTransformation
+    ? plan.steps.find(
+        (step) => step.command_type === "create_transformation_and_generate",
+      )?.arguments.request
+    : undefined;
+  const sourceChanged =
+    isRecord(plannedRequest) &&
+    typeof plannedRequest.source_text === "string" &&
+    plannedRequest.source_text !== draftSource;
   return (
     <section className="weave-plan" aria-label="Weave proposal">
       <div className="weave-plan__heading">
@@ -754,7 +970,7 @@ function PlanCard({
           <span>Weave proposes</span>
           <strong>
             {createsTransformation
-              ? "Review transformation setup"
+              ? "Ready to create"
               : plan.steps.length === 1
                 ? plan.steps[0].summary
                 : `Plan · ${plan.steps.length} actions`}
@@ -774,11 +990,11 @@ function PlanCard({
               {step.status === "completed" ? <Check /> : step.ordinal}
             </span>
             <div>
-              <strong>{step.summary}</strong>
-              {step.command_type === "create_transformation" && (
+              <strong className="weave-plan__summary">{step.summary}</strong>
+              {step.command_type === "create_transformation_and_generate" && (
                 <ul className="weave-plan__details">
                   {outputNames(step.arguments).length > 0 && (
-                    <li>Outputs: {outputNames(step.arguments).join(", ")}</li>
+                    <li>Generate: {outputNames(step.arguments).join(", ")}</li>
                   )}
                   {request &&
                     ["audience", "tone", "objective", "style"].map((field) => {
@@ -811,6 +1027,12 @@ function PlanCard({
       {plan.status === "awaiting_confirmation" &&
         plan.requires_confirmation && (
           <div className="weave-plan__actions">
+            {sourceChanged && (
+              <p className="weave-plan__source-changed" role="status">
+                The source draft changed. Prepare a new proposal to use the
+                updated source.
+              </p>
+            )}
             <button
               type="button"
               className="button-secondary"
@@ -822,10 +1044,10 @@ function PlanCard({
             <button
               type="button"
               className="button-primary"
-              disabled={busy}
+              disabled={busy || sourceChanged}
               onClick={() => void onDecide(plan, "confirm")}
             >
-              {createsTransformation ? "Create transformation" : "Confirm"}
+              {createsTransformation ? "Create and generate" : "Confirm"}
             </button>
           </div>
         )}

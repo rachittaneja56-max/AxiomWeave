@@ -6090,6 +6090,315 @@ h4 {
   }
 }
 
+/* Immersive Weave creation uses the available application viewport. */
+.app-frame--immersive {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-frame--immersive .app-sidebar {
+  height: 100dvh;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.app-frame--immersive .app-main {
+  display: flex;
+  height: 100dvh;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-frame--immersive .content-area--new {
+  display: none;
+}
+
+.app-frame--immersive .weave-panel--creation-page {
+  position: relative;
+  inset: auto;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  flex: 1 1 auto;
+  flex-direction: column;
+  margin: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: var(--color-bg);
+  box-shadow: none;
+}
+
+.app-frame--immersive .weave-panel__header {
+  min-height: 60px;
+  flex: 0 0 60px;
+  padding: 0 clamp(14px, 2vw, 28px);
+  border-bottom-color: var(--color-border);
+  background: var(--color-bg);
+}
+
+.weave-creation-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.weave-creation-heading > div {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.weave-creation-heading strong {
+  color: #263a3a;
+  font-size: 0.91rem;
+  font-weight: 700;
+}
+
+.weave-creation-heading span {
+  color: #73827c;
+  font-size: 0.68rem;
+}
+
+.weave-creation-heading__menu {
+  display: none;
+}
+
+.weave-creation-manual {
+  min-height: 35px;
+  padding: 0 12px;
+  font-size: 0.75rem;
+}
+
+.app-frame--immersive .weave-panel--creation-page .weave-panel__history {
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 0;
+  overflow-y: auto;
+  padding: 26px clamp(18px, 4vw, 48px);
+  scroll-behavior: auto;
+}
+
+.app-frame--immersive .weave-message,
+.app-frame--immersive .weave-welcome,
+.app-frame--immersive .weave-panel__loading,
+.app-frame--immersive .weave-thinking {
+  width: min(100%, 860px);
+  margin-inline: auto;
+}
+
+.app-frame--immersive .weave-message {
+  max-width: min(100%, 860px);
+}
+
+.app-frame--immersive .weave-message--user {
+  width: fit-content;
+  max-width: min(80%, 720px);
+  margin-right: max(0px, calc((100% - 860px) / 2));
+}
+
+.app-frame--immersive .weave-message--assistant > p {
+  max-width: 72ch;
+}
+
+.weave-welcome--creation {
+  display: grid;
+  flex: 1 1 auto;
+  align-content: center;
+  justify-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.weave-welcome__mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 14px;
+  background: #eaf2ec;
+  color: #4f8275;
+}
+
+.weave-welcome__mark svg {
+  width: 21px;
+  height: 21px;
+}
+
+.weave-welcome--creation h2 {
+  margin: 5px 0 0;
+  color: #263a3a;
+  font-size: clamp(1.25rem, 2vw, 1.6rem);
+  letter-spacing: -0.035em;
+}
+
+.weave-welcome--creation > p {
+  max-width: 46ch;
+  margin: 0;
+  color: #687873;
+  font-size: 0.88rem;
+}
+
+.weave-welcome--creation .weave-suggestions {
+  justify-content: center;
+  margin-top: 8px;
+}
+
+.weave-welcome--creation .weave-suggestions button {
+  min-height: 38px;
+  border-radius: 10px;
+  font-size: 0.75rem;
+}
+
+.app-frame--immersive .weave-source,
+.app-frame--immersive .weave-panel__error {
+  width: min(calc(100% - 32px), 860px);
+  align-self: center;
+  margin: 0 auto 7px;
+  padding: 0;
+}
+
+.app-frame--immersive .weave-source__attached {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 31px;
+  padding-block: 2px;
+  border-radius: 999px;
+  background: #f7f9f5;
+  font-size: 0.68rem;
+}
+
+.app-frame--immersive .weave-source__paste textarea {
+  min-height: 86px;
+  resize: vertical;
+}
+
+.app-frame--immersive .weave-composer {
+  width: min(calc(100% - 32px), 860px);
+  align-self: center;
+  gap: 5px;
+  padding: 5px 0 18px;
+  border-top: 0;
+  background: transparent;
+}
+
+.app-frame--immersive .weave-composer__attachments {
+  min-height: 29px;
+}
+
+.weave-source-menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.weave-source-menu button {
+  display: inline-flex;
+  min-height: 31px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid #dce5df;
+  border-radius: 9px;
+  background: #fffefa;
+  color: #4e6d62;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.7rem;
+}
+
+.weave-source-menu button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.weave-plan__summary {
+  white-space: pre-line;
+}
+
+.weave-plan__source-changed {
+  flex: 1 1 100%;
+  margin: 0;
+  color: #98632d;
+  font-size: 0.72rem;
+}
+
+.weave-thinking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #718079;
+  font-size: 0.8rem;
+}
+
+.weave-thinking svg {
+  width: 15px;
+  height: 15px;
+}
+
+@media (max-width: 720px) {
+  .app-frame.app-frame--immersive {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-frame--immersive .app-main {
+    height: 100dvh;
+    min-height: 0;
+  }
+
+  .app-frame--immersive .weave-panel__header {
+    min-height: 58px;
+    flex-basis: 58px;
+    gap: 7px;
+    padding-inline: 10px;
+  }
+
+  .weave-creation-heading {
+    gap: 2px;
+  }
+
+  .weave-creation-heading__menu {
+    display: grid;
+  }
+
+  .weave-creation-heading__back {
+    width: 31px;
+  }
+
+  .weave-creation-heading strong {
+    font-size: 0.78rem;
+  }
+
+  .weave-creation-heading span {
+    font-size: 0.61rem;
+  }
+
+  .weave-creation-manual {
+    min-height: 32px;
+    padding-inline: 8px;
+    font-size: 0.68rem;
+  }
+
+  .app-frame--immersive .weave-panel--creation-page .weave-panel__history {
+    padding: 19px 14px;
+  }
+
+  .app-frame--immersive .weave-message--user {
+    max-width: 88%;
+    margin-right: 0;
+  }
+
+  .app-frame--immersive .weave-composer {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+}
+
 .artifact-capability {
   margin: 7px 0 0;
   color: #66736b;

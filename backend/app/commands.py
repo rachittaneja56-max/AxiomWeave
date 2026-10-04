@@ -1,10 +1,10 @@
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit_event
-from app.domain.transformation import CreateTransformationRequest
+from app.domain.transformation import CreateTransformationRequest, OutputType
 from app.generation import StructuredGenerationProvider
 from app.models import User
 
@@ -96,6 +96,29 @@ class CreateTransformationCommand(BaseModel):
     request: CreateTransformationRequest
 
 
+class CreateTransformationAndGenerateCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    command_type: Literal["create_transformation_and_generate"] = (
+        "create_transformation_and_generate"
+    )
+    request: CreateTransformationRequest
+
+
+class CreatedArtifactRun(BaseModel):
+    artifact_run_id: int
+    output_type: OutputType
+    status: Literal["pending", "running", "succeeded", "failed"]
+
+
+class CreateTransformationAndGenerateResult(BaseModel):
+    transformation_run_id: int
+    source_version_id: int
+    source_version_number: int
+    generation_status: Literal["succeeded", "partial_failure", "running", "failed"]
+    artifact_runs: list[CreatedArtifactRun]
+    generation_error_code: str | None = None
+
+
 class CreateSourceRevisionCommand(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     transformation_run_id: int = Field(gt=0)
@@ -175,6 +198,7 @@ type ManualApplicationCommand = (
 
 type ApplicationCommand = Annotated[
     CreateTransformationCommand
+    | CreateTransformationAndGenerateCommand
     | GenerateSelectedArtifactsCommand
     | RetryArtifactCommand
     | RegenerateArtifactCommand
@@ -192,6 +216,7 @@ class ProposedActionStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command_type: Literal[
         "create_transformation",
+        "create_transformation_and_generate",
         "generate_selected_artifacts",
         "retry_artifact",
         "regenerate_artifact",
@@ -218,6 +243,7 @@ class CommandValidationError(ValueError):
 
 COMMAND_ARGUMENT_MODELS: dict[str, type[BaseModel]] = {
     "create_transformation": CreateTransformationCommand,
+    "create_transformation_and_generate": CreateTransformationAndGenerateCommand,
     "generate_selected_artifacts": GenerateSelectedArtifactsCommand,
     "retry_artifact": RetryArtifactCommand,
     "regenerate_artifact": RegenerateArtifactCommand,
@@ -243,7 +269,7 @@ def parse_action_command(command_type: str, arguments: dict[str, object]) -> App
 
 
 def command_targets(command: ApplicationCommand) -> dict[str, int]:
-    if isinstance(command, CreateTransformationCommand):
+    if isinstance(command, (CreateTransformationCommand, CreateTransformationAndGenerateCommand)):
         return {}
     if isinstance(command, GenerateSelectedArtifactsCommand):
         return {"transformation_run_id": command.transformation_run_id}
@@ -289,6 +315,69 @@ def dispatch_application_command(
         target_id = getattr(result, "transformation_run_id", None)
         if not isinstance(target_id, int):
             raise RuntimeError("Create command returned no transformation reference")
+    elif isinstance(command, CreateTransformationAndGenerateCommand):
+        from fastapi import HTTPException
+
+        from app.api.generation import execute_generate_selected_artifacts
+        from app.api.transformations import execute_create_transformation
+
+        created = execute_create_transformation(
+            command.request, user=user, session=session, request_id=request_id
+        )
+        try:
+            batch = execute_generate_selected_artifacts(
+                created.transformation_run_id, user, session
+            )
+            generation_status = batch.status
+            artifact_runs = [
+                CreatedArtifactRun(
+                    artifact_run_id=item.artifact_run_id,
+                    output_type=item.output_type,
+                    status=item.status,
+                )
+                for item in batch.artifacts
+            ]
+            generation_error_code = None
+            record_audit_event(
+                session,
+                owner_id=user.id,
+                action_type="generation.requested",
+                target_type="transformation",
+                target_id=created.transformation_run_id,
+                request_id=request_id,
+                action_plan_id=action_plan_id,
+            )
+        except Exception as error:
+            session.rollback()
+            generation_status = "failed"
+            artifact_runs = []
+            detail = (
+                cast(dict[str, object], error.detail)
+                if isinstance(error, HTTPException) and isinstance(error.detail, dict)
+                else {}
+            )
+            code = detail.get("code")
+            generation_error_code = code if isinstance(code, str) else "generation_failed"
+            record_audit_event(
+                session,
+                owner_id=user.id,
+                action_type="generation.request_failed",
+                target_type="transformation",
+                target_id=created.transformation_run_id,
+                request_id=request_id,
+                action_plan_id=action_plan_id,
+                outcome="failed",
+                safe_metadata={"error_code": generation_error_code[:64]},
+            )
+        result = CreateTransformationAndGenerateResult(
+            transformation_run_id=created.transformation_run_id,
+            source_version_id=created.source_version.id,
+            source_version_number=created.source_version.version_number,
+            generation_status=generation_status,
+            artifact_runs=artifact_runs,
+            generation_error_code=generation_error_code,
+        )
+        target_type, target_id = "transformation", created.transformation_run_id
     elif isinstance(command, GenerateSelectedArtifactsCommand):
         from app.api.generation import execute_generate_selected_artifacts
 

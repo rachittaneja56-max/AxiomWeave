@@ -20,11 +20,16 @@ type AppShellProps = {
   assistantContext: string;
   transformationId: number | null;
   creationPage?: boolean;
+  immersive?: boolean;
+  creationSessionId?: number;
   onExitCreationPage?: () => void;
+  onManualSetup?: () => void;
   onTransformationCreated: (
     id: number,
     title: string,
     sourceVersion: number,
+    outputType?: import("../types").OutputType,
+    notice?: string,
   ) => void;
   onWorkspaceChanged: () => void;
 };
@@ -45,7 +50,10 @@ export function AppShell({
   assistantContext,
   transformationId,
   creationPage = false,
+  immersive = false,
+  creationSessionId = 0,
   onExitCreationPage = () => {},
+  onManualSetup = () => {},
   onTransformationCreated,
   onWorkspaceChanged,
 }: AppShellProps) {
@@ -68,7 +76,9 @@ export function AppShell({
   return (
     <div
       className={
-        "app-frame" + (screen === "review" ? " app-frame--review" : "")
+        "app-frame" +
+        (screen === "review" ? " app-frame--review" : "") +
+        (immersive ? " app-frame--immersive" : "")
       }
     >
       <button
@@ -135,36 +145,44 @@ export function AppShell({
         </div>
       </aside>
       <div className="app-main">
-        <header className="app-topbar">
-          <button
-            type="button"
-            className="mobile-menu-toggle"
-            aria-label={
-              menuOpen ? "Close navigation menu" : "Open navigation menu"
-            }
-            aria-expanded={menuOpen}
-            onClick={() => setMenuOpen(!menuOpen)}
-          >
-            {menuOpen ? <X aria-hidden="true" /> : <Menu aria-hidden="true" />}
-          </button>
-          <div className="topbar-spacer" aria-hidden="true" />
-          <div
-            className={
-              "topbar-actions" +
-              (screen === "review" ? " topbar-actions--review" : "")
-            }
-          >
-            {headerActions}
-          </div>
-        </header>
-        <main className={"content-area content-area--" + screen}>
-          <div className="page-heading">
-            <div>
-              <h1>{pageTitle}</h1>
-              {description && <p>{description}</p>}
+        {!immersive && (
+          <header className="app-topbar">
+            <button
+              type="button"
+              className="mobile-menu-toggle"
+              aria-label={
+                menuOpen ? "Close navigation menu" : "Open navigation menu"
+              }
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen(!menuOpen)}
+            >
+              {menuOpen ? (
+                <X aria-hidden="true" />
+              ) : (
+                <Menu aria-hidden="true" />
+              )}
+            </button>
+            <div className="topbar-spacer" aria-hidden="true" />
+            <div
+              className={
+                "topbar-actions" +
+                (screen === "review" ? " topbar-actions--review" : "")
+              }
+            >
+              {headerActions}
             </div>
-          </div>
-          {logoutError && (
+          </header>
+        )}
+        <main className={"content-area content-area--" + screen}>
+          {!immersive && (
+            <div className="page-heading">
+              <div>
+                <h1>{pageTitle}</h1>
+                {description && <p>{description}</p>}
+              </div>
+            </div>
+          )}
+          {!immersive && logoutError && (
             <p className="notice notice--error" role="alert">
               Sign out could not be completed. Please try again.
             </p>
@@ -177,6 +195,9 @@ export function AppShell({
           creationMode={creationPage}
           creationPage={creationPage}
           onExitCreationPage={onExitCreationPage}
+          onManualSetup={onManualSetup}
+          onToggleNavigation={() => setMenuOpen((current) => !current)}
+          creationSessionId={creationSessionId}
           onNavigateNew={() => navigate("new")}
           onTransformationCreated={onTransformationCreated}
           onWorkspaceChanged={onWorkspaceChanged}

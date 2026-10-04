@@ -196,7 +196,7 @@ describe("global Weave assistant", () => {
         {
           id: 13,
           ordinal: 1,
-          command_type: "create_transformation",
+          command_type: "create_transformation_and_generate",
           arguments: { request },
           summary: "Create an executive summary and presentation",
           consequential: true,
@@ -244,7 +244,15 @@ describe("global Weave assistant", () => {
                             {
                               ...plan.steps[0],
                               status: "completed",
-                              result_reference: "transformation_run_id:21",
+                              result_reference:
+                                "transformation_run_id:21;source_version_number:1;generation_status:running",
+                              target_ids: {
+                                transformation_run_id: 21,
+                                source_version_id: 31,
+                                source_version_number: 1,
+                                artifact_run_executive_summary_id: 41,
+                                artifact_run_presentation_id: 42,
+                              },
                             },
                           ],
                         }
@@ -265,7 +273,15 @@ describe("global Weave assistant", () => {
               {
                 ...plan.steps[0],
                 status: "completed",
-                result_reference: "transformation_run_id:21",
+                result_reference:
+                  "transformation_run_id:21;source_version_number:1;generation_status:running",
+                target_ids: {
+                  transformation_run_id: 21,
+                  source_version_id: 31,
+                  source_version_number: 1,
+                  artifact_run_executive_summary_id: 41,
+                  artifact_run_presentation_id: 42,
+                },
               },
             ],
           }),
@@ -292,6 +308,7 @@ describe("global Weave assistant", () => {
       await screen.findByRole("region", { name: "Weave assistant" }),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Add a source" }));
+    fireEvent.click(screen.getByRole("button", { name: "Paste source" }));
     fireEvent.change(screen.getByLabelText("Paste your source"), {
       target: { value: request.source_text },
     });
@@ -300,20 +317,233 @@ describe("global Weave assistant", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
     expect(
-      await screen.findByText("Outputs: Executive Summary, Presentation"),
+      await screen.findByText("Generate: Executive Summary, Presentation"),
     ).toBeInTheDocument();
     expect(screen.getByText(/Source: Pasted source/)).toBeInTheDocument();
     expect(onTransformationCreated).not.toHaveBeenCalled();
     fireEvent.click(
-      screen.getByRole("button", { name: "Create transformation" }),
+      screen.getByRole("button", { name: "Create and generate" }),
     );
     await waitFor(() =>
       expect(onTransformationCreated).toHaveBeenCalledWith(
         21,
         expect.any(String),
         1,
+        "executive_summary",
+        undefined,
       ),
     );
+  });
+
+  it("shows an empty-step source clarification without a confirmation card", async () => {
+    const emptyPlan = {
+      id: 45,
+      transformation_run_id: null,
+      explanation: "I can create that. Add the source material first.",
+      plan_hash: "c".repeat(64),
+      plan_version: 1,
+      requires_confirmation: false,
+      status: "proposed",
+      steps: [],
+    };
+    let proposed = false;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/weave/chat" && init?.method === "POST") {
+        proposed = true;
+        expect(JSON.parse(String(init.body))).toEqual({
+          message: "Create an infographic.",
+        });
+        return Promise.resolve(response(emptyPlan, 201));
+      }
+      if (path === "/api/weave/chat") {
+        return Promise.resolve(
+          response(
+            proposed
+              ? {
+                  messages: [
+                    {
+                      id: 1,
+                      role: "user",
+                      content: "Create an infographic.",
+                      action_plan_id: null,
+                    },
+                    {
+                      id: 2,
+                      role: "assistant",
+                      content: emptyPlan.explanation,
+                      action_plan_id: 45,
+                    },
+                  ],
+                  plans: [emptyPlan],
+                }
+              : { messages: [], plans: [] },
+          ),
+        );
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <WeaveAssistant
+        transformationId={null}
+        contextLabel="Creating a transformation"
+        creationMode
+        creationPage
+        onNavigateNew={() => {}}
+        onTransformationCreated={() => {}}
+        onWorkspaceChanged={() => {}}
+      />,
+    );
+    await screen.findByRole("region", { name: "Weave assistant" });
+    fireEvent.change(screen.getByLabelText("Message Weave"), {
+      target: { value: "Create an infographic." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(
+      await screen.findByText(
+        "I can create that. Add the source material first.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Create and generate" }),
+    ).toBeNull();
+    expect(screen.getByLabelText("Message Weave")).toBeEnabled();
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input) === "/api/transformations" && init?.method === "POST",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps an attached source and composer active after empty-step clarification", async () => {
+    const sourceText = "The city will open a public learning center in June.";
+    const emptyPlan = {
+      id: 46,
+      transformation_run_id: null,
+      explanation: "Who is the infographic for?",
+      plan_hash: "d".repeat(64),
+      plan_version: 1,
+      requires_confirmation: false,
+      status: "proposed",
+      steps: [],
+    };
+    let proposed = false;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/weave/chat" && init?.method === "POST") {
+        proposed = true;
+        expect(JSON.parse(String(init.body))).toEqual({
+          message: "Create an infographic.",
+          source_text: sourceText,
+        });
+        return Promise.resolve(response(emptyPlan, 201));
+      }
+      if (path === "/api/weave/chat") {
+        return Promise.resolve(
+          response(
+            proposed
+              ? {
+                  messages: [
+                    {
+                      id: 1,
+                      role: "user",
+                      content: "Create an infographic.",
+                      action_plan_id: null,
+                    },
+                    {
+                      id: 2,
+                      role: "assistant",
+                      content: emptyPlan.explanation,
+                      action_plan_id: 46,
+                    },
+                  ],
+                  plans: [emptyPlan],
+                }
+              : { messages: [], plans: [] },
+          ),
+        );
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <WeaveAssistant
+        transformationId={null}
+        contextLabel="Creating a transformation"
+        creationMode
+        creationPage
+        onNavigateNew={() => {}}
+        onTransformationCreated={() => {}}
+        onWorkspaceChanged={() => {}}
+      />,
+    );
+    await screen.findByRole("region", { name: "Weave assistant" });
+    fireEvent.click(screen.getByRole("button", { name: "Add a source" }));
+    fireEvent.click(screen.getByRole("button", { name: "Paste source" }));
+    fireEvent.change(screen.getByLabelText("Paste your source"), {
+      target: { value: sourceText },
+    });
+    fireEvent.change(screen.getByLabelText("Message Weave"), {
+      target: { value: "Create an infographic." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(
+      await screen.findByText("Who is the infographic for?"),
+    ).toBeVisible();
+    expect(screen.getByText(/Pasted source · \d+ characters/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+    expect(screen.getByLabelText("Message Weave")).toBeEnabled();
+  });
+
+  it("submits only once on rapid repeated submit events while Weave is busy", async () => {
+    let resolveProposal: ((value: unknown) => void) | undefined;
+    let postCount = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/weave/chat" && init?.method === "POST") {
+        postCount += 1;
+        return new Promise((resolve) => {
+          resolveProposal = () => resolve(response({}));
+        });
+      }
+      if (path === "/api/weave/chat") {
+        return Promise.resolve(response({ messages: [], plans: [] }));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <WeaveAssistant
+        transformationId={null}
+        contextLabel="Creating a transformation"
+        creationMode
+        creationPage
+        onNavigateNew={() => {}}
+        onTransformationCreated={() => {}}
+        onWorkspaceChanged={() => {}}
+      />,
+    );
+    await screen.findByRole("region", { name: "Weave assistant" });
+    fireEvent.change(screen.getByLabelText("Message Weave"), {
+      target: { value: "Create an infographic." },
+    });
+    const form = screen.getByLabelText("Message Weave").closest("form");
+    if (!form) throw new Error("Composer form not found");
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+
+    expect(postCount).toBe(1);
+    expect(screen.getByText("Weave is preparing your setup...")).toBeVisible();
+    expect(screen.getByText("Create an infographic.")).toBeVisible();
+    resolveProposal?.(null);
   });
 
   it("closes on Escape and returns focus to the launcher", async () => {

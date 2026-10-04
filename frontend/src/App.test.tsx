@@ -278,8 +278,18 @@ describe("transformation request form", () => {
       await screen.findByRole("region", { name: "Weave assistant" }),
     ).toBeVisible();
     expect(
-      screen.getByRole("heading", { name: "Describe what you want to create" }),
+      screen.getByRole("heading", { name: "What do you want to create?" }),
     ).toBeVisible();
+    expect(
+      screen.queryByRole("heading", { name: "New transformation" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "Describe your source and the materials you want to create.",
+      ),
+    ).not.toBeInTheDocument();
+    expect(document.querySelector(".creation-weave-intro")).toBeNull();
+    expect(screen.getByRole("button", { name: "Manual setup" })).toBeVisible();
     expect(
       screen.queryByRole("dialog", { name: "Weave assistant" }),
     ).toBeNull();
@@ -287,6 +297,9 @@ describe("transformation request form", () => {
       screen.queryByRole("button", { name: "Open Weave assistant" }),
     ).toBeNull();
     expect(screen.getByRole("button", { name: "Add a source" })).toBeVisible();
+    expect(
+      screen.getByPlaceholderText("Ask Weave what you want to create..."),
+    ).toBeVisible();
   });
 
   it("opens a saved artifact history and records an acceptance decision", async () => {

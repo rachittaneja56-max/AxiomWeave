@@ -45,6 +45,7 @@ export function ReviewWorkspace({
   onAssistantContextChange = ignoreAssistantContextChange,
   projectTitle = "Project workspace",
   refreshKey = 0,
+  initialNotice,
 }: {
   transformationId: number;
   initialOutputType?: OutputType;
@@ -54,6 +55,7 @@ export function ReviewWorkspace({
   onAssistantContextChange?: (context: string) => void;
   projectTitle?: string;
   refreshKey?: number;
+  initialNotice?: string;
 }) {
   const [detail, setDetail] = useState<TransformationDetail | null>(null);
   const [revision, setRevision] = useState<SourceRevisionStatus | null>(null);
@@ -78,7 +80,7 @@ export function ReviewWorkspace({
   const [checkingWarnings, setCheckingWarnings] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(initialNotice ?? null);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [traceabilityOpen, setTraceabilityOpen] = useState(false);
