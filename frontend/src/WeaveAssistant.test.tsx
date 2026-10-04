@@ -6,8 +6,11 @@ import {
   within,
   waitFor,
 } from "@testing-library/react";
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WeaveAssistant } from "./components/WeaveAssistant";
+
+const styles = readFileSync("src/styles.css", "utf8");
 
 afterEach(() => {
   cleanup();
@@ -127,6 +130,9 @@ describe("global Weave assistant", () => {
       screen.getByRole("button", { name: "Open Weave assistant" }),
     );
     expect(await screen.findByText("Executive Summary")).toBeInTheDocument();
+    const launcher = document.querySelector(".weave-launcher");
+    expect(launcher).toHaveAttribute("aria-expanded", "true");
+    expect(launcher).toBeVisible();
     expect(screen.queryByText("Clear draft")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "More Weave actions" }));
     expect(screen.getByRole("button", { name: "Reset draft" })).toBeVisible();
@@ -573,5 +579,22 @@ describe("global Weave assistant", () => {
       screen.queryByRole("dialog", { name: "Weave assistant" }),
     ).toBeNull();
     expect(launcher).toHaveFocus();
+  });
+
+  it("docks the contextual panel at bottom-right and keeps its desktop launcher visible", () => {
+    expect(styles).toMatch(
+      /\.weave-panel\s*\{[^}]*right:\s*24px;[^}]*bottom:\s*82px;/s,
+    );
+    expect(styles).toMatch(
+      /\.weave-panel\s*\{[^}]*height:\s*min\(680px,\s*calc\(100dvh - 120px\)\);/s,
+    );
+    const expandedLauncherRule = styles.match(
+      /\.weave-launcher\[aria-expanded="true"\]\s*\{([^}]*)\}/,
+    )?.[1];
+    expect(expandedLauncherRule).toContain("background:");
+    expect(expandedLauncherRule).not.toContain("visibility: hidden");
+    expect(styles).toMatch(
+      /@media\s*\(max-width:\s*720px\)[\s\S]*?\.weave-launcher\[aria-expanded="true"\]\s*\{[^}]*visibility:\s*hidden;/,
+    );
   });
 });

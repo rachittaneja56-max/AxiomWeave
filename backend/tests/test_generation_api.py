@@ -27,7 +27,15 @@ from app.generation import (
     StructuredGenerationResult,
 )
 from app.job_worker import process_one_job
-from app.models import ArtifactRun, ArtifactVersion, Job, JobAttempt, TransformationRun
+from app.models import (
+    ArtifactRun,
+    ArtifactVersion,
+    Job,
+    JobAttempt,
+    MediaRender,
+    MediaTask,
+    TransformationRun,
+)
 from app.presentation import PresentationSpec, SlideSpec
 from app.settings import Settings
 
@@ -220,6 +228,130 @@ def test_generate_is_durable_and_returns_before_worker_execution(
     assert detail["artifact_runs"][0]["status"] == "succeeded"
     assert len(detail["artifact_runs"][0]["versions"]) == 1
     assert len(provider.requests) == 1
+
+
+def test_infographic_generation_auto_renders_idempotently_and_survives_media_failure(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.job_worker import run_combined_worker
+    from app.media_renderer import MediaRenderError
+    from app.media_workflows import ensure_default_infographic_render
+
+    client, _engine, factory = auth_database
+    login(client)
+    provider = FixedProvider()
+    install_provider(provider)
+    created = client.post(
+        "/api/transformations",
+        json={
+            "source_text": "A fictional municipal launch in 18 wards.",
+            "supporting_context": "",
+            "output_types": ["infographic"],
+            "audience": "Municipal leadership",
+            "tone": "Professional",
+            "language": "English",
+            "detail_level": "brief",
+            "objective": "Explain the launch",
+            "style": "Plain language",
+        },
+    )
+    assert created.status_code == 200
+    transformation_id = created.json()["transformation_run_id"]
+    queued = client.post(f"/api/transformations/{transformation_id}/generate")
+    assert queued.status_code == 202
+
+    asyncio.run(run_combined_worker(factory, provider, "combined-infographic-test", once=True))
+
+    with factory() as session:
+        transformation = session.get(TransformationRun, transformation_id)
+        run = session.scalar(select(ArtifactRun))
+        version = session.scalar(select(ArtifactVersion))
+        assert run is not None
+        model_job = session.scalar(select(Job).where(Job.artifact_run_id == run.id))
+        render = session.scalar(select(MediaRender))
+        assert transformation is not None and transformation.selected_output_types == [
+            "infographic"
+        ]
+        assert run.status == "succeeded" and run.output_type == "infographic"
+        assert version is not None and version.artifact_run_id == run.id
+        assert InfographicSpec.model_validate_json(version.content).title == "Fictional infographic"
+        assert version.provider == "test" and version.model == "deterministic"
+        assert model_job is not None and model_job.resource_class == "model_io"
+        assert model_job.status == "succeeded"
+        assert render is not None and render.artifact_version_id == version.id
+        render_id = render.id
+        version_id = version.id
+        owner_id = transformation.owner_id
+        media_jobs = list(
+            session.scalars(select(Job).join(MediaTask, MediaTask.id == Job.media_task_id))
+        )
+        assert len(media_jobs) == 1
+        assert media_jobs[0].resource_class == "media_cpu"
+        assert media_jobs[0].status == "queued"
+
+    with factory() as session:
+        version = session.get(ArtifactVersion, version_id)
+        assert version is not None
+        repeated = ensure_default_infographic_render(session, owner_id, version)
+        session.commit()
+        assert repeated.id == render_id
+    with factory() as session:
+        version = session.get(ArtifactVersion, version_id)
+        assert version is not None
+        repeated = ensure_default_infographic_render(session, owner_id, version)
+        session.commit()
+        assert repeated.id == render_id
+
+    from app import media_workflows
+
+    original_renderer = media_workflows.render_infographic
+    fail_once = True
+
+    def render_with_one_failure(spec: InfographicSpec) -> tuple[bytes, bytes, int, int]:
+        nonlocal fail_once
+        if fail_once:
+            fail_once = False
+            raise MediaRenderError("fixture_render_failure")
+        return original_renderer(spec)
+
+    monkeypatch.setattr(media_workflows, "render_infographic", render_with_one_failure)
+    asyncio.run(run_combined_worker(factory, provider, "combined-infographic-test", once=True))
+
+    with factory() as session:
+        run = session.get(ArtifactRun, queued.json()["artifacts"][0]["artifact_run_id"])
+        version = session.get(ArtifactVersion, version_id)
+        render = session.get(MediaRender, render_id)
+        assert run is not None and run.status == "succeeded"
+        assert version is not None and InfographicSpec.model_validate_json(version.content)
+        assert render is not None and render.status == "failed"
+    failed = client.get(f"/api/media-renders/{render_id}").json()
+    assert failed["status"] == "failed"
+    retried = client.post(f"/api/media-renders/{render_id}/retry-failed")
+    assert retried.status_code == 202
+
+    asyncio.run(run_combined_worker(factory, provider, "combined-infographic-test", once=True))
+
+    ready = client.get(f"/api/media-renders/{render_id}").json()
+    assert ready["status"] == "ready_for_review"
+    assert ready["primary_asset"]["purpose"] == "infographic_png"
+    assets = [asset for task in ready["tasks"] for asset in task["assets"]]
+    svg = next(asset for asset in assets if asset["purpose"] == "infographic_svg")
+    assert client.get(ready["primary_asset"]["download_url"]).status_code == 200
+    assert client.get(svg["download_url"]).status_code == 200
+    with factory() as session:
+        run = session.get(ArtifactRun, queued.json()["artifacts"][0]["artifact_run_id"])
+        version = session.get(ArtifactVersion, version_id)
+        media_renders = list(session.scalars(select(MediaRender)))
+        media_tasks = list(session.scalars(select(MediaTask)))
+        media_jobs = list(
+            session.scalars(select(Job).join(MediaTask, MediaTask.id == Job.media_task_id))
+        )
+        assert run is not None and run.status == "succeeded"
+        assert version is not None and version.id == version_id
+        assert len(media_renders) == len(media_tasks) == len(media_jobs) == 1
+        assert media_jobs[0].resource_class == "media_cpu"
+        assert media_jobs[0].status == "succeeded"
 
 
 def test_queued_source_snapshot_and_regeneration_use_v1_then_v2(
@@ -532,10 +664,16 @@ def test_all_seven_families_create_independent_jobs_and_versioned_artifacts(
         jobs = list(session.scalars(select(Job)))
         versions = list(session.scalars(select(ArtifactVersion)))
         assert len(runs) == 7
-        assert len(jobs) == 7
+        artifact_jobs = [job for job in jobs if job.job_type == "artifact_generation"]
+        media_jobs = [job for job in jobs if job.job_type == "media_task"]
+        assert len(jobs) == 8
+        assert len(artifact_jobs) == 7
+        assert len(media_jobs) == 1
+        assert media_jobs[0].resource_class == "media_cpu"
+        assert media_jobs[0].status == "queued"
         assert len(versions) == 7
         assert {version.artifact_schema_version for version in versions} == {"1"}
-        assert all(job.context_manifest_id is not None for job in jobs)
+        assert all(job.context_manifest_id is not None for job in artifact_jobs)
         assert all(version.context_manifest_id is not None for version in versions)
         assert {version.prompt_version for version in versions} == {
             "1",

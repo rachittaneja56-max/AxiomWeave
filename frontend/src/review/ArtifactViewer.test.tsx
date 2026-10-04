@@ -1,7 +1,17 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ReviewArtifactRun, ReviewArtifactVersion } from "../types";
+import type {
+  MediaRender,
+  ReviewArtifactRun,
+  ReviewArtifactVersion,
+} from "../types";
 import { ArtifactViewer } from "./ArtifactViewer";
 
 const styles = readFileSync("src/styles.css", "utf8");
@@ -136,6 +146,113 @@ function renderExecutiveSummary() {
   );
 }
 
+const infographicDocument = {
+  title: "Project Asteria",
+  subtitle: "Municipal launch plan",
+  key_message: "Launch across 18 wards.",
+  blocks: [
+    { type: "section", heading: "Schedule", body: "Launch in November." },
+  ],
+  visual_direction: "A clear professional layout.",
+};
+
+function infographicArtifact() {
+  const version = {
+    id: 70,
+    version_number: 1,
+    source_version_id: 30,
+    source_version_number: 1,
+    content: JSON.stringify(infographicDocument),
+    provider: "openai",
+    model: "gpt-6-luna",
+    prompt_version: "1",
+    prompt_hash: "a".repeat(64),
+    review_status: "draft",
+    created_at: "2026-10-02T00:00:00Z",
+    context_manifest: null,
+    claim_scan: null,
+  } as ReviewArtifactVersion;
+  const artifact = {
+    artifact_run_id: 45,
+    output_type: "infographic",
+    status: "succeeded",
+    versions: [version],
+  } as ReviewArtifactRun;
+  return { version, artifact };
+}
+
+function mediaResponse(body: unknown, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  };
+}
+
+function infographicRender(
+  status: string,
+  primaryAsset: MediaRender["primary_asset"] = null,
+  assets: MediaRender["tasks"][number]["assets"] = [],
+): MediaRender {
+  return {
+    id: 80,
+    artifact_version_id: 70,
+    artifact_family: "infographic",
+    renderer_profile: "infographic_default",
+    renderer_version: "1",
+    render_plan: {},
+    status,
+    failure_code: status === "failed" ? "fixture_render_failed" : null,
+    created_at: "2026-10-02T00:00:00Z",
+    completed_at: null,
+    primary_asset: primaryAsset,
+    tasks: [
+      {
+        id: 90,
+        task_key: "render",
+        task_kind: "infographic_render",
+        ordinal: null,
+        status: status === "failed" ? "failed" : "pending",
+        failure_code: status === "failed" ? "fixture_render_failed" : null,
+        job_status: status === "failed" ? "failed" : "queued",
+        attempts: status === "failed" ? 1 : 0,
+        assets,
+      },
+    ],
+    metrics: [],
+    reviews: [],
+    review_copy: "Layout quality review remains separate.",
+  };
+}
+
+function renderInfographicArtifact() {
+  const { version, artifact } = infographicArtifact();
+  render(
+    <ArtifactViewer
+      artifact={artifact}
+      version={version}
+      versions={[version]}
+      selectedVersionId={version.id}
+      onSelectVersion={() => {}}
+      projectTitle="Project Asteria"
+      currentSourceVersion={1}
+      isLatest
+      busy={false}
+      exportStatus={null}
+      onEdit={() => {}}
+      onSave={() => {}}
+      onCancelEdit={() => {}}
+      onRegenerate={() => {}}
+      onRetry={() => {}}
+      onReviewStatus={() => {}}
+      onCopy={() => {}}
+      onDownload={() => {}}
+      onPowerpointExport={() => {}}
+      onTraceability={() => {}}
+    />,
+  );
+}
+
 describe("presentation artifact view and editor", () => {
   it("uses the selected layout and keeps guidance off the slide canvas", () => {
     renderViewer();
@@ -234,5 +351,104 @@ describe("presentation artifact view and editor", () => {
     expect(
       screen.getByText("The pilot begins in November."),
     ).toBeInTheDocument();
+  });
+});
+
+describe("infographic visual artifact view", () => {
+  it("shows a preparing state and keeps editable content available while rendering", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(mediaResponse([infographicRender("pending")])),
+      ),
+    );
+    renderInfographicArtifact();
+
+    await waitFor(() =>
+      expect(screen.getByText("Preparing infographic…")).toBeInTheDocument(),
+    );
+    const disclosure = screen.getByText("View editable content");
+    expect(disclosure.closest("details")).not.toHaveAttribute("open");
+    fireEvent.click(disclosure);
+    expect(screen.getByText("Launch across 18 wards.")).toBeVisible();
+    expect(screen.queryByText("Rendered infographic specification")).toBeNull();
+  });
+
+  it("shows the rendered PNG and direct PNG/SVG downloads before editable content", async () => {
+    const png = {
+      id: 101,
+      purpose: "infographic_png",
+      media_type: "image/png",
+      byte_size: 2048,
+      content_hash: "b".repeat(64),
+      width: 1080,
+      height: 1350,
+      duration_ms: null,
+      created_at: "2026-10-02T00:00:00Z",
+      preview_url: "/api/media-assets/101/preview",
+      download_url: "/api/media-assets/101/download",
+    };
+    const svg = {
+      ...png,
+      id: 102,
+      purpose: "infographic_svg",
+      media_type: "image/svg+xml",
+      download_url: "/api/media-assets/102/download",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          mediaResponse([infographicRender("ready_for_review", png, [svg])]),
+        ),
+      ),
+    );
+    renderInfographicArtifact();
+
+    const image = await screen.findByAltText("Private infographic preview");
+    const panel = image.closest(".media-workflow-panel");
+    const editable = screen.getByText("View editable content");
+    expect(panel?.compareDocumentPosition(editable)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(image).toHaveAttribute("src", png.preview_url);
+    expect(screen.getByRole("link", { name: /Download PNG/ })).toHaveAttribute(
+      "href",
+      png.download_url,
+    );
+    expect(screen.getByRole("link", { name: /Download SVG/ })).toHaveAttribute(
+      "href",
+      svg.download_url,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Render infographic" }),
+    ).toBeNull();
+  });
+
+  it("shows render failure and retries while keeping editable content available", async () => {
+    const failed = infographicRender("failed");
+    const retrying = infographicRender("rendering");
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      String(input) === "/api/media-renders/80/retry-failed"
+        ? Promise.resolve(mediaResponse(retrying, 202))
+        : Promise.resolve(mediaResponse([failed])),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    renderInfographicArtifact();
+
+    expect(
+      await screen.findByText("Infographic rendering failed."),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Retry render" }));
+    expect(
+      await screen.findByText("Preparing infographic…"),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/media-renders/80/retry-failed",
+      expect.objectContaining({ method: "POST" }),
+    );
+    const disclosure = screen.getByText("View editable content");
+    fireEvent.click(disclosure);
+    expect(screen.getByText("Launch across 18 wards.")).toBeVisible();
   });
 });

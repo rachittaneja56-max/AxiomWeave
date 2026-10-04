@@ -29,6 +29,9 @@ from app.models import (
     ArtifactBlock,
     ArtifactBlockDependency,
     ArtifactVersion,
+    Job,
+    MediaRender,
+    MediaTask,
     SourceAsset,
     SourcePackMembership,
     SourcePackVersion,
@@ -447,6 +450,18 @@ def test_structured_family_edits_validate_and_append_version(
     assert result["model"] == "manual-edit"
     assert result["prompt_version"] == "manual_edit_v1"
     assert len(result["prompt_hash"]) == 64
+    if output_type == "infographic":
+        with factory() as session:
+            render_versions = list(
+                session.scalars(select(MediaRender.artifact_version_id).order_by(MediaRender.id))
+            )
+            tasks = list(session.scalars(select(MediaTask)))
+            jobs = list(
+                session.scalars(select(Job).join(MediaTask, MediaTask.id == Job.media_task_id))
+            )
+            assert render_versions == [original["id"], result["id"]]
+            assert len(tasks) == len(jobs) == 2
+            assert all(job.resource_class == "media_cpu" for job in jobs)
 
 
 @pytest.mark.parametrize(

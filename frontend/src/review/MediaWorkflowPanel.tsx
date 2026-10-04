@@ -201,6 +201,7 @@ export function MediaWorkflowPanel({
   const artifactVersionId = version?.id;
   const [renders, setRenders] = useState<MediaRender[]>([]);
   const [render, setRender] = useState<MediaRender | null>(null);
+  const [rendersLoading, setRendersLoading] = useState(true);
   const [sceneInputs, setSceneInputs] = useState<Record<number, SceneInputs>>(
     {},
   );
@@ -217,7 +218,11 @@ export function MediaWorkflowPanel({
     setSceneInputs({});
     setDurationSeconds({});
     setError(null);
-    if (!enabled || artifactVersionId == null) return;
+    setRendersLoading(true);
+    if (!enabled || artifactVersionId == null) {
+      setRendersLoading(false);
+      return;
+    }
     void api
       .listMediaRenders(artifactVersionId)
       .then((items) => {
@@ -227,6 +232,9 @@ export function MediaWorkflowPanel({
       })
       .catch(() => {
         if (!cancelled) setRenders([]);
+      })
+      .finally(() => {
+        if (!cancelled) setRendersLoading(false);
       });
     return () => {
       cancelled = true;
@@ -401,36 +409,47 @@ export function MediaWorkflowPanel({
   const captions = allAssets.find((asset) => asset.purpose === "caption_vtt");
   const failedTask =
     render?.tasks.some((task) => task.status === "failed") ?? false;
+  const infographic = outputType === "infographic";
+  const renderActive =
+    render != null && ACTIVE_RENDER_STATUSES.has(render.status);
+  const renderFailed = render?.status === "failed" || failedTask;
+  const showRenderAction =
+    !infographic || (!rendersLoading && !renderActive && !renderFailed);
 
   return (
     <section
-      className="media-workflow-panel"
+      className={
+        "media-workflow-panel" +
+        (infographic ? " media-workflow-panel--infographic" : "")
+      }
       aria-labelledby="media-workflow-title"
     >
       <header className="media-workflow-panel__header">
         <div>
-          <p className="eyebrow">Private media workflow</p>
-          <h3 id="media-workflow-title">
-            {outputType === "infographic"
-              ? "Rendered infographic"
-              : "Rendered video"}
-          </h3>
-          <p>
-            Outputs remain tied to Artifact Version {version.version_number}.
+          <p className="eyebrow">
+            {infographic ? "Finished visual" : "Private media workflow"}
           </p>
+          <h3 id="media-workflow-title">
+            {infographic ? "Infographic" : "Rendered video"}
+          </h3>
+          <p>Artifact Version {version.version_number}</p>
         </div>
-        <button
-          type="button"
-          className="button-primary"
-          onClick={() => void startRender()}
-          disabled={busy}
-        >
-          {busy
-            ? "Working…"
-            : outputType === "infographic"
-              ? "Render infographic"
-              : "Render video"}
-        </button>
+        {showRenderAction && (
+          <button
+            type="button"
+            className="button-secondary"
+            onClick={() => void startRender()}
+            disabled={busy || rendersLoading}
+          >
+            {busy
+              ? "Working…"
+              : outputType === "infographic"
+                ? render
+                  ? "Re-render"
+                  : "Create visual"
+                : "Render video"}
+          </button>
+        )}
       </header>
 
       {video && (
@@ -553,19 +572,39 @@ export function MediaWorkflowPanel({
           {error}
         </p>
       )}
+      {infographic && !render && rendersLoading && (
+        <div className="infographic-render-state" role="status">
+          <span className="loading-mark" aria-hidden="true" />
+          <p>Preparing infographic…</p>
+        </div>
+      )}
+      {infographic && !render && !rendersLoading && (
+        <p className="infographic-render-state" role="status">
+          The visual for this version is not available yet.
+        </p>
+      )}
       {render && (
         <div className="media-render-result" aria-live="polite">
           <p className="media-render-result__status" role="status">
-            Render {render.id}: {render.status.replaceAll("_", " ")}
+            {infographic
+              ? `Render ${render.id} · ${render.renderer_profile} ${render.renderer_version}: ${render.status.replaceAll("_", " ")}`
+              : `Render ${render.id}: ${render.status.replaceAll("_", " ")}`}
             {render.failure_code ? ` · ${render.failure_code}` : ""}
           </p>
-          {render.status === "pending" || render.status === "rendering" ? (
+          {infographic && renderActive ? (
+            <div className="infographic-render-state" role="status">
+              <span className="loading-mark" aria-hidden="true" />
+              <p>Preparing infographic…</p>
+            </div>
+          ) : null}
+          {!infographic &&
+          (render.status === "pending" || render.status === "rendering") ? (
             <p>
               Media tasks are processing. Successful scene images remain
               available if another scene fails.
             </p>
           ) : null}
-          {render.tasks.length > 0 && (
+          {!infographic && render.tasks.length > 0 && (
             <ul className="media-task-list">
               {render.tasks.map((task) => (
                 <li key={task.id}>
@@ -632,8 +671,13 @@ export function MediaWorkflowPanel({
               onClick={() => void retryFailedTask()}
               disabled={busy}
             >
-              Retry failed media task
+              {infographic ? "Retry render" : "Retry failed media task"}
             </button>
+          )}
+          {infographic && renderFailed && (
+            <p className="infographic-render-failure" role="alert">
+              Infographic rendering failed.
+            </p>
           )}
           {render.status === "ready_for_review" && (
             <div className="media-review-actions">

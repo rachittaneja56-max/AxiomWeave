@@ -2,6 +2,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
 from auth_support import login
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
@@ -270,7 +271,16 @@ def test_global_weave_requires_source_and_persists_a_visible_clarification(
         assert session.scalar(select(Job)) is None
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Create an infographic.",
+        "Make me an infographic.",
+        "Turn this into an infographic.",
+    ],
+)
 def test_global_weave_confirmed_infographic_creates_run_and_queues_model_job(
+    message: str,
     auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
     monkeypatch: Any,
 ) -> None:
@@ -305,15 +315,14 @@ def test_global_weave_confirmed_infographic_creates_run_and_queues_model_job(
     proposed = client.post(
         "/api/weave/chat",
         json={
-            "message": (
-                "Create an infographic for municipal leadership. Keep it concise and professional."
-            ),
+            "message": message,
             "source_text": source,
         },
     )
     assert proposed.status_code == 201
     plan = proposed.json()
     assert plan["steps"][0]["command_type"] == "create_transformation_and_generate"
+    assert plan["steps"][0]["arguments"]["request"]["output_types"] == ["infographic"]
     decision = {"plan_hash": plan["plan_hash"], "plan_version": plan["plan_version"]}
     confirmed = client.post(f"/api/action-plans/{plan['id']}/confirm", json=decision)
     assert confirmed.status_code == 200

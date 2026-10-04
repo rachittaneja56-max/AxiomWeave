@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from openai.lib._pydantic import to_strict_json_schema
 from pydantic import ValidationError
 
 from app.artifact_contracts import (
@@ -78,6 +79,27 @@ def test_infographic_spec_is_bounded_and_canonical() -> None:
     assert "Monday" in projection
     assert '{"' not in projection
     assert '"blocks"' not in projection
+
+
+def test_infographic_provider_schema_uses_supported_strict_union_keywords() -> None:
+    schema = to_strict_json_schema(InfographicSpec)
+    schema_text = json.dumps(schema)
+
+    assert '"anyOf"' in schema_text
+    assert '"enum": ["section"]' in schema_text
+    assert '"enum": ["callout"]' in schema_text
+    assert '"enum": ["data"]' in schema_text
+    assert '"oneOf"' not in schema_text
+    assert '"discriminator"' not in schema_text
+    assert '"const"' not in schema_text
+    with pytest.raises(ValidationError):
+        InfographicSpec.model_validate(
+            {
+                "title": "Invalid block",
+                "blocks": [{"type": "chart", "heading": "Unsupported"}],
+                "visual_direction": "Keep the layout simple.",
+            }
+        )
 
 
 def test_video_package_has_bounded_scenes_and_readable_projection() -> None:

@@ -728,6 +728,11 @@ async def process_one_job(
         draft.cache_state,
     )
     if artifact_version_id is not None:
+        if output_type == OutputType.INFOGRAPHIC:
+            from app.media_workflows import enqueue_default_infographic_render
+
+            with session_factory() as session:
+                enqueue_default_infographic_render(session, artifact_version_id)
         await _run_automatic_claim_scan(session_factory, artifact_version_id, provider)
     return True
 

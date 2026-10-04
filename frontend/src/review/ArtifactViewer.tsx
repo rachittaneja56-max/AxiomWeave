@@ -693,14 +693,20 @@ export function ArtifactViewer({
         ) : artifact.output_type === "presentation" ? (
           <PresentationViewer content={version.content} />
         ) : artifact.output_type === "infographic" ? (
-          infographicDraft ? (
-            <InfographicViewer value={infographicDraft} />
-          ) : (
-            <div className="document-empty" role="alert">
-              <FileText aria-hidden="true" />
-              <p>This infographic specification could not be displayed.</p>
-            </div>
-          )
+          <>
+            <MediaWorkflowPanel outputType="infographic" version={version} />
+            <details className="infographic-editable-content">
+              <summary>View editable content</summary>
+              {infographicDraft ? (
+                <InfographicViewer value={infographicDraft} />
+              ) : (
+                <div className="document-empty" role="alert">
+                  <FileText aria-hidden="true" />
+                  <p>This infographic specification could not be displayed.</p>
+                </div>
+              )}
+            </details>
+          </>
         ) : artifact.output_type === "video_package" ? (
           videoPackageDraft ? (
             <VideoPackageViewer value={videoPackageDraft} />
@@ -753,7 +759,12 @@ export function ArtifactViewer({
           {exportStatus}
         </p>
       )}
-      <MediaWorkflowPanel outputType={artifact.output_type} version={version} />
+      {artifact.output_type !== "infographic" && (
+        <MediaWorkflowPanel
+          outputType={artifact.output_type}
+          version={version}
+        />
+      )}
     </section>
   );
 }

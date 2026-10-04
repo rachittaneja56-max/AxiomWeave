@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import tempfile
 import time
 from hashlib import sha256
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import cast
+from collections.abc import Mapping
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -58,6 +60,7 @@ MEDIA_AUDIO_MAX_BYTES = 16 * 1024 * 1024
 MEDIA_IMAGE_MAX_DIMENSION = 4_000
 MEDIA_IMAGE_MAX_PIXELS = 16_000_000
 MEDIA_AUDIO_MAX_DURATION_MS = 60_000
+logger = logging.getLogger(__name__)
 
 
 def media_owner_id(session: Session, version: ArtifactVersion) -> int | None:
@@ -73,6 +76,85 @@ def media_family(session: Session, version: ArtifactVersion) -> str | None:
     return session.scalar(
         select(ArtifactRun.output_type).where(ArtifactRun.id == version.artifact_run_id)
     )
+
+
+def _infographic_render_plan(artifact_version: ArtifactVersion) -> dict[str, object]:
+    spec = infographic_spec_from_content(artifact_version.content)
+    return {
+        "artifact_version_id": artifact_version.id,
+        "family": "infographic",
+        "renderer_profile": INFOGRAPHIC_PROFILE,
+        "renderer_version": INFOGRAPHIC_RENDERER_VERSION,
+        "canvas_width": 1080,
+        "minimum_canvas_height": 1350,
+        "svg_and_png": True,
+        "spec": spec.model_dump(mode="json"),
+    }
+
+
+def _render_dependency_key(
+    owner_id: int, artifact_version: ArtifactVersion, plan: Mapping[str, object]
+) -> str:
+    return canonical_hash(
+        {
+            "owner_id": owner_id,
+            "artifact_version_id": artifact_version.id,
+            "artifact_content_hash": sha256(artifact_version.content.encode()).hexdigest(),
+            "plan": plan,
+        }
+    )
+
+
+def ensure_default_infographic_render(
+    session: Session, owner_id: int, artifact_version: ArtifactVersion
+) -> MediaRender:
+    """Return the one deterministic default render for this immutable version."""
+    if media_family(session, artifact_version) != "infographic":
+        raise ValueError("media_render_unsupported_artifact")
+    if media_owner_id(session, artifact_version) != owner_id:
+        raise ValueError("artifact_version_not_found")
+
+    locked_version = session.scalar(
+        select(ArtifactVersion).where(ArtifactVersion.id == artifact_version.id).with_for_update()
+    )
+    if locked_version is None:
+        raise ValueError("artifact_version_not_found")
+
+    plan = _infographic_render_plan(locked_version)
+    dependency_key = _render_dependency_key(owner_id, locked_version, plan)
+    existing = session.scalar(
+        select(MediaRender).where(
+            MediaRender.owner_id == owner_id,
+            MediaRender.artifact_version_id == locked_version.id,
+            MediaRender.artifact_family == "infographic",
+            MediaRender.renderer_profile == INFOGRAPHIC_PROFILE,
+            MediaRender.renderer_version == INFOGRAPHIC_RENDERER_VERSION,
+            MediaRender.dependency_key == dependency_key,
+        )
+    )
+    if existing is not None:
+        return existing
+    return create_media_render(session, owner_id, locked_version)
+
+
+def enqueue_default_infographic_render(session: Session, artifact_version_id: int) -> None:
+    """Best-effort post-commit render enqueue; media errors never undo artifact success."""
+    try:
+        artifact_version = session.get(ArtifactVersion, artifact_version_id)
+        if artifact_version is None:
+            return
+        owner_id = media_owner_id(session, artifact_version)
+        if owner_id is None:
+            raise ValueError("artifact_version_not_found")
+        ensure_default_infographic_render(session, owner_id, artifact_version)
+        session.commit()
+    except Exception as error:
+        session.rollback()
+        logger.error(
+            "Default infographic render enqueue failed artifact_version_id=%s error_class=%s",
+            artifact_version_id,
+            type(error).__name__,
+        )
 
 
 def rights_are_eligible(record: MediaRightsRecord | None) -> bool:
@@ -130,19 +212,9 @@ def create_media_render(
         raise ValueError("artifact_version_not_found")
 
     if family == "infographic":
-        spec = infographic_spec_from_content(artifact_version.content)
         profile = INFOGRAPHIC_PROFILE
         version = INFOGRAPHIC_RENDERER_VERSION
-        plan: dict[str, object] = {
-            "artifact_version_id": artifact_version.id,
-            "family": family,
-            "renderer_profile": profile,
-            "renderer_version": version,
-            "canvas_width": 1080,
-            "minimum_canvas_height": 1350,
-            "svg_and_png": True,
-            "spec": spec.model_dump(mode="json"),
-        }
+        plan = _infographic_render_plan(artifact_version)
     else:
         video = video_spec_from_content(artifact_version.content)
         if scene_durations_ms is not None and len(scene_durations_ms) != len(video.scenes):
@@ -227,14 +299,7 @@ def create_media_render(
             "caption_profile": "scene_narration_and_on_screen_text_v1",
         }
 
-    dependency_key = canonical_hash(
-        {
-            "owner_id": owner_id,
-            "artifact_version_id": artifact_version.id,
-            "artifact_content_hash": sha256(artifact_version.content.encode()).hexdigest(),
-            "plan": plan,
-        }
-    )
+    dependency_key = _render_dependency_key(owner_id, artifact_version, plan)
     render = MediaRender(
         owner_id=owner_id,
         artifact_version_id=artifact_version.id,

@@ -4,51 +4,60 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic.annotated_handlers import GetJsonSchemaHandler
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
 
 from app.domain.transformation import OutputType
 from app.presentation import PresentationSpec
 
 
-class InfographicSectionBlock(BaseModel):
+class _InfographicBlockModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        schema = handler(core_schema)
+        properties = cast(dict[str, object], schema.get("properties", {}))
+        type_schema = properties.get("type")
+        if isinstance(type_schema, dict) and "const" in type_schema:
+            normalized_type_schema = cast(dict[str, object], type_schema)
+            normalized_type_schema["enum"] = [normalized_type_schema["const"]]
+            del normalized_type_schema["const"]
+        return schema
+
+
+class InfographicSectionBlock(_InfographicBlockModel):
     type: Literal["section"] = "section"
     heading: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
     body: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=800)]
 
 
-class InfographicCalloutBlock(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class InfographicCalloutBlock(_InfographicBlockModel):
     type: Literal["callout"] = "callout"
     label: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
     value: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
     explanation: str = Field(default="", max_length=400)
 
 
-class InfographicDataPoint(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class InfographicDataPoint(_InfographicBlockModel):
     label: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
     value: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
     note: str = Field(default="", max_length=300)
 
 
-class InfographicDataBlock(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class InfographicDataBlock(_InfographicBlockModel):
     type: Literal["data"] = "data"
     heading: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
     rows: list[InfographicDataPoint] = Field(min_length=1, max_length=8)
 
 
-type InfographicBlock = Annotated[
-    InfographicSectionBlock | InfographicCalloutBlock | InfographicDataBlock,
-    Field(discriminator="type"),
-]
+type InfographicBlock = InfographicSectionBlock | InfographicCalloutBlock | InfographicDataBlock
 
 
 class InfographicSpec(BaseModel):

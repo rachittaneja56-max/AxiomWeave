@@ -180,6 +180,10 @@ async def execute_save_artifact_version(
     )
     create_or_get_claim_scan(session, user.id, version)
     session.commit()
+    if output_type == OutputType.INFOGRAPHIC:
+        from app.media_workflows import enqueue_default_infographic_render
+
+        enqueue_default_infographic_render(session, version.id)
     if provider is not None:
         scan = session.scalar(select(ClaimScan).where(ClaimScan.artifact_version_id == version.id))
         source_version = session.get(SourceVersion, version.source_version_id)
