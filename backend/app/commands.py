@@ -1,6 +1,7 @@
-from typing import Annotated, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaMode
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit_event
@@ -214,27 +215,48 @@ type ApplicationCommand = Annotated[
 
 class ProposedActionStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    command_type: Literal[
-        "create_transformation",
-        "create_transformation_and_generate",
-        "generate_selected_artifacts",
-        "retry_artifact",
-        "regenerate_artifact",
-        "targeted_update_artifact",
-        "analyze_artifact_evidence",
-        "create_media_render",
-        "retry_failed_media_task",
-        "review_media_render",
-        "review_artifact_version",
-    ]
-    arguments: dict[str, object]
-    summary: str = Field(min_length=1, max_length=500)
+    command: ApplicationCommand
 
 
 class ActionPlanProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
     explanation: str = Field(min_length=1, max_length=1_000)
     steps: list[ProposedActionStep] = Field(max_length=8)
+
+    @classmethod
+    def model_json_schema(
+        cls,
+        by_alias: bool = True,
+        ref_template: str = "#/$defs/{model}",
+        schema_generator: type[GenerateJsonSchema] = GenerateJsonSchema,
+        mode: JsonSchemaMode = "validation",
+        *,
+        union_format: Literal["any_of", "primitive_type_array"] = "any_of",
+    ) -> dict[str, Any]:
+        schema = super().model_json_schema(
+            by_alias=by_alias,
+            ref_template=ref_template,
+            schema_generator=schema_generator,
+            mode=mode,
+            union_format=union_format,
+        )
+
+        def normalize_openai_keywords(node: object) -> None:
+            if isinstance(node, dict):
+                schema_node = cast(dict[str, object], node)
+                if "const" in schema_node:
+                    schema_node["enum"] = [schema_node.pop("const")]
+                if "oneOf" in schema_node and "discriminator" in schema_node:
+                    schema_node["anyOf"] = schema_node.pop("oneOf")
+                    schema_node.pop("discriminator")
+                for value in schema_node.values():
+                    normalize_openai_keywords(value)
+            elif isinstance(node, list):
+                for value in cast(list[object], node):
+                    normalize_openai_keywords(value)
+
+        normalize_openai_keywords(schema)
+        return schema
 
 
 class CommandValidationError(ValueError):

@@ -508,6 +508,50 @@ describe("global Weave assistant", () => {
     expect(screen.getByLabelText("Message Weave")).toBeEnabled();
   });
 
+  it("removes a failed optimistic message, restores the composer, and keeps refreshed history clean", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/weave/chat" && init?.method === "POST") {
+        return Promise.resolve(
+          response({ error: { code: "planner_failed" } }, 502),
+        );
+      }
+      if (path === "/api/weave/chat") {
+        return Promise.resolve(response({ messages: [], plans: [] }));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(
+      <WeaveAssistant
+        transformationId={null}
+        contextLabel="Creating a transformation"
+        creationMode
+        creationPage
+        onNavigateNew={() => {}}
+        onTransformationCreated={() => {}}
+        onWorkspaceChanged={() => {}}
+      />,
+    );
+    await screen.findByRole("region", { name: "Weave assistant" });
+    const composer = screen.getByLabelText("Message Weave");
+    fireEvent.change(composer, { target: { value: "Create an infographic." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(
+      await screen.findByText("Weave couldn't prepare that setup. Try again."),
+    ).toBeVisible();
+    expect(composer).toHaveValue("Create an infographic.");
+    expect(container.querySelector(".weave-message--user")).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter(
+        ([input, init]) =>
+          String(input) === "/api/weave/chat" && init?.method !== "POST",
+      ),
+    ).toHaveLength(2);
+  });
+
   it("submits only once on rapid repeated submit events while Weave is busy", async () => {
     let resolveProposal: ((value: unknown) => void) | undefined;
     let postCount = 0;
@@ -548,7 +592,7 @@ describe("global Weave assistant", () => {
 
     expect(postCount).toBe(1);
     expect(screen.getByText("Weave is preparing your setup...")).toBeVisible();
-    expect(screen.getByText("Create an infographic.")).toBeVisible();
+    expect(screen.getAllByText("Create an infographic.")).toHaveLength(1);
     resolveProposal?.(null);
   });
 

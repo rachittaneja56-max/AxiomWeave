@@ -1,6 +1,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from auth_support import login
@@ -10,8 +10,20 @@ from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.commands import ActionPlanProposal, ProposedActionStep
+from app.commands import (
+    COMMAND_ARGUMENT_MODELS,
+    ActionPlanProposal,
+    AnalyzeArtifactEvidenceCommand,
+    CreateMediaRenderCommand,
+    CreateTransformationAndGenerateCommand,
+    CreateTransformationCommand,
+    GenerateSelectedArtifactsCommand,
+    ProposedActionStep,
+    RetryArtifactCommand,
+    TargetedUpdateArtifactCommand,
+)
 from app.generation import (
+    GenerationProviderError,
     GenerationRequest,
     StructuredGenerationProvider,
     StructuredGenerationResult,
@@ -20,10 +32,12 @@ from app.job_worker import process_one_job
 from app.model_policy import provider_profile_allows_source, resolve_model_profile
 from app.models import (
     ActionPlan,
+    ActionPlanStep,
     ArtifactRun,
     ArtifactVersion,
     AuditEvent,
     Base,
+    ChatMessage,
     Job,
     ModelUsageRecord,
     RateLimitBucket,
@@ -74,9 +88,7 @@ def generate_proposal(transformation_id: int) -> ActionPlanProposal:
         explanation="The selected artifact family will be queued for generation.",
         steps=[
             ProposedActionStep(
-                command_type="generate_selected_artifacts",
-                arguments={"transformation_run_id": transformation_id},
-                summary="Generate the selected artifact",
+                command=GenerateSelectedArtifactsCommand(transformation_run_id=transformation_id),
             )
         ],
     )
@@ -87,27 +99,27 @@ def create_transformation_proposal(source_text: str) -> ActionPlanProposal:
         explanation="I prepared a transformation draft for your review.",
         steps=[
             ProposedActionStep(
-                command_type="create_transformation_and_generate",
-                arguments={
-                    "request": {
-                        "source_text": source_text,
-                        "output_types": ["executive_summary", "presentation"],
-                        "audience": "Senior leadership",
-                        "tone": "Professional",
-                        "language": "English",
-                        "detail_level": "standard",
-                        "objective": "Inform leadership",
-                        "style": "Plain language",
-                        "supporting_context": "",
+                command=CreateTransformationAndGenerateCommand.model_validate(
+                    {
+                        "request": {
+                            "source_text": source_text,
+                            "output_types": ["executive_summary", "presentation"],
+                            "audience": "Senior leadership",
+                            "tone": "Professional",
+                            "language": "English",
+                            "detail_level": "standard",
+                            "objective": "Inform leadership",
+                            "style": "Plain language",
+                            "supporting_context": "",
+                        }
                     }
-                },
-                summary="Create an executive summary and presentation",
+                ),
             )
         ],
     )
 
 
-def install_planner(monkeypatch: Any, planner: PlannerStub) -> None:
+def install_planner(monkeypatch: Any, planner: StructuredGenerationProvider) -> None:
     monkeypatch.setattr("app.action_planning.get_planner_provider", lambda: planner)
 
 
@@ -247,15 +259,11 @@ def test_global_weave_requires_source_and_persists_a_visible_clarification(
 ) -> None:
     client, _engine, factory = auth_database
     login(client)
-    install_planner(
-        monkeypatch,
-        PlannerStub(
-            ActionPlanProposal(
-                explanation="Add a source first.",
-                steps=[],
-            )
-        ),
-    )
+
+    def provider_must_not_be_resolved() -> None:
+        raise AssertionError("the provider must not be resolved for missing source")
+
+    monkeypatch.setattr("app.action_planning.get_planner_provider", provider_must_not_be_resolved)
 
     proposed = client.post("/api/weave/chat", json={"message": "Create an infographic."})
     assert proposed.status_code == 201
@@ -263,12 +271,72 @@ def test_global_weave_requires_source_and_persists_a_visible_clarification(
     assert proposed.json()["explanation"] == (
         "I can create that. Add the source material you want it grounded in first."
     )
+    assert proposed.json()["planner_model"] == "deterministic"
+    assert proposed.json()["requires_confirmation"] is False
     history = client.get("/api/weave/chat").json()
     assert history["messages"][-1]["content"] == proposed.json()["explanation"]
     with factory() as session:
         assert session.scalar(select(TransformationRun)) is None
         assert session.scalar(select(ArtifactRun)) is None
         assert session.scalar(select(Job)) is None
+        assert session.scalar(select(ModelUsageRecord)) is None
+        messages = list(session.scalars(select(ChatMessage).order_by(ChatMessage.id)))
+        assert [item.role for item in messages] == ["user", "assistant"]
+
+
+def test_action_plan_schema_closes_every_application_command_variant() -> None:
+    schema = ActionPlanProposal.model_json_schema()
+
+    def assert_closed_objects(node: object) -> None:
+        if isinstance(node, dict):
+            schema_node = cast(dict[str, object], node)
+            if schema_node.get("type") == "object":
+                assert schema_node.get("additionalProperties") is False
+            if "additionalProperties" in schema_node:
+                assert schema_node["additionalProperties"] is False
+            assert "oneOf" not in schema_node
+            assert "discriminator" not in schema_node
+            assert "const" not in schema_node
+            for value in schema_node.values():
+                assert_closed_objects(value)
+        elif isinstance(node, list):
+            for value in cast(list[object], node):
+                assert_closed_objects(value)
+
+    assert_closed_objects(schema)
+    definitions = cast(dict[str, object], schema["$defs"])
+    assert {model.__name__ for model in COMMAND_ARGUMENT_MODELS.values()} <= set(definitions)
+
+
+def test_global_planner_provider_failure_leaves_no_orphan_chat_or_plan(
+    auth_database: tuple[TestClient, Engine, sessionmaker[Session]],
+    monkeypatch: Any,
+) -> None:
+    client, _engine, factory = auth_database
+    login(client)
+
+    class FailingPlanner:
+        async def generate_structured[T: BaseModel](
+            self, request: GenerationRequest, response_model: type[T]
+        ) -> StructuredGenerationResult[T]:
+            del request, response_model
+            raise GenerationProviderError()
+
+    install_planner(monkeypatch, FailingPlanner())
+    response = client.post(
+        "/api/weave/chat",
+        json={
+            "message": "Create an executive summary.",
+            "source_text": "A fictional source for the planner test.",
+        },
+    )
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "planner_failed"
+    with factory() as session:
+        assert session.scalar(select(ActionPlan)) is None
+        assert list(session.scalars(select(ChatMessage))) == []
+        usage = session.scalar(select(ModelUsageRecord))
+        assert usage is not None and usage.result_state == "failed"
 
 
 @pytest.mark.parametrize(
@@ -303,9 +371,9 @@ def test_global_weave_confirmed_infographic_creates_run_and_queues_model_job(
             explanation="I prepared the infographic setup for review.",
             steps=[
                 ProposedActionStep(
-                    command_type="create_transformation_and_generate",
-                    arguments={"request": request},
-                    summary="Create this transformation and generate: Infographic",
+                    command=CreateTransformationAndGenerateCommand.model_validate(
+                        {"request": request}
+                    ),
                 )
             ],
         )
@@ -323,6 +391,17 @@ def test_global_weave_confirmed_infographic_creates_run_and_queues_model_job(
     plan = proposed.json()
     assert plan["steps"][0]["command_type"] == "create_transformation_and_generate"
     assert plan["steps"][0]["arguments"]["request"]["output_types"] == ["infographic"]
+    assert "command" not in plan["steps"][0]
+    with factory() as session:
+        stored_step = session.scalar(
+            select(ActionPlanStep).where(ActionPlanStep.action_plan_id == plan["id"])
+        )
+        assert stored_step is not None
+        assert stored_step.command_type == "create_transformation_and_generate"
+        assert stored_step.arguments == plan["steps"][0]["arguments"]
+        assert "command_type" not in stored_step.arguments
+        messages = list(session.scalars(select(ChatMessage).order_by(ChatMessage.id)))
+        assert [item.role for item in messages] == ["user", "assistant"]
     decision = {"plan_hash": plan["plan_hash"], "plan_version": plan["plan_version"]}
     confirmed = client.post(f"/api/action-plans/{plan['id']}/confirm", json=decision)
     assert confirmed.status_code == 200
@@ -365,22 +444,22 @@ def test_global_weave_rejects_incomplete_creation_and_workspace_commands(
 ) -> None:
     client, _engine, factory = auth_database
     login(client)
-    invalid = ActionPlanProposal.model_construct(
+    invalid = ActionPlanProposal(
         explanation="This should not be accepted.",
         steps=[
-            ProposedActionStep.model_construct(
-                command_type="create_transformation",
-                arguments={
-                    "request": {
-                        "source_text": "",
-                        "output_types": ["not_a_supported_output"],
-                        "audience": "",
-                        "tone": "",
-                        "objective": "",
-                        "style": "",
+            ProposedActionStep(
+                command=CreateTransformationCommand.model_validate(
+                    {
+                        "request": {
+                            "source_text": "A supplied source.",
+                            "output_types": ["infographic"],
+                            "audience": "Leadership",
+                            "tone": "Professional",
+                            "objective": "Inform leadership",
+                            "style": "Plain language",
+                        }
                     }
-                },
-                summary="Invalid create",
+                ),
             )
         ],
     )
@@ -395,13 +474,11 @@ def test_global_weave_rejects_incomplete_creation_and_workspace_commands(
         assert session.scalar(select(TransformationRun)) is None
         assert session.scalar(select(ActionPlan)) is None
 
-    wrong_scope = ActionPlanProposal.model_construct(
+    wrong_scope = ActionPlanProposal(
         explanation="This command belongs to a selected workspace.",
         steps=[
-            ProposedActionStep.model_construct(
-                command_type="generate_selected_artifacts",
-                arguments={"transformation_run_id": 5},
-                summary="Generate selected artifacts",
+            ProposedActionStep(
+                command=GenerateSelectedArtifactsCommand(transformation_run_id=5),
             )
         ],
     )
@@ -466,9 +543,7 @@ def test_evidence_analysis_uses_the_same_typed_handler_for_manual_and_chat(
             explanation="Check evidence for the selected advisory.",
             steps=[
                 ProposedActionStep(
-                    command_type="analyze_artifact_evidence",
-                    arguments={"artifact_version_id": artifact_version_id},
-                    summary="Check evidence for the advisory",
+                    command=AnalyzeArtifactEvidenceCommand(artifact_version_id=artifact_version_id),
                 )
             ],
         )
@@ -526,9 +601,9 @@ def test_evidence_analysis_uses_the_same_typed_handler_for_manual_and_chat(
                 explanation="Check this artifact's evidence.",
                 steps=[
                     ProposedActionStep(
-                        command_type="analyze_artifact_evidence",
-                        arguments={"artifact_version_id": artifact_version_id},
-                        summary="Check evidence for another owner's artifact",
+                        command=AnalyzeArtifactEvidenceCommand(
+                            artifact_version_id=artifact_version_id
+                        ),
                     )
                 ],
             )
@@ -592,9 +667,7 @@ def test_action_plan_rejects_changed_state_and_wrong_owner_targets(
             explanation="Retry this output.",
             steps=[
                 ProposedActionStep(
-                    command_type="retry_artifact",
-                    arguments={"artifact_run_id": artifact_run_a},
-                    summary="Retry an artifact",
+                    command=RetryArtifactCommand(artifact_run_id=artifact_run_a),
                 )
             ],
         )
@@ -612,9 +685,7 @@ def test_action_plan_rejects_changed_state_and_wrong_owner_targets(
             explanation="Update the selected artifact.",
             steps=[
                 ProposedActionStep(
-                    command_type="targeted_update_artifact",
-                    arguments={"artifact_run_id": artifact_run_a},
-                    summary="Update an artifact",
+                    command=TargetedUpdateArtifactCommand(artifact_run_id=artifact_run_a),
                 )
             ],
         )
@@ -638,9 +709,7 @@ def test_action_plan_rejects_changed_state_and_wrong_owner_targets(
             explanation="Render the selected infographic.",
             steps=[
                 ProposedActionStep(
-                    command_type="create_media_render",
-                    arguments={"artifact_version_id": media_version_a},
-                    summary="Render an infographic",
+                    command=CreateMediaRenderCommand(artifact_version_id=media_version_a),
                 )
             ],
         )
@@ -824,13 +893,24 @@ def test_planner_output_cannot_add_commands_or_change_server_policy(
     client, _engine, factory = auth_database
     login(client)
     transformation_id = save_transformation(client)
-    invalid_step = ProposedActionStep.model_construct(
-        command_type="delete_all_transformations",
-        arguments={"owner_id": 999, "model": "other-provider"},
-        summary="Delete all workspaces",
-    )
-    invalid = ActionPlanProposal.model_construct(
-        explanation="The model requested a privileged operation.", steps=[invalid_step]
+    invalid = ActionPlanProposal(
+        explanation="Create a new transformation.",
+        steps=[
+            ProposedActionStep(
+                command=CreateTransformationCommand.model_validate(
+                    {
+                        "request": {
+                            "source_text": "A new source.",
+                            "output_types": ["executive_summary"],
+                            "audience": "Leadership",
+                            "tone": "Professional",
+                            "objective": "Inform leadership",
+                            "style": "Plain language",
+                        }
+                    }
+                ),
+            )
+        ],
     )
     install_planner(monkeypatch, PlannerStub(invalid))
     response = client.post(
