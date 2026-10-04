@@ -156,6 +156,9 @@ export function WeaveAssistant({
 }) {
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<ChatState>({ messages: [], plans: [] });
+  const [sourceLabelsByPlanId, setSourceLabelsByPlanId] = useState<
+    Record<number, string>
+  >({});
   const [message, setMessage] = useState("");
   const [sourceDraft, setSourceDraft] = useState("");
   const [sourceName, setSourceName] = useState("");
@@ -235,10 +238,21 @@ export function WeaveAssistant({
     setError(null);
     setMessage("");
     try {
+      let proposedPlan: unknown;
       if (transformationId === null) {
-        await api.proposeWeaveActionPlan(request, sourceDraft || undefined);
+        proposedPlan = await api.proposeWeaveActionPlan(
+          request,
+          sourceDraft || undefined,
+        );
       } else {
-        await api.proposeActionPlan(transformationId, request);
+        proposedPlan = await api.proposeActionPlan(transformationId, request);
+      }
+      const sourceLabel = sourceName || (sourceDraft ? "Pasted source" : null);
+      if (transformationId === null && sourceLabel && isPlan(proposedPlan)) {
+        setSourceLabelsByPlanId((current) => ({
+          ...current,
+          [proposedPlan.id]: sourceLabel,
+        }));
       }
       await refresh();
       setSourceMode(null);
@@ -545,10 +559,7 @@ export function WeaveAssistant({
                           <PlanCard
                             plan={plan}
                             busy={busy}
-                            sourceLabel={
-                              sourceName ||
-                              (sourceDraft ? "Pasted source" : null)
-                            }
+                            sourceLabel={sourceLabelsByPlanId[plan.id] ?? null}
                             onDecide={decide}
                           />
                         )}

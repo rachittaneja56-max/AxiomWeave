@@ -302,6 +302,7 @@ describe("global Weave assistant", () => {
     expect(
       await screen.findByText("Outputs: Executive Summary, Presentation"),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Source: Pasted source/)).toBeInTheDocument();
     expect(onTransformationCreated).not.toHaveBeenCalled();
     fireEvent.click(
       screen.getByRole("button", { name: "Create transformation" }),
