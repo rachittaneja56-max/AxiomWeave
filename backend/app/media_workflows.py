@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 import tempfile
 import time
+from collections.abc import Mapping
 from hashlib import sha256
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import cast
-from collections.abc import Mapping
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
